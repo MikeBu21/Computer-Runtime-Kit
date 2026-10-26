@@ -1,0 +1,16 @@
+[Unit]
+Description=Tailscale change → Telegram notifier
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/piminer/minersteuerung/scripts/tailscale_notify/linux
+Environment=TAILSCALE_NOTIFY_CONFIG=/home/piminer/minersteuerung/scripts/tailscale_notify/linux/config.json
+Environment=TAILSCALE_NOTIFY_STATE=/home/piminer/minersteuerung/scripts/tailscale_notify/state/state.json
+ExecStart=/usr/bin/python3 /home/piminer/minersteuerung/scripts/tailscale_notify/linux/tailscale_notify.py
+Restart=on-failure
+RestartSec=20
+
+[Install]
+WantedBy=default.target

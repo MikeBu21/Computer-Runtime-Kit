@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Alles starten (Autostart)
+Comment=Startet Miner-Steuerung, Home Assistant und Tailscale nach dem Login
+Exec=/home/piminer/minersteuerung/miner-dashboard/pi5-boot.sh
+Terminal=false
+X-GNOME-Autostart-enabled=true
+X-GNOME-Autostart-Delay=8

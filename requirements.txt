@@ -1,0 +1,7 @@
+# Miner-Steuerung – Python-Abhängigkeiten
+flask>=3.0
+paramiko>=3.0
+python-telegram-bot>=21.0
+Pillow>=10
+open-meteo-solar-forecast>=0.1.29
+requests>=2.31

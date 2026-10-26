@@ -1,0 +1,15 @@
+{
+  "log_dirs": [
+    "/dev/shm/minersteuerung/logs"
+  ],
+  "repo": "/home/piminer/minersteuerung",
+  "buffer_dir": "/home/piminer/minersteuerung/logs/error_reports/buffer",
+  "outbox_dir": "/home/piminer/minersteuerung/logs/error_reports/outbox",
+  "sent_dir": "/home/piminer/minersteuerung/logs/error_reports/sent",
+  "window_days": 14,
+  "token_file": "",
+  "chats_file": "",
+  "telegram_token": "",
+  "chat_ids": [],
+  "schedule_note": "Standard: keine Empfänger konfiguriert."
+}

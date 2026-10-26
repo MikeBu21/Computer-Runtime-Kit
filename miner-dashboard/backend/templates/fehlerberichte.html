@@ -1,0 +1,243 @@
+{% extends "base.html" %}
+
+{% block title %}📋 Fehlerberichte{% endblock %}
+
+{% block extra_head %}
+  <style>
+    .err-grid {
+      display: grid;
+      gap: 1rem;
+      max-width: 920px;
+    }
+    .err-meta {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 0.75rem;
+    }
+    .err-stat {
+      background: var(--surface-2, rgba(255,255,255,0.04));
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 0.85rem 1rem;
+    }
+    .err-stat .label {
+      color: var(--muted);
+      font-size: 0.78rem;
+      margin-bottom: 0.25rem;
+    }
+    .err-stat .value {
+      font-weight: 600;
+      font-size: 0.95rem;
+      word-break: break-word;
+    }
+    .err-badge {
+      display: inline-block;
+      padding: 0.2rem 0.55rem;
+      border-radius: 999px;
+      font-size: 0.78rem;
+      font-weight: 600;
+    }
+    .err-badge.ok { background: rgba(0, 230, 118, 0.15); color: #00e676; }
+    .err-badge.off { background: rgba(255,255,255,0.08); color: var(--muted); }
+    .err-badge.warn { background: rgba(255, 193, 7, 0.15); color: #ffc107; }
+    .pkg-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.85rem;
+    }
+    .pkg-table th {
+      text-align: left;
+      color: var(--muted);
+      font-weight: 600;
+      padding: 0.45rem 0.4rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .pkg-table td {
+      padding: 0.5rem 0.4rem;
+      border-bottom: 1px solid rgba(255,255,255,0.04);
+      vertical-align: top;
+    }
+    .pkg-empty { color: var(--muted); font-size: 0.9rem; margin: 0; }
+    .chat-chip {
+      display: inline-block;
+      margin: 0.15rem 0.25rem 0.15rem 0;
+      padding: 0.25rem 0.55rem;
+      border-radius: 8px;
+      background: rgba(33, 150, 243, 0.12);
+      border: 1px solid rgba(33, 150, 243, 0.25);
+      font-family: ui-monospace, monospace;
+      font-size: 0.82rem;
+    }
+    #send_detail {
+      white-space: pre-wrap;
+      font-size: 0.78rem;
+      color: var(--muted);
+      margin-top: 0.75rem;
+      max-height: 10rem;
+      overflow: auto;
+    }
+  </style>
+{% endblock %}
+
+{% block content %}
+  <div class="page-header">
+    <h2>📋 Fehlerberichte</h2>
+    <p>Alle 14 Tage per Miner-Telegram-Bot nur an Michael (konfigurierte chat_ids)</p>
+  </div>
+
+  <div class="err-grid">
+    <div class="panel">
+      <h5 class="panel-title">Zeitplan & Empfänger</h5>
+      <div class="err-meta">
+        <div class="err-stat">
+          <div class="label">Erfassen + senden</div>
+          <div class="value">{{ status.schedule_collect }}</div>
+        </div>
+        <div class="err-stat">
+          <div class="label">Nachversuch</div>
+          <div class="value">{{ status.schedule_retry }}</div>
+        </div>
+        <div class="err-stat">
+          <div class="label">Fenster</div>
+          <div class="value">{{ status.window_days }} Tage · nur ERROR</div>
+        </div>
+        <div class="err-stat">
+          <div class="label">Quellen</div>
+          <div class="value">{{ status.sources | join(', ') }}</div>
+        </div>
+      </div>
+
+      <div style="margin-top: 1rem;">
+        <div class="label" style="color: var(--muted); font-size: 0.78rem; margin-bottom: 0.35rem;">
+          Empfänger (Fehlerberichte: explizite chat_ids in der Pipeline-Config; telegram_chats.json bleibt für andere Bot-Meldungen)
+        </div>
+        {% if status.chat_ids %}
+          {% for cid in status.chat_ids %}
+            <span class="chat-chip">{{ cid }}</span>
+          {% endfor %}
+        {% else %}
+          <span class="err-badge warn">keine Chat-IDs — Bot /start ausstehend</span>
+        {% endif %}
+      </div>
+
+      <div style="margin-top: 1rem; display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center;">
+        <span class="err-badge {% if status.timers.collect_active %}ok{% else %}off{% endif %}">
+          Collect-Timer {% if status.timers.collect_active %}aktiv{% else %}inaktiv{% endif %}
+        </span>
+        <span class="err-badge {% if status.timers.send_active %}ok{% else %}off{% endif %}">
+          Send-Timer {% if status.timers.send_active %}aktiv{% else %}inaktiv{% endif %}
+        </span>
+        {% if status.timers.collect_next %}
+          <span style="color: var(--muted); font-size: 0.82rem;">Nächste Collect: {{ status.timers.collect_next }}</span>
+        {% endif %}
+        {% if status.timers.send_next %}
+          <span style="color: var(--muted); font-size: 0.82rem;">Nächste Send: {{ status.timers.send_next }}</span>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="panel">
+      <div style="display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap;">
+        <h5 class="panel-title" style="margin: 0;">Outbox</h5>
+        <button type="button" class="btn-primary-custom" id="send_now_btn">📤 Jetzt an konfigurierte Empfänger senden</button>
+      </div>
+      <p id="send_message" style="margin: 0.75rem 0 0; color: var(--muted); min-height: 1.2rem;"></p>
+      <pre id="send_detail" hidden></pre>
+      {% if status.outbox %}
+      <div style="overflow-x: auto; margin-top: 0.75rem;">
+        <table class="pkg-table">
+          <thead>
+            <tr>
+              <th>Paket</th>
+              <th>Einträge</th>
+              <th>Zeitraum</th>
+              <th>Erzeugt</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for p in status.outbox %}
+            <tr>
+              <td><code>{{ p.label }}</code></td>
+              <td>{{ p.event_count }}</td>
+              <td>{{ p.period_label }} ({{ p.period_days }}d)</td>
+              <td>{{ p.generated_at or p.mtime or '—' }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <p class="pkg-empty" style="margin-top: 0.75rem;">Outbox leer.</p>
+      {% endif %}
+    </div>
+
+    <div class="panel">
+      <h5 class="panel-title">Zuletzt gesendet</h5>
+      {% if status.sent %}
+      <div style="overflow-x: auto;">
+        <table class="pkg-table">
+          <thead>
+            <tr>
+              <th>Paket</th>
+              <th>Einträge</th>
+              <th>Zeitraum</th>
+              <th>Erzeugt</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for p in status.sent %}
+            <tr>
+              <td><code>{{ p.label }}</code></td>
+              <td>{{ p.event_count }}</td>
+              <td>{{ p.period_label }} ({{ p.period_days }}d)</td>
+              <td>{{ p.generated_at or p.mtime or '—' }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <p class="pkg-empty">Noch keine gesendeten Pakete.</p>
+      {% endif %}
+    </div>
+  </div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+  const msgEl = document.getElementById('send_message');
+  const detailEl = document.getElementById('send_detail');
+  const btn = document.getElementById('send_now_btn');
+
+  function setMsg(text, ok) {
+    msgEl.textContent = text || '';
+    msgEl.style.color = ok ? 'var(--accent)' : '#f44336';
+  }
+
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    setMsg('Sende …', true);
+    detailEl.hidden = true;
+    detailEl.textContent = '';
+    try {
+      const res = await fetch('/api/fehlerberichte/send', {
+        method: 'POST',
+        headers: { 'X-Requested-With': 'fetch' },
+      });
+      const data = await res.json();
+      setMsg(data.message || (data.ok ? 'OK' : 'Fehler'), !!data.ok);
+      if (data.detail) {
+        detailEl.textContent = data.detail;
+        detailEl.hidden = false;
+      }
+      if (data.ok) {
+        setTimeout(() => location.reload(), 1200);
+      }
+    } catch (err) {
+      setMsg(String(err), false);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+</script>
+{% endblock %}

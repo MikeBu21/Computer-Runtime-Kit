@@ -1,0 +1,14 @@
+[Unit]
+Description=Home Assistant RAM Data Bridge
+After=network-online.target home-assistant.service
+Wants=network-online.target
+PartOf=home-assistant.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /home/piminer/homeassistant/ha_data_bridge.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

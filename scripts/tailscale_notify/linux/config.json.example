@@ -1,0 +1,10 @@
+{
+  "telegram_token": "",
+  "chat_ids": [],
+  "token_file": "/home/piminer/minersteuerung/miner-dashboard/backend/telegram_config.json",
+  "chats_file": "/home/piminer/minersteuerung/miner-dashboard/backend/telegram_chats.json",
+  "interval_sec": 60,
+  "key_warn_days": 14,
+  "hostname_override": ""
+}
+

@@ -1,0 +1,6 @@
+{
+  "telegram_token": "",
+  "feed_in_alarm_kw": -95.0,
+  "high_usage_alarm_kw": 50.0,
+  "power_outage_enabled": false
+}

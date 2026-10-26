@@ -1,0 +1,235 @@
+{% extends "base.html" %}
+
+{% block title %}💬 Telegram Bot{% endblock %}
+
+{% block extra_head %}
+  <style>
+    .telegram-hero {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 1rem;
+      align-items: center;
+      background: linear-gradient(135deg, rgba(33, 150, 243, 0.18), rgba(0, 230, 118, 0.08));
+      border: 1px solid rgba(33, 150, 243, 0.3);
+      border-radius: 18px;
+      padding: 1.25rem;
+      margin-bottom: 1.25rem;
+    }
+    .telegram-icon {
+      width: 58px;
+      height: 58px;
+      border-radius: 18px;
+      background: rgba(33, 150, 243, 0.18);
+      display: grid;
+      place-items: center;
+      font-size: 1.7rem;
+    }
+    .telegram-hero h3 {
+      margin: 0;
+      color: #fff;
+      font-size: 1.15rem;
+      font-weight: 700;
+    }
+    .telegram-hero p {
+      margin: 0.35rem 0 0;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+    .token-input-wrap .form-control {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      letter-spacing: 0.01em;
+    }
+    .token-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      background: rgba(33, 150, 243, 0.12);
+      color: #90caf9;
+      border: 1px solid rgba(33, 150, 243, 0.24);
+      border-radius: 999px;
+      padding: 0.35rem 0.7rem;
+      font-size: 0.8rem;
+      font-weight: 700;
+      margin-bottom: 1rem;
+    }
+    .hint-list {
+      color: var(--muted);
+      font-size: 0.9rem;
+      margin: 1rem 0 0;
+      padding-left: 1.15rem;
+    }
+    .hint-list li { margin-bottom: 0.35rem; }
+    .alarm-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 0.9rem;
+      margin-top: 1rem;
+    }
+    .alarm-card {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 1rem;
+    }
+    .alarm-card strong {
+      display: block;
+      color: #fff;
+      margin-bottom: 0.45rem;
+    }
+    .toggle-card {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.85rem;
+      background: rgba(239, 83, 80, 0.08);
+      border: 1px solid rgba(239, 83, 80, 0.28);
+      border-radius: 14px;
+      padding: 1rem 1.1rem;
+      margin-top: 1rem;
+    }
+    .toggle-card input {
+      width: 1.15rem;
+      height: 1.15rem;
+      margin-top: 0.2rem;
+      accent-color: #ef5350;
+    }
+    .toggle-card label {
+      color: #fff;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .toggle-card p {
+      margin: 0.35rem 0 0;
+      color: var(--muted);
+      font-size: 0.85rem;
+      font-weight: 400;
+    }
+    .toggle-card-ha {
+      background: rgba(33, 150, 243, 0.1);
+      border-color: rgba(33, 150, 243, 0.35);
+    }
+    .toggle-card-ha input { accent-color: #64b5f6; }
+    .ha-status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      border-radius: 999px;
+      padding: 0.35rem 0.75rem;
+      font-size: 0.82rem;
+      font-weight: 700;
+      margin-bottom: 0.85rem;
+    }
+    .ha-status-badge.ok {
+      background: rgba(0, 230, 118, 0.12);
+      color: #69f0ae;
+      border: 1px solid rgba(0, 230, 118, 0.28);
+    }
+    .ha-status-badge.warn {
+      background: rgba(255, 193, 7, 0.12);
+      color: #ffd54f;
+      border: 1px solid rgba(255, 193, 7, 0.28);
+    }
+  </style>
+{% endblock %}
+
+{% block content %}
+  <div class="page-header">
+    <h2>💬 Telegram Bot</h2>
+    <p>Bot-Token für Steuerung und Status per Telegram</p>
+  </div>
+
+  <div class="panel" style="max-width: 640px;">
+    <div class="telegram-hero">
+      <div class="telegram-icon">💬</div>
+      <div>
+        <h3>Telegram-Verbindung</h3>
+        <p>Speichere hier den Bot-Token. Der Bot kann danach Status und Steuerbefehle verarbeiten.</p>
+      </div>
+    </div>
+
+    {% if message %}
+    <div class="alert-success-custom">{{ message }}</div>
+    {% endif %}
+
+    <div class="token-badge">🔐 Token wird lokal am Pi gespeichert</div>
+
+    <form method="post">
+      <div class="mb-3">
+        <label for="telegram_token" class="form-label">Telegram Bot Token</label>
+        <div class="token-input-wrap">
+          <input type="text" class="form-control" id="telegram_token" name="telegram_token"
+            value="{{ token or '' }}" placeholder="123456789:ABCdefGHI..." required>
+        </div>
+      </div>
+
+      <h5 class="panel-title" style="margin-top: 1.25rem;">📡 Datenüberwachung / Home Assistant</h5>
+      <p style="color: var(--muted); margin-top: -0.4rem; font-size: 0.9rem;">
+        Der Bot prüft alle 30&nbsp;s, ob HA-Snapshot und Dashboard-Daten regelmäßig aktualisiert werden.
+        Bei veralteten Daten: Telegram-Meldung <strong>keine stabile Verbindung</strong>.
+      </p>
+
+      {% if ha_connection_stable %}
+      <div class="ha-status-badge ok">✅ Verbindung stabil{% if ha_connection_detail %} · {{ ha_connection_detail }}{% endif %}</div>
+      {% else %}
+      <div class="ha-status-badge warn">⚠️ Keine stabile Verbindung{% if ha_connection_detail %} · {{ ha_connection_detail }}{% endif %}</div>
+      {% endif %}
+
+      <div class="toggle-card toggle-card-ha">
+        <input type="hidden" name="ha_data_monitor_enabled" value="0">
+        <input type="checkbox" id="ha_data_monitor_enabled" name="ha_data_monitor_enabled"
+          value="1" {% if ha_data_monitor_enabled %}checked{% endif %}>
+        <div>
+          <label for="ha_data_monitor_enabled">📡 HA-Datenüberwachung aktiv</label>
+          <p>Prüfung alle 30&nbsp;s · Quellen: <code>/tmp/ha_snapshot.json</code> und <code>enline_values.json</code></p>
+        </div>
+      </div>
+
+      <h5 class="panel-title" style="margin-top: 1.35rem;">🚨 Alarmschwellwerte</h5>
+      <p style="color: var(--muted); margin-top: -0.4rem; font-size: 0.9rem;">
+        Der Bot prüft alle 30&nbsp;s den Netz-/Kelag-Wert (<code>energy_value.txt</code>) und sendet bei Überschreitung eine Telegram-Meldung.
+      </p>
+
+      <div class="alarm-grid">
+        <div class="alarm-card">
+          <strong>⚡ Netzbezug</strong>
+          <label for="high_usage_alarm_kw" class="form-label">Alarm wenn Netz &gt; (kW)</label>
+          <input type="number" step="0.1" class="form-control" id="high_usage_alarm_kw" name="high_usage_alarm_kw"
+            value="{{ high_usage_alarm_kw or 100 }}" placeholder="100">
+          <small style="color: var(--muted);">z.&nbsp;B. 100 → Meldung bei Bezug über 100&nbsp;kW</small>
+        </div>
+        <div class="alarm-card">
+          <strong>↗️ Einspeisung</strong>
+          <label for="feed_in_alarm_kw" class="form-label">Alarm wenn Netz ≤ (kW)</label>
+          <input type="number" step="0.1" class="form-control" id="feed_in_alarm_kw" name="feed_in_alarm_kw"
+            value="{{ feed_in_alarm_kw or -100 }}" placeholder="-100">
+          <small style="color: var(--muted);">z.&nbsp;B. −100 → Meldung bei Einspeisung unter −100&nbsp;kW</small>
+        </div>
+      </div>
+
+      <div class="toggle-card">
+        <input type="hidden" name="power_outage_enabled" value="0">
+        <input type="checkbox" id="power_outage_enabled" name="power_outage_enabled"
+          value="1" {% if power_outage_enabled %}checked{% endif %}>
+        <div>
+          <label for="power_outage_enabled">🔴 Stromausfall-Benachrichtigung</label>
+          <p>
+            Alle <strong>15&nbsp;s</strong> Prüfung: keine Enline-Daten seit 90&nbsp;s
+            oder Anlage ohne Leistung (Erzeugung, Netz und Verbrauch ≈ 0&nbsp;kW).
+            Bei Wiederherstellung kommt eine ✅-Meldung.
+          </p>
+        </div>
+      </div>
+
+      <div class="action-row">
+        <button type="submit" class="btn-primary-custom">💾 Einstellungen speichern</button>
+        <a href="/" class="btn-secondary-custom">🔙 Zurück</a>
+      </div>
+    </form>
+
+    <ul class="hint-list">
+      <li>Den Token bekommst du im Telegram-Chat mit <strong>BotFather</strong>.</li>
+      <li>Befehle: <code>/ertrag</code>, <code>/morgen</code>, <code>/statistik</code> – oder die Buttons Ertrag heute, Ertrag morgen, Stromprofil und Status.</li>
+      <li>Alarm-Schwellwerte und HA-Datenüberwachung gelten sofort im Bot (kein Neustart nötig). Nur bei Token-Änderung <code>minerbot.py</code> neu starten.</li>
+      <li><code>ha_data_bridge</code> muss laufen, damit HA-Daten aktuell bleiben.</li>
+    </ul>
+  </div>
+{% endblock %}

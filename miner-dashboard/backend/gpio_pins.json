@@ -1,0 +1,18 @@
+[
+  {
+    "pin": 3,
+    "id": "gpio:3",
+    "label": "Heizstab Stufe 1",
+    "note": "Heizstap pin 3",
+    "power_kw": 0.0,
+    "priority": 5.0
+  },
+  {
+    "pin": 5,
+    "id": "gpio:5",
+    "label": "Heizstab Stufe 2",
+    "note": "Heizstap pin 5",
+    "power_kw": 0.0,
+    "priority": 5.0
+  }
+]

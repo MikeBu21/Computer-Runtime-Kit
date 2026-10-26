@@ -1,0 +1,10 @@
+[Unit]
+Description=Collect 14-day piMiner control errors and send via Telegram
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/piminer/minersteuerung/scripts/error_log_pipeline/pi
+Environment=ERROR_LOG_PIPELINE_CONFIG=/home/piminer/minersteuerung/scripts/error_log_pipeline/pi/config.json
+ExecStart=/usr/bin/python3 /home/piminer/minersteuerung/scripts/error_log_pipeline/pi/collect_errors.py
+ExecStartPost=/usr/bin/python3 /home/piminer/minersteuerung/scripts/error_log_pipeline/pi/send_telegram.py

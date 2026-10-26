@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+
+{% block title %}⚡ Smartmeter{% endblock %}
+
+{% block content %}
+  <div class="page-header">
+    <h2>⚡ Smartmeter</h2>
+    <p>URL und Durchschnittszeitraum für die Energieauswertung</p>
+  </div>
+
+  <div class="stat-grid">
+    <div class="stat-card">
+      <h5>🔌 Aktueller Verbrauch</h5>
+      <p class="energy-value">{{ settings.current_kw }} kW</p>
+    </div>
+    <div class="stat-card">
+      <h5>📉 Durchschnitt</h5>
+      <p class="energy-value">{{ settings.avg_kw }} kW</p>
+    </div>
+  </div>
+
+  <div class="panel" style="max-width: 640px;">
+    <h5 class="panel-title">Smartmeter-URL</h5>
+    <form method="post">
+      <div class="mb-3">
+        <label for="smartmeter_url" class="form-label">URL zum Smartmeter / API</label>
+        <input type="text" class="form-control" id="smartmeter_url" name="smartmeter_url"
+          value="{{ settings.smartmeter_url or '' }}" placeholder="http://192.168.1.x/..." required>
+      </div>
+      <div class="action-row">
+        <button type="submit" class="btn-primary-custom">💾 URL speichern</button>
+        <a href="/" class="btn-secondary-custom">🔙 Zurück</a>
+      </div>
+    </form>
+  </div>
+
+  <div class="panel" style="max-width: 640px;">
+    <h5 class="panel-title">Durchschnittszeitraum</h5>
+    <form method="post" action="/save_settings">
+      <div class="mb-3">
+        <label for="avg_minutes" class="form-label">Minuten für Durchschnittsberechnung</label>
+        <input type="number" class="form-control" id="avg_minutes" name="avg_minutes"
+          value="{{ settings.avg_minutes or 45 }}" min="1" max="240" required>
+      </div>
+      <button type="submit" class="btn-primary-custom">💾 Zeitraum speichern</button>
+    </form>
+  </div>
+{% endblock %}

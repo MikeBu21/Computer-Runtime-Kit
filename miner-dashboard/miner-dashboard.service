@@ -1,0 +1,22 @@
+[Unit]
+Description=Miner Steuerung (Dashboard, Scheduler, Algorithmus, Status)
+After=network-online.target miner-boot-repair.service miner-ram-hydrate.service
+Wants=network-online.target miner-boot-repair.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/home/piminer/minersteuerung/miner-dashboard
+Environment=MINER_RAM_CACHE=1
+Environment=MINER_RAM_ROOT=/dev/shm/minersteuerung
+Environment=MINER_RAM_FLUSH_SEC=3600
+Environment=MINER_LOG_DIR=/dev/shm/minersteuerung/logs
+Environment=MINER_ROOT=/home/piminer/minersteuerung
+ExecStartPre=/home/piminer/minersteuerung/miner-dashboard/boot_repair_after_powerloss.sh
+ExecStart=/home/piminer/minersteuerung/miner-dashboard/start_all.sh
+ExecStop=/bin/bash -c 'PY="/home/piminer/minersteuerung/venv/bin/python"; for s in app.py scheduler.py control_algorithm_daemon.py "energy_monitor/auto_control.py" minerbot.py status.py; do pkill -f "$PY $s" || true; done; fuser -k 5000/tcp 2>/dev/null || true'
+Restart=on-failure
+RestartSec=20
+
+[Install]
+WantedBy=default.target

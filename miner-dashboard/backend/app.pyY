@@ -1,0 +1,272 @@
+from flask import Flask, request, render_template, redirect, url_for, session, jsonify
+import json, os, subprocess, socket, threading
+
+app = Flask(__name__)
+app.secret_key = 'supersecretkey'
+
+MINER_FILE = 'miners.json'
+SETTINGS_FILE = 'dashboard_settings.json'
+ZIELORDNER = os.path.join(os.path.dirname(__file__), "shared_settings")
+
+def load_settings():
+    settings = {
+        "avg_minutes": 45,
+        "current_kw": "n/a",
+        "avg_kw": "n/a",
+        "smartmeter_url": "",
+        "login_username": "miningfarm",
+        "login_password": "Beispiel"
+    }
+
+    if os.path.exists(SETTINGS_FILE):
+        try:
+            with open(SETTINGS_FILE, "r") as f:
+                settings.update(json.load(f))
+        except Exception:
+            pass
+
+    extra_keys = {
+        "smartmeter_url": "smartmeter_url.txt",
+        "avg_minutes": "avg_minutes.txt"
+    }
+
+    for key, filename in extra_keys.items():
+        try:
+            with open(os.path.join(ZIELORDNER, filename), "r") as f:
+                settings[key] = f.read().strip()
+        except:
+            settings[key] = "n/a"
+
+    return settings
+
+def save_settings(settings):
+    with open(SETTINGS_FILE, "w") as f:
+        json.dump(settings, f, indent=4)
+
+@app.route('/')
+def index():
+    settings = load_settings()
+    if not session.get('logged_in'):
+        return redirect(url_for('login'))
+    try:
+        with open(MINER_FILE) as f:
+            miners = json.load(f)
+    except:
+        miners = []
+    return render_template('dashboard.html', miners=miners, settings=settings)
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    settings = load_settings()
+    if request.method == 'POST':
+        if request.form['username'] == settings['login_username'] and request.form['password'] == settings['login_password']:
+            session['logged_in'] = True
+            return redirect(url_for('index'))
+    return render_template('login.html')
+
+@app.route('/settings', methods=['GET', 'POST'])
+def settings_page():
+    if request.method == 'POST':
+        settings = load_settings()
+        settings['login_username'] = request.form['new_username']
+        settings['login_password'] = request.form['new_password']
+        save_settings(settings)
+        return redirect('/')
+    return render_template('settings.html')
+
+@app.route('/smartmeter', methods=['GET', 'POST'])
+def smartmeter():
+    settings = load_settings()
+    if request.method == 'POST':
+        url = request.form['smartmeter_url']
+        os.makedirs(ZIELORDNER, exist_ok=True)
+        with open(os.path.join(ZIELORDNER, "smartmeter_url.txt"), "w") as f:
+            f.write(url)
+        settings["smartmeter_url"] = url
+        save_settings(settings)
+        return redirect('/')
+    return render_template('smartmeter.html', settings=settings)
+
+@app.route('/add_miner', methods=['GET', 'POST'])
+def add_miner():
+    if request.method == 'POST':
+        new_miner = {
+            "ip": request.form['ip'],
+            "username": request.form['username'],
+            "password": request.form['password'],
+            "model": request.form.get('model', ''),
+            "note": "",
+            "auto": False
+        }
+        with open(MINER_FILE) as f:
+            miners = json.load(f)
+        miners.append(new_miner)
+        with open(MINER_FILE, 'w') as f:
+            json.dump(miners, f, indent=2)
+        return redirect('/')
+    return render_template('add_miner.html')
+
+@app.route('/save_settings', methods=['POST'])
+def save_avg_minutes():
+    settings = load_settings()
+    settings["avg_minutes"] = int(request.form.get("avg_minutes", 45))
+    save_settings(settings)
+
+    os.makedirs(ZIELORDNER, exist_ok=True)
+    try:
+        with open(os.path.join(ZIELORDNER, "avg_minutes.txt"), "w") as f:
+            f.write(str(settings["avg_minutes"]))
+        print(f"📁 avg_minutes.txt gespeichert mit Wert: {settings['avg_minutes']}")
+    except Exception as e:
+        print(f"❌ Fehler beim Schreiben von avg_minutes.txt: {e}")
+
+    return redirect('/smartmeter')
+
+@app.route('/delete_miner', methods=['POST'])
+def delete_miner():
+    ip = request.form['ip']
+    with open(MINER_FILE) as f:
+        miners = json.load(f)
+    miners = [m for m in miners if m['ip'] != ip]
+    with open(MINER_FILE, 'w') as f:
+        json.dump(miners, f, indent=2)
+    return redirect('/')
+
+@app.route('/automatikmodus', methods=['GET'])
+def automatikmodus():
+    with open(MINER_FILE) as f:
+        miners = json.load(f)
+    return render_template('automatik.html', miners=miners)
+
+@app.route('/zeitsteuerung', methods=['GET'])
+def zeitsteuerung():
+    with open(MINER_FILE) as f:
+        miners = json.load(f)
+    return render_template('zeitsteuerung.html', miners=miners)
+
+@app.route('/save_automatik', methods=['POST'])
+def save_automatik():
+    with open(MINER_FILE) as f:
+        miners = json.load(f)
+    for miner in miners:
+        ip = miner['ip']
+        miner['auto'] = f"auto_{ip}" in request.form
+        for key in ['pause_kw', 'resume_kw', 'lower_kw', 'raise_kw']:
+            miner[key] = request.form.get(f"{key}_{ip}", '')
+    with open(MINER_FILE, 'w') as f:
+        json.dump(miners, f, indent=2)
+    return redirect('/automatikmodus')
+
+@app.route('/save_zeitsteuerung', methods=['POST'])
+def save_zeitsteuerung():
+    with open(MINER_FILE) as f:
+        miners = json.load(f)
+    for miner in miners:
+        ip = miner['ip']
+        miner['time_pause'] = f"time_pause_{ip}" in request.form
+        miner['time_ths'] = f"time_ths_{ip}" in request.form
+        for key in ['pause_time', 'resume_time', 'low_time', 'high_time']:
+            miner[key] = request.form.get(f"{key}_{ip}", '')
+    with open(MINER_FILE, 'w') as f:
+        json.dump(miners, f, indent=2)
+    return redirect('/zeitsteuerung')
+
+@app.route('/miner_action', methods=['POST'])
+def miner_action():
+    ip = request.form['ip']
+    action = request.form['action']
+    command_map = {
+        'pause': {"command": "pause"},
+        'resume': {"command": "resume"},
+        'lowpower': {"command": "set_ths", "value": "60"},
+        'highpower': {"command": "set_ths", "value": "100"}
+    }
+    cmd = command_map.get(action)
+    if not cmd:
+        return "Ungültige Aktion", 400
+    if cmd['command'] == 'set_ths':
+        subprocess.run(f"./control.sh {ip} user pass {cmd['value']}", shell=True)
+    else:
+        subprocess.run(f"echo '{json.dumps(cmd)}' | nc {ip} 4028", shell=True)
+    return redirect('/')
+
+
+@app.route('/set_ths', methods=['POST'])
+def set_ths():
+    ip = request.form['ip']
+    ths = request.form['ths']
+
+    try:
+        with open(MINER_FILE) as f:
+            miners = json.load(f)
+        miner = next((m for m in miners if m['ip'] == ip), None)
+
+        if not miner:
+            print(f"❌ Miner mit IP {ip} nicht gefunden!")
+            return "Miner nicht gefunden", 404
+
+        username = miner.get('username', 'root')
+        password = miner.get('password', '')
+
+        # Logging-Ausgabe
+        print(f"⚙️  THS-Setzen für {ip} → {ths} TH/s mit User: {username}")
+
+        # Befehl aufrufen
+        result = subprocess.run(
+            [f"./control.sh", ip, username, password, ths],
+            capture_output=True,
+            text=True
+        )
+
+        print("📤 stdout:", result.stdout)
+        print("📥 stderr:", result.stderr)
+
+        if result.returncode != 0:
+            print(f"❌ Fehler beim Ausführen des Skripts für {ip}")
+            return f"Fehler beim Ausführen des Skripts: {result.stderr}", 500
+
+        return redirect('/')
+    except Exception as e:
+        print(f"❌ Ausnahmefehler in /set_ths: {e}")
+        return "Interner Fehler", 500
+
+
+
+@app.route('/reboot', methods=['GET', 'POST'])
+def reboot():
+    if request.method == 'POST':
+        os.system("sudo reboot")
+        return "Neustart läuft..."
+    return render_template('reboot.html')
+
+@app.route('/energy_data')
+def energy_data():
+    def read_file(filename):
+        try:
+            with open(filename, "r") as f:
+                return f.read().strip()
+        except:
+            return "n/a"
+    return jsonify({
+        "current": read_file("energy_value.txt"),
+        "avg": read_file("energy_avg.txt")
+    })
+
+def get_ip():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(('10.255.255.255', 1))
+        IP = s.getsockname()[0]
+    except:
+        IP = '127.0.0.1'
+    finally:
+        s.close()
+    return IP
+
+def open_browser():
+    subprocess.Popen(['xdg-open', f"http://{get_ip()}:5000"])
+
+if __name__ == '__main__':
+    threading.Timer(1.0, open_browser).start()
+    app.run(host='0.0.0.0', port=5000)
+

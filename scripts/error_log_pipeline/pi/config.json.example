@@ -1,0 +1,14 @@
+{
+  "log_dirs": [
+    "/dev/shm/minersteuerung/logs",
+    "/home/piminer/minersteuerung/logs"
+  ],
+  "repo": "/home/piminer/minersteuerung",
+  "buffer_dir": "/home/piminer/minersteuerung/logs/error_reports/buffer",
+  "outbox_dir": "/home/piminer/minersteuerung/logs/error_reports/outbox",
+  "sent_dir": "/home/piminer/minersteuerung/logs/error_reports/sent",
+  "window_days": 14,
+  "token_file": "/home/piminer/minersteuerung/miner-dashboard/backend/telegram_config.json",
+  "chats_file": "",
+  "chat_ids": [0]
+}

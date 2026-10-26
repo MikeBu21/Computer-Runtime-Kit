@@ -1,0 +1,7 @@
+{
+  "telegram_token": "",
+  "chat_ids": [],
+  "interval_sec": 60,
+  "key_warn_days": 14,
+  "hostname_override": ""
+}

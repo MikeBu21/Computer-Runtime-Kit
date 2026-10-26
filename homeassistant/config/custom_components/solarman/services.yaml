@@ -1,0 +1,209 @@
+read_holding_registers:
+  name: Read Holding Registers (Modbus Function Code 3)
+  description: Read values from consecutive registers at once. (Defaults to reading a single register)
+  fields:
+    device:
+      name: Device
+      description: Device to read data from
+      example: "Inverter"
+      required: true
+      selector:
+        device:
+          filter:
+            - integration: solarman
+    address:
+      name: Address
+      description: Modbus register address
+      example: 16384
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 65535
+          mode: box
+    count:
+      name: Count
+      description: Number of registers to read
+      default: 1
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 125
+          mode: box
+
+read_input_registers:
+  name: Read Input Registers (Modbus Function Code 4)
+  description: Read values from consecutive registers at once. (Defaults to reading a single register)
+  fields:
+    device:
+      name: Device
+      description: Device to read data from
+      example: "Inverter"
+      required: true
+      selector:
+        device:
+          filter:
+            - integration: solarman
+    address:
+      name: Address
+      description: Modbus register address
+      example: 16384
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 65535
+          mode: box
+    count:
+      name: Count
+      description: Number of registers to read
+      default: 1
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 125
+          mode: box
+
+write_single_register:
+  name: Write Single Register (Modbus Function Code 6)
+  description: USE WITH CARE! (Some devices might not accept Code 6 in this case try to use 'Write Multiple Registers')
+  fields:
+    device:
+      name: Device
+      description: Device to write data to
+      example: "Inverter"
+      required: true
+      selector:
+        device:
+          filter:
+            - integration: solarman
+    address:
+      name: Address
+      description: Modbus register address
+      example: 16384
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 65535
+          mode: box
+    value:
+      name: Value
+      description: Value to write
+      example: "1"
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 65535
+          mode: box
+
+write_multiple_registers:
+  name: Write Multiple Registers (Modbus Function Code 16)
+  description: USE WITH CARE! (Some devices might not accept Code 16 in this case try to use 'Write Single Register')
+  fields:
+    device:
+      name: Device
+      description: Device to write data to
+      example: "Inverter"
+      required: true
+      selector:
+        device:
+          filter:
+            - integration: solarman
+    address:
+      name: Address
+      description: Modbus register address
+      example: 16384
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 65535
+          mode: box
+    values:
+      name: Values
+      description: Values to write
+      example: |
+        - 1
+        - 2
+        - 3
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 65535
+          mode: box
+
+write_holding_register:
+  name: DEPRECATED! Write Holding Register (Modbus Function Code 6)
+  description: USE WITH CARE! (Some devices might not accept Code 6 in this case try to use 'Write Multiple Holding Registers')
+  fields:
+    device:
+      name: Device
+      description: Device to write data to
+      example: "Inverter"
+      required: true
+      selector:
+        device:
+          filter:
+            - integration: solarman
+    register:
+      name: Address
+      description: Modbus register address
+      example: 16384
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 65535
+          mode: box
+    value:
+      name: Value
+      description: Value to write
+      example: "1"
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 65535
+          mode: box
+
+write_multiple_holding_registers:
+  name: DEPRECATED! Write Multiple Holding Registers (Modbus Function Code 16)
+  description: USE WITH CARE! (Some devices might not accept Code 16 in this case try to use 'Write Holding Register')
+  fields:
+    device:
+      name: Device
+      description: Device to write data to
+      example: "Inverter"
+      required: true
+      selector:
+        device:
+          filter:
+            - integration: solarman
+    register:
+      name: Address
+      description: Modbus register address
+      example: 16384
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 65535
+          mode: box
+    values:
+      name: Values
+      description: Values to write
+      example: |
+        - 1
+        - 2
+        - 3
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 65535
+          mode: box

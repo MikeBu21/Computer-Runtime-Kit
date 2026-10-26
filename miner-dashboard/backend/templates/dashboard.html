@@ -1,0 +1,2983 @@
+{% extends "base.html" %}
+
+{% block title %}⛏️ Mining Dashboard{% endblock %}
+
+{% block extra_head %}
+  <style>
+    .note-form { display: flex; gap: 0.45rem; align-items: center; min-width: 220px; }
+    .action-form { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+    .btn-action {
+      border: none; border-radius: 9px; padding: 0.42rem 0.72rem;
+      font-size: 0.78rem; font-weight: 700; transition: transform 0.15s ease;
+    }
+    .btn-action:hover { transform: translateY(-1px); filter: brightness(1.08); }
+    .btn-resume { background: #2196f3; color: #fff; }
+    .btn-save {
+      background: rgba(0, 230, 118, 0.15); color: var(--accent);
+      border: 1px solid rgba(0, 230, 118, 0.35); border-radius: 10px; padding: 0.35rem 0.55rem;
+    }
+    .btn-delete {
+      background: rgba(255, 255, 255, 0.08); color: #fff; border: 1px solid var(--border);
+      border-radius: 10px; padding: 0.42rem 0.75rem; font-size: 0.82rem; font-weight: 600;
+    }
+    .flow-panel {
+      position: relative;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 18% 20%, rgba(255, 193, 7, 0.13), transparent 25%),
+        radial-gradient(circle at 80% 25%, rgba(0, 230, 118, 0.12), transparent 24%),
+        var(--surface);
+    }
+    .flow-grid {
+      position: relative;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      grid-template-rows: repeat(4, auto);
+      gap: 1rem 1.25rem;
+      align-items: stretch;
+      padding: 0.75rem 0.25rem 0.25rem;
+      max-width: 960px;
+      margin: 0 auto;
+    }
+    .flow-node {
+      position: relative;
+      z-index: 2;
+      background: rgba(15, 20, 27, 0.86);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 1rem;
+      min-height: 118px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      box-shadow: 0 10px 28px rgba(0, 0, 0, 0.24);
+    }
+    .flow-node-main {
+      min-height: 132px;
+      align-items: center;
+      text-align: center;
+      background: linear-gradient(180deg, rgba(0, 230, 118, 0.12), rgba(15, 20, 27, 0.9));
+      border-color: rgba(0, 230, 118, 0.25);
+      grid-column: 2;
+      grid-row: 2;
+    }
+    .flow-slot-0 { grid-column: 1; grid-row: 1; }
+    .flow-slot-1 { grid-column: 2; grid-row: 1; }
+    .flow-slot-2 { grid-column: 3; grid-row: 1; }
+    .flow-slot-3 { grid-column: 1; grid-row: 2; }
+    .flow-slot-4 { grid-column: 3; grid-row: 2; }
+    .flow-slot-5 { grid-column: 1; grid-row: 3; }
+    .flow-slot-6 { grid-column: 2; grid-row: 3; }
+    .flow-slot-7 { grid-column: 3; grid-row: 3; }
+    .flow-slot-8 { grid-column: 2; grid-row: 4; }
+    .flow-node-battery {
+      border-color: rgba(33, 150, 243, 0.25);
+      position: relative;
+      overflow: visible;
+    }
+    .flow-node-battery .flow-icon { margin-bottom: 0.4rem; }
+    .flow-battery-layout {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+      width: 100%;
+      margin-top: 0.15rem;
+      position: relative;
+      z-index: 1;
+    }
+    .flow-battery-left {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      flex: 1;
+      min-width: 0;
+    }
+    .flow-battery-left .flow-label { margin-top: 0; }
+    .flow-battery-left .flow-value {
+      font-size: 1.35rem;
+      margin-top: 0.35rem;
+      margin-bottom: 0.1rem;
+    }
+    .flow-battery-left .flow-sub {
+      margin-top: 0.15rem;
+    }
+    .flow-battery-power {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-width: 4.2rem;
+      padding-right: 0.15rem;
+      flex-shrink: 0;
+    }
+    .flow-battery-power.is-hidden { visibility: hidden; }
+    .flow-power-kw {
+      font-size: 1.05rem;
+      font-weight: 800;
+      line-height: 1.1;
+      margin-bottom: 0.2rem;
+      white-space: nowrap;
+    }
+    .flow-battery-power.charging {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 0;
+      bottom: 0;
+      min-width: 0;
+      padding: 0 0 0.35rem 0;
+      margin: 0;
+      flex-shrink: 1;
+      z-index: 2;
+      pointer-events: none;
+      gap: 0.75rem;
+      transform: translateY(-10px);
+    }
+    .flow-battery-power.charging .flow-power-kw {
+      color: #69f0ae;
+      margin-bottom: 0;
+      font-size: 1.08rem;
+      transform: translateY(-6px);
+    }
+    .flow-battery-power.discharging .flow-power-kw { color: #ff5252; }
+    .flow-power-arrow {
+      font-size: 1.75rem;
+      font-weight: 900;
+      line-height: 1;
+      letter-spacing: -0.05em;
+      display: block;
+    }
+    .flow-battery-power.charging .flow-power-arrow {
+      color: #00e676;
+      font-size: 1.85rem;
+      line-height: 0.7;
+      transform: rotate(180deg) scaleX(3);
+      transform-origin: center center;
+      -webkit-text-stroke: 2px #00e676;
+      paint-order: stroke fill;
+      margin: 0.2rem 0 0;
+      letter-spacing: -0.08em;
+    }
+    .flow-battery-power.discharging {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 0;
+      bottom: 0;
+      min-width: 0;
+      padding: 0 0 0.35rem 0;
+      margin: 0;
+      flex-shrink: 1;
+      z-index: 2;
+      pointer-events: none;
+      gap: 0.75rem;
+      transform: translateY(-10px);
+    }
+    .flow-battery-power.discharging .flow-power-kw {
+      margin-bottom: 0;
+      font-size: 1.08rem;
+      transform: translateY(-6px);
+    }
+    .flow-battery-power.discharging .flow-power-arrow {
+      color: #ff5252;
+      font-size: 1.85rem;
+      line-height: 0.7;
+      transform: scaleX(3);
+      transform-origin: center center;
+      -webkit-text-stroke: 2px #ff5252;
+      paint-order: stroke fill;
+      margin: 0.2rem 0 0;
+      letter-spacing: -0.08em;
+    }
+    .flow-node-pv { border-color: rgba(255, 193, 7, 0.25); }
+    .flow-node-hydro {
+      text-align: center;
+      align-items: center;
+      border-color: rgba(33, 150, 243, 0.3);
+      background: linear-gradient(180deg, rgba(33, 150, 243, 0.12), rgba(15, 20, 27, 0.9));
+    }
+    .flow-node-house {
+      text-align: center;
+      align-items: center;
+      border-color: rgba(156, 204, 101, 0.25);
+    }
+    .flow-node-grid { border-color: rgba(156, 204, 101, 0.25); }
+    .flow-node-load { border-color: rgba(244, 67, 54, 0.22); }
+    .flow-icon {
+      width: 42px;
+      height: 42px;
+      border-radius: 14px;
+      display: grid;
+      place-items: center;
+      background: rgba(255, 255, 255, 0.06);
+      font-size: 1.35rem;
+      margin-bottom: 0.65rem;
+    }
+    .flow-node-main .flow-icon {
+      width: 54px;
+      height: 54px;
+      font-size: 1.65rem;
+      background: rgba(0, 230, 118, 0.14);
+    }
+    .flow-label {
+      color: var(--muted);
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+    .flow-value {
+      color: #fff;
+      font-size: 1.45rem;
+      font-weight: 800;
+      line-height: 1.15;
+      margin-top: 0.25rem;
+    }
+    .flow-sub {
+      color: var(--muted);
+      font-size: 0.82rem;
+      margin-top: 0.35rem;
+    }
+    .flow-lines {
+      position: absolute;
+      inset: 0;
+      z-index: 1;
+      pointer-events: none;
+      opacity: 0.7;
+    }
+    .flow-lines::before,
+    .flow-lines::after {
+      content: "";
+      position: absolute;
+      left: 27%;
+      right: 27%;
+      border-top: 2px dashed rgba(255, 255, 255, 0.18);
+    }
+    .flow-lines::before { top: 32%; }
+    .flow-lines::after { bottom: 25%; }
+    .flow-node-placeholder {
+      border: 2px dashed rgba(0, 230, 118, 0.35);
+      background: rgba(0, 230, 118, 0.04);
+      border-radius: 16px;
+      min-height: 118px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      color: var(--accent);
+      font-size: 0.82rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .flow-node-placeholder:hover {
+      background: rgba(0, 230, 118, 0.1);
+      transform: translateY(-2px);
+    }
+    .flow-node-clickable { position: relative; }
+    .flow-node-delete {
+      position: absolute;
+      top: 0.4rem;
+      right: 0.4rem;
+      z-index: 5;
+      border: 1px solid rgba(244, 67, 54, 0.45);
+      background: rgba(244, 67, 54, 0.2);
+      color: #ff8a80;
+      border-radius: 8px;
+      width: 1.65rem;
+      height: 1.65rem;
+      font-size: 0.95rem;
+      line-height: 1;
+      cursor: pointer;
+      opacity: 0.75;
+      transition: opacity 0.15s ease, background 0.15s ease;
+    }
+    .flow-node-delete:hover {
+      opacity: 1;
+      background: rgba(244, 67, 54, 0.35);
+      color: #fff;
+    }
+    @media (max-width: 1000px) {
+      .flow-grid {
+        grid-template-columns: 1fr;
+        max-width: 100%;
+      }
+      .flow-node-main,
+      .flow-slot-0, .flow-slot-1, .flow-slot-2,
+      .flow-slot-3, .flow-slot-4, .flow-slot-5,
+      .flow-slot-6, .flow-slot-7, .flow-slot-8 {
+        grid-column: auto;
+        grid-row: auto;
+      }
+      .flow-lines { display: none; }
+    }
+    .table-wrap { min-width: 1020px; }
+    .miner-table { table-layout: fixed; }
+    .miner-table .col-ip { width: 12%; }
+    .miner-table .col-user { width: 9%; }
+    .miner-table .col-stats { width: 5%; }
+    .miner-table .col-status { width: 8%; }
+    .miner-table .col-model { width: 17%; }
+    .miner-table .col-note { width: 22%; }
+    .miner-table .col-actions { width: 14%; }
+    .miner-table .col-delete { width: 13%; }
+    .miner-stats-cell {
+      padding: 0.9rem 0.25rem !important;
+      text-align: center;
+      vertical-align: middle;
+    }
+    .miner-stats-stack {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 0.22rem;
+      width: 100%;
+      margin: 0 auto;
+    }
+    .miner-hashrate {
+      display: block;
+      width: 100%;
+      text-align: center;
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.01em;
+      color: #b0bec5;
+      line-height: 1.1;
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
+    .miner-hashrate.is-live {
+      color: #69f0ae;
+    }
+    .miner-hashrate.is-zero {
+      color: #ef9a9a;
+    }
+    .hashrate-chart-panel .panel-title {
+      margin-bottom: 0.25rem;
+    }
+    .hashrate-chart-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.85rem 1.4rem;
+      align-items: center;
+      margin: 0.35rem 0 0.75rem;
+      font-size: 0.9rem;
+      color: #8b9cb3;
+    }
+    .hashrate-chart-meta strong {
+      color: #e8eef5;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+    }
+    .hashrate-chart-meta .live-val { color: #69f0ae; }
+    .hashrate-chart-meta .target-val { color: #ffc107; }
+    .hashrate-chart-meta .soc-fill-val { color: #64b5f6; }
+    .hashrate-chart-wrap {
+      position: relative;
+      height: 260px;
+      width: 100%;
+    }
+    .hashrate-chart-wrap canvas {
+      width: 100% !important;
+      height: 100% !important;
+    }
+    .hashrate-chart-legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1rem;
+      margin-top: 0.55rem;
+      font-size: 0.82rem;
+      color: #8b9cb3;
+    }
+    .hashrate-chart-legend span {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+    .hashrate-chart-legend i {
+      width: 1.1rem;
+      height: 0.22rem;
+      border-radius: 2px;
+      display: inline-block;
+    }
+    .hashrate-chart-legend .dot-live { background: #69f0ae; }
+    .hashrate-chart-legend .dot-target { background: #ffc107; }
+    .miner-stats-link {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 2rem;
+      height: 2rem;
+      margin: 0 auto;
+      color: #64b5f6;
+      text-decoration: none;
+      border-radius: 8px;
+      transition: color 0.15s ease, background 0.15s ease, transform 0.15s ease;
+    }
+    .miner-stats-link:hover {
+      color: #90caf9;
+      background: rgba(100, 181, 246, 0.12);
+      transform: translateY(-1px);
+    }
+    .miner-stats-icon {
+      width: 1.35rem;
+      height: 1.35rem;
+      display: block;
+    }
+    tbody tr:hover { background: rgba(255, 255, 255, 0.02); }
+    .btn-pause {
+      background: linear-gradient(180deg, #ff5252 0%, #d32f2f 100%) !important;
+      color: #fff !important;
+      box-shadow: 0 2px 10px rgba(244, 67, 54, 0.35);
+    }
+    .miner-status-cell {
+      width: 68px;
+      padding: 0.22rem 0.3rem !important;
+      vertical-align: middle;
+    }
+    .miner-status {
+      display: inline-flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 0.25rem;
+      min-width: 61px;
+      padding: 0.34rem 0.4rem 0.32rem;
+      border-radius: 7px;
+      border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.03);
+    }
+    .miner-status-running {
+      border-color: rgba(0, 230, 118, 0.28);
+      background: linear-gradient(180deg, rgba(0, 230, 118, 0.1), rgba(15, 20, 27, 0.45));
+      box-shadow: none;
+    }
+    .miner-status-paused {
+      border-color: rgba(244, 67, 54, 0.32);
+      background: linear-gradient(180deg, rgba(244, 67, 54, 0.1), rgba(15, 20, 27, 0.45));
+      box-shadow: none;
+    }
+    .miner-status-unknown,
+    .miner-status-error {
+      border-color: var(--border);
+      background: rgba(255, 255, 255, 0.02);
+    }
+    .miner-status-icon-wrap {
+      width: 18px;
+      height: 18px;
+      display: grid;
+      place-items: center;
+    }
+    .miner-status-label {
+      font-size: 0.54rem;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      text-transform: lowercase;
+      line-height: 1;
+    }
+    .miner-status-running .miner-status-label {
+      color: var(--accent);
+      animation: miner-label-blink 1.6s ease-in-out infinite;
+    }
+    .miner-status-paused .miner-status-label {
+      color: #ff6b6b;
+    }
+    .miner-status-unknown .miner-status-label,
+    .miner-status-error .miner-status-label {
+      color: var(--muted);
+      text-transform: none;
+    }
+    @keyframes miner-label-blink {
+      0%, 100% { opacity: 0.65; }
+      50% { opacity: 1; }
+    }
+    .status-spinner {
+      width: 16px;
+      height: 16px;
+      position: relative;
+    }
+    .status-spinner i {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 1.35px;
+      height: 3.5px;
+      margin-left: -0.68px;
+      margin-top: -6.3px;
+      border-radius: 1px;
+      background: var(--accent);
+      transform-origin: center 6.3px;
+      animation: miner-spinner-pulse 1s ease-in-out infinite;
+    }
+    .status-spinner i:nth-child(1)  { transform: rotate(0deg);   animation-delay: 0s; }
+    .status-spinner i:nth-child(2)  { transform: rotate(30deg);  animation-delay: -0.08s; }
+    .status-spinner i:nth-child(3)  { transform: rotate(60deg);  animation-delay: -0.17s; }
+    .status-spinner i:nth-child(4)  { transform: rotate(90deg);  animation-delay: -0.25s; }
+    .status-spinner i:nth-child(5)  { transform: rotate(120deg); animation-delay: -0.33s; }
+    .status-spinner i:nth-child(6)  { transform: rotate(150deg); animation-delay: -0.42s; }
+    .status-spinner i:nth-child(7)  { transform: rotate(180deg); animation-delay: -0.5s; }
+    .status-spinner i:nth-child(8)  { transform: rotate(210deg); animation-delay: -0.58s; }
+    .status-spinner i:nth-child(9)  { transform: rotate(240deg); animation-delay: -0.67s; }
+    .status-spinner i:nth-child(10) { transform: rotate(270deg); animation-delay: -0.75s; }
+    .status-spinner i:nth-child(11) { transform: rotate(300deg); animation-delay: -0.83s; }
+    .status-spinner i:nth-child(12) { transform: rotate(330deg); animation-delay: -0.92s; }
+    @keyframes miner-spinner-pulse {
+      0%, 100% { opacity: 0.2; }
+      50% { opacity: 1; }
+    }
+    .status-pause-icon {
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: linear-gradient(180deg, #ef5350 0%, #c62828 100%);
+      box-shadow: 0 1px 3px rgba(244, 67, 54, 0.28);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 2px;
+    }
+    .status-pause-icon span {
+      display: block;
+      width: 2.25px;
+      height: 6px;
+      border-radius: 0.5px;
+      background: #fff;
+    }
+    .status-error-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #ff8a80;
+      box-shadow: 0 0 6px rgba(255, 138, 128, 0.4);
+    }
+    .energy-stats-sub {
+      margin: -0.35rem 0 0.75rem;
+      color: var(--muted);
+      font-size: 0.82rem;
+    }
+    .energy-stats-panel-30d,
+    .energy-stats-panel-year {
+      margin-top: 1rem;
+    }
+    .energy-stats-panel {
+      background:
+        radial-gradient(circle at 12% 30%, rgba(33, 150, 243, 0.08), transparent 28%),
+        radial-gradient(circle at 88% 70%, rgba(255, 193, 7, 0.08), transparent 26%),
+        var(--surface);
+    }
+    .energy-charts-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 1.25rem;
+      margin-top: 0.5rem;
+    }
+    .energy-chart-card {
+      background: rgba(15, 20, 27, 0.72);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 1.1rem 1.15rem 1rem;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 280px;
+    }
+    .chart-card-head {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 0.35rem 0.75rem;
+      margin-bottom: 0.85rem;
+      width: 100%;
+    }
+    .chart-card-head h6 {
+      margin: 0;
+      flex: 1 1 auto;
+    }
+    .chart-total {
+      margin: 0;
+      font-size: 0.72rem;
+      font-weight: 600;
+      color: var(--accent);
+      text-align: right;
+      line-height: 1.35;
+      max-width: 100%;
+    }
+    .chart-total.consumption-total {
+      color: #ffea00;
+    }
+    .energy-chart-card h6 {
+      margin: 0 0 0.85rem;
+      width: 100%;
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+    .chart-wrap {
+      position: relative;
+      width: min(100%, 220px);
+      height: 220px;
+    }
+    .chart-empty {
+      position: absolute;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.82rem;
+      padding: 1rem;
+    }
+    .chart-empty.visible { display: flex; }
+    .chart-legend {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 0.45rem 0.85rem;
+      margin-top: 0.85rem;
+      width: 100%;
+    }
+    .chart-legend-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      font-size: 0.72rem;
+      color: var(--muted);
+    }
+    .energy-line-panel {
+      margin-top: 1rem;
+      background:
+        radial-gradient(circle at 20% 20%, rgba(102, 187, 106, 0.07), transparent 35%),
+        radial-gradient(circle at 80% 80%, rgba(66, 165, 245, 0.06), transparent 32%),
+        var(--surface);
+    }
+    .energy-line-chart-wrap {
+      position: relative;
+      width: 100%;
+      height: min(340px, 52vw);
+      min-height: 260px;
+      margin-top: 0.5rem;
+    }
+    .energy-line-legend {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 0.5rem 1.1rem;
+      margin-top: 0.75rem;
+      font-size: 0.72rem;
+      color: var(--muted);
+    }
+    .energy-line-legend span {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+    }
+    .energy-line-legend i {
+      display: inline-block;
+      width: 14px;
+      height: 3px;
+      border-radius: 2px;
+    }
+    .chart-legend-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    @media (max-width: 900px) {
+      .energy-charts-grid { grid-template-columns: 1fr; }
+    }
+    .peak-meta {
+      margin: 0.45rem 0 0;
+      font-size: 0.78rem;
+      color: var(--muted);
+      line-height: 1.35;
+    }
+    .stat-card-peak .energy-value {
+      font-size: 1.65rem;
+    }
+    .flow-node-clickable {
+      cursor: pointer;
+      transition: border-color 0.2s ease, transform 0.15s ease, box-shadow 0.2s ease;
+    }
+    .flow-node-clickable:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 14px 32px rgba(0, 0, 0, 0.32);
+      border-color: rgba(0, 230, 118, 0.45) !important;
+    }
+    .flow-node-clickable .flow-config-hint {
+      margin-top: 0.45rem;
+      font-size: 0.7rem;
+      color: rgba(0, 230, 118, 0.75);
+      opacity: 0;
+      transition: opacity 0.2s ease;
+    }
+    .flow-node-clickable:hover .flow-config-hint {
+      opacity: 1;
+    }
+    .flow-config-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 1200;
+      background: rgba(0, 0, 0, 0.62);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 1rem;
+    }
+    .flow-config-overlay.open { display: flex; }
+    .flow-config-modal {
+      width: min(560px, 100%);
+      max-height: min(88vh, 720px);
+      overflow: auto;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 1.25rem 1.35rem 1.1rem;
+      box-shadow: 0 24px 48px rgba(0, 0, 0, 0.45);
+    }
+    .flow-config-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 0.75rem;
+      margin-bottom: 1rem;
+    }
+    .flow-config-head h4 {
+      margin: 0;
+      font-size: 1.1rem;
+      color: #fff;
+    }
+    .flow-config-head p {
+      margin: 0.35rem 0 0;
+      font-size: 0.82rem;
+      color: var(--muted);
+    }
+    .flow-config-close {
+      border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.06);
+      color: #fff;
+      border-radius: 10px;
+      width: 2.1rem;
+      height: 2.1rem;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .flow-config-section {
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 0.9rem 1rem;
+      margin-bottom: 0.85rem;
+      background: rgba(15, 20, 27, 0.55);
+    }
+    .flow-config-section h5 {
+      margin: 0 0 0.55rem;
+      font-size: 0.88rem;
+      color: #fff;
+    }
+    .flow-config-section small {
+      display: block;
+      color: var(--muted);
+      font-size: 0.76rem;
+      margin-bottom: 0.65rem;
+    }
+    .flow-config-enabled {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 0.75rem;
+      font-size: 0.85rem;
+    }
+    .flow-sensor-row {
+      display: grid;
+      grid-template-columns: 1fr auto auto;
+      gap: 0.45rem;
+      align-items: center;
+      margin-bottom: 0.5rem;
+    }
+    .flow-sensor-row select {
+      font-size: 0.82rem;
+    }
+    .flow-sign-select {
+      width: 4.2rem;
+      text-align: center;
+      font-weight: 700;
+    }
+    .flow-sensor-remove {
+      border: 1px solid rgba(244, 67, 54, 0.35);
+      background: rgba(244, 67, 54, 0.12);
+      color: #ff8a80;
+      border-radius: 8px;
+      width: 2rem;
+      height: 2rem;
+      cursor: pointer;
+    }
+    .flow-config-live {
+      margin-top: 0.65rem;
+      padding: 0.55rem 0.7rem;
+      border-radius: 10px;
+      background: rgba(0, 230, 118, 0.1);
+      border: 1px solid rgba(0, 230, 118, 0.25);
+      font-size: 0.85rem;
+      color: var(--accent);
+    }
+    .flow-config-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin-top: 0.25rem;
+    }
+    .flow-config-add {
+      border: 1px dashed rgba(0, 230, 118, 0.45);
+      background: rgba(0, 230, 118, 0.08);
+      color: var(--accent);
+      border-radius: 10px;
+      padding: 0.45rem 0.85rem;
+      font-size: 0.82rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .flow-config-save {
+      border: none;
+      background: linear-gradient(180deg, #00e676 0%, #00c853 100%);
+      color: #0a1410;
+      border-radius: 10px;
+      padding: 0.55rem 1.1rem;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .flow-config-status {
+      margin-top: 0.65rem;
+      font-size: 0.82rem;
+      min-height: 1.2rem;
+    }
+    .flow-config-status.ok { color: var(--accent); }
+    .flow-config-status.err { color: #ff8a80; }
+    .flow-node-custom {
+      border-color: rgba(156, 39, 176, 0.35);
+      background: linear-gradient(180deg, rgba(156, 39, 176, 0.1), rgba(15, 20, 27, 0.9));
+    }
+    #flow_slots_host { display: contents; }
+    .flow-add-btn {
+      border: 2px dashed rgba(0, 230, 118, 0.4);
+      background: rgba(0, 230, 118, 0.06);
+      color: var(--accent);
+      border-radius: 16px;
+      padding: 0.65rem 1rem;
+      font-size: 0.82rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .flow-add-btn:hover {
+      background: rgba(0, 230, 118, 0.12);
+      transform: translateY(-1px);
+    }
+    .chart-config-link {
+      font-size: 0.78rem;
+      color: var(--accent);
+      text-decoration: none;
+      font-weight: 600;
+      opacity: 0.85;
+    }
+    .chart-config-link:hover { opacity: 1; text-decoration: underline; }
+    .panel-title-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+    }
+  </style>
+{% endblock %}
+
+{% block content %}
+  <div class="page-header">
+    <h2>📊 Energieverbrauch Übersicht</h2>
+    <p>Live-Monitoring und Steuerung deiner Miner — Sensoren per Klick auf Stromfluss-Kästchen zuordnen</p>
+  </div>
+
+  <div class="panel" id="public_update_panel">
+    <h5 class="panel-title">Öffentliches Update</h5>
+    <p id="public_update_message" style="color: var(--muted); margin-bottom: 0.9rem;">{{ public_update.message }}</p>
+    <div id="public_update_progress_wrap" hidden style="margin: 0 0 0.9rem;">
+      <div style="display:flex; justify-content:space-between; gap:0.75rem; margin-bottom:0.35rem;">
+        <span id="public_update_progress_label" style="color: var(--muted); font-size: 0.85rem;">Upload läuft…</span>
+        <span id="public_update_progress_pct" style="color: var(--accent); font-weight: 700; font-size: 0.85rem;">0%</span>
+      </div>
+      <div style="height: 12px; border-radius: 999px; background: rgba(255,255,255,0.08); overflow: hidden; border: 1px solid var(--border);">
+        <div id="public_update_progress_bar" style="height: 100%; width: 0%; background: linear-gradient(90deg, #00e676, #00c853); transition: width 0.35s ease;"></div>
+      </div>
+    </div>
+    <div style="display: flex; flex-wrap: wrap; gap: 0.75rem;">
+      <button type="button" class="btn-secondary-custom" id="public_download_btn">Update herunterladen</button>
+      {% if public_update.upload_allowed %}
+      <button type="button" class="btn-primary-custom" id="public_upload_btn">Update hochladen</button>
+      {% endif %}
+    </div>
+  </div>
+
+
+  {% if message %}
+  <div class="panel" style="margin-bottom: 1rem; border-color: var(--accent);">
+    {{ message }}
+  </div>
+  {% endif %}
+
+  <div class="panel flow-panel">
+    <div class="panel-title-row">
+      <h5 class="panel-title" style="margin:0">⚡ Stromfluss</h5>
+      <button type="button" class="flow-add-btn" id="flow_add_custom_btn">＋ Feld hinzufügen</button>
+    </div>
+    <div class="flow-grid" id="flow_grid">
+      <div class="flow-lines"></div>
+      <div class="flow-node flow-node-main">
+        <div class="flow-icon">🔄</div>
+        <div class="flow-label">Inverter</div>
+        <div class="flow-sub">Zentrale Energieverteilung</div>
+      </div>
+      <div id="flow_slots_host"></div>
+    </div>
+  </div>
+
+  <div class="flow-config-overlay" id="flow_config_overlay" aria-hidden="true">
+    <div class="flow-config-modal" role="dialog" aria-labelledby="flow_config_title">
+      <div class="flow-config-head">
+        <div>
+          <h4 id="flow_config_title">Sensoren zuordnen</h4>
+          <p id="flow_config_subtitle">Mehrere Sensoren mit +/− kombinieren</p>
+        </div>
+        <button type="button" class="flow-config-close" id="flow_config_close" aria-label="Schließen">✕</button>
+      </div>
+      <div id="flow_config_sections"></div>
+      <div class="flow-config-actions">
+        <button type="button" class="flow-config-save" id="flow_config_save">💾 Speichern</button>
+      </div>
+      <div class="flow-config-status" id="flow_config_status"></div>
+    </div>
+  </div>
+
+  <div class="panel energy-line-panel">
+    <div class="panel-title-row">
+      <h5 class="panel-title" style="margin:0">📉 Tagesverlauf 24 Stunden</h5>
+      <a href="/statistik-konfigurieren#line" class="chart-config-link">⚙ Liniendiagramm konfigurieren</a>
+    </div>
+    <p class="energy-stats-sub" id="energy_line_date">Live · 1 Messpunkt pro Minute · Reset täglich 0:00 Uhr</p>
+    <div class="energy-line-chart-wrap">
+      <canvas id="chart_energy_line"></canvas>
+    </div>
+    <div class="energy-line-legend" id="energy_line_legend">
+      <span><i style="background:#00ff41"></i> Erzeugung (06 PV + 05 Wasser)</span>
+      <span><i style="background:#ffea00"></i> Verbrauch (Aktueller Verbrauch)</span>
+      <span><i style="background:#42a5f5"></i> Batteriestand %</span>
+      <span><i style="background:#ce93d8"></i> Netz (+ Bezug / − Einspeisung)</span>
+    </div>
+  </div>
+
+  <div class="panel energy-stats-panel">
+    <div class="panel-title-row">
+      <h5 class="panel-title" style="margin:0">📈 Energiestatistik 24 Stunden</h5>
+      <a href="/statistik-konfigurieren#pie" class="chart-config-link">⚙ Kreisdiagramme konfigurieren</a>
+    </div>
+    <p class="energy-stats-sub" id="energy_stats_date">Tageswerte in kWh · Reset täglich 0:00 Uhr</p>
+    <div class="energy-charts-grid">
+      <div class="energy-chart-card">
+        <div class="chart-card-head">
+          <h6>☀️ Erzeugungsmix (kWh)</h6>
+          <p class="chart-total" id="total_erzeugung_24h">Erzeugung 24 Stunden: — kWh</p>
+        </div>
+        <div class="chart-wrap">
+          <canvas id="chart_generation"></canvas>
+          <div class="chart-empty" id="chart_generation_empty">Keine Erzeugungsdaten</div>
+        </div>
+        <div class="chart-legend" id="legend_generation"></div>
+      </div>
+      <div class="energy-chart-card">
+        <div class="chart-card-head">
+          <h6>🏠 Verbrauchsverteilung (kWh)</h6>
+          <p class="chart-total consumption-total" id="total_verbrauch_24h">Verbrauch 24 Stunden: — kWh</p>
+        </div>
+        <div class="chart-wrap">
+          <canvas id="chart_consumption"></canvas>
+          <div class="chart-empty" id="chart_consumption_empty">Keine Verbrauchsdaten</div>
+        </div>
+        <div class="chart-legend" id="legend_consumption"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel energy-stats-panel energy-stats-panel-30d">
+    <h5 class="panel-title">📊 Energiestatistik 30 Tage</h5>
+    <p class="energy-stats-sub" id="energy_stats_30d_date">Monatswerte in kWh · Reset jeden Monat am 1.</p>
+    <div class="energy-charts-grid">
+      <div class="energy-chart-card">
+        <div class="chart-card-head">
+          <h6>☀️ Erzeugungsmix (kWh)</h6>
+          <p class="chart-total" id="total_erzeugung_30d">Erzeugung Monat: — kWh</p>
+        </div>
+        <div class="chart-wrap">
+          <canvas id="chart_generation_30d"></canvas>
+          <div class="chart-empty" id="chart_generation_30d_empty">Keine Erzeugungsdaten</div>
+        </div>
+        <div class="chart-legend" id="legend_generation_30d"></div>
+      </div>
+      <div class="energy-chart-card">
+        <div class="chart-card-head">
+          <h6>🏠 Verbrauchsverteilung (kWh)</h6>
+          <p class="chart-total consumption-total" id="total_verbrauch_30d">Verbrauch Monat: — kWh</p>
+        </div>
+        <div class="chart-wrap">
+          <canvas id="chart_consumption_30d"></canvas>
+          <div class="chart-empty" id="chart_consumption_30d_empty">Keine Verbrauchsdaten</div>
+        </div>
+        <div class="chart-legend" id="legend_consumption_30d"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel energy-stats-panel energy-stats-panel-year">
+    <h5 class="panel-title">🗓️ Energiestatistik Jahr</h5>
+    <p class="energy-stats-sub" id="energy_stats_year_date">Jahreswerte in kWh · Reset jedes Neujahr</p>
+    <div class="energy-charts-grid">
+      <div class="energy-chart-card">
+        <div class="chart-card-head">
+          <h6>☀️ Erzeugungsmix (kWh)</h6>
+          <p class="chart-total" id="total_erzeugung_year">Erzeugung Jahr: — kWh</p>
+        </div>
+        <div class="chart-wrap">
+          <canvas id="chart_generation_year"></canvas>
+          <div class="chart-empty" id="chart_generation_year_empty">Keine Erzeugungsdaten</div>
+        </div>
+        <div class="chart-legend" id="legend_generation_year"></div>
+      </div>
+      <div class="energy-chart-card">
+        <div class="chart-card-head">
+          <h6>🏠 Verbrauchsverteilung (kWh)</h6>
+          <p class="chart-total consumption-total" id="total_verbrauch_year">Verbrauch Jahr: — kWh</p>
+        </div>
+        <div class="chart-wrap">
+          <canvas id="chart_consumption_year"></canvas>
+          <div class="chart-empty" id="chart_consumption_year_empty">Keine Verbrauchsdaten</div>
+        </div>
+        <div class="chart-legend" id="legend_consumption_year"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel hashrate-chart-panel">
+    <h5 class="panel-title">⚡ Gesamthashrate (Live)</h5>
+    <p class="energy-stats-sub">1 Punkt pro Minute · Grün = Ist · Gelb = Soll der laufenden Miner (Nennleistung)</p>
+    <div class="hashrate-chart-meta">
+      <span>Live: <strong class="live-val" id="hashrate_live_total">—</strong></span>
+      <span>Soll: <strong class="target-val" id="hashrate_target_total">—</strong></span>
+      <span>SoC-Soll 20:00: <strong class="soc-fill-val" id="soc_fill_target_20">—</strong></span>
+      <span id="hashrate_chart_updated">—</span>
+    </div>
+    <div class="hashrate-chart-wrap">
+      <canvas id="chart_hashrate_total"></canvas>
+    </div>
+    <div class="hashrate-chart-legend">
+      <span><i class="dot-live"></i> Live-Gesamthashrate</span>
+      <span><i class="dot-target"></i> Soll-Hashrate (laufende Miner)</span>
+    </div>
+  </div>
+
+  {% if recovery_pending %}
+  <div class="panel recovery-panel" id="recovery-banner">
+    <h5 class="panel-title">⚠️ Miner nicht erreichbar</h5>
+    <p class="recovery-hint">Folgende Miner konnten per MAC nicht gefunden werden. Existieren sie noch?</p>
+    {% for item in recovery_pending %}
+    <div class="recovery-item" data-ip="{{ item.ip }}">
+      <strong>{{ item.label }}</strong>
+      <span class="recovery-meta">IP {{ item.ip }}{% if item.mac %} · MAC {{ item.mac }}{% endif %}</span>
+      <div class="recovery-actions">
+        <button type="button" class="btn-action btn-resume recovery-yes" data-ip="{{ item.ip }}">Ja, Gerät existiert</button>
+        <button type="button" class="btn-delete recovery-no" data-ip="{{ item.ip }}">Nein, entfernen</button>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  <style>
+    .recovery-panel { border-color: rgba(255, 152, 0, 0.45); margin-bottom: 1rem; }
+    .recovery-item { padding: 0.75rem 0; border-bottom: 1px solid var(--border); }
+    .recovery-item:last-child { border-bottom: none; }
+    .recovery-meta { display: block; color: var(--muted, #9aa4b2); font-size: 0.85rem; margin: 0.25rem 0 0.5rem; }
+    .recovery-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+    .ip-main { font-weight: 700; }
+    .mac-sub {
+      font-size: 0.78rem;
+      color: var(--muted, #9aa4b2);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      margin-top: 0.15rem;
+    }
+    .mac-sub .mac-pending { font-style: italic; opacity: 0.85; }
+    .recovery-badge { font-size: 0.72rem; padding: 0.15rem 0.45rem; border-radius: 6px; margin-left: 0.35rem; }
+    .recovery-badge-ok { background: rgba(0,230,118,0.15); color: #69f0ae; }
+    .recovery-badge-missing { background: rgba(255,82,82,0.15); color: #ff8a80; }
+    .recovery-badge-awaiting { background: rgba(255,193,7,0.15); color: #ffd54f; }
+    .recovery-badge-searching { background: rgba(100,181,246,0.15); color: #90caf9; }
+  </style>
+  {% endif %}
+
+  <div class="panel">
+    <h5 class="panel-title">🧮 Miner Übersicht</h5>
+    <div class="table-wrap">
+      <table class="miner-table">
+        <colgroup>
+          <col class="col-ip">
+          <col class="col-user">
+          <col class="col-stats">
+          <col class="col-status">
+          <col class="col-model">
+          <col class="col-note">
+          <col class="col-actions">
+          <col class="col-delete">
+        </colgroup>
+        <thead>
+          <tr>
+            <th>IP / MAC</th>
+            <th>Benutzername</th>
+            <th class="miner-stats-head">Hashrate</th>
+            <th>Status</th>
+            <th>Modell</th>
+            <th>Notiz</th>
+            <th>Aktionen</th>
+            <th>Löschen</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for miner in miners %}
+          <tr>
+            <td class="ip-cell">
+              <div class="ip-main">{{ miner.ip }}</div>
+              <div class="mac-sub" data-ip="{{ miner.ip }}" title="MAC-Adresse">
+                {% if miner.get('mac') %}
+                  {{ miner.get('mac') }}
+                {% else %}
+                  <span class="mac-pending">MAC wird ermittelt…</span>
+                {% endif %}
+              </div>
+              {% set rs = miner.get('recovery_state', 'ok') %}
+              {% if rs and rs != 'ok' %}
+              {% set badge = 'searching' if rs == 'searching' else ('awaiting' if rs == 'awaiting_user' else 'missing') %}
+              <span class="recovery-badge recovery-badge-{{ badge }}">{% if rs == 'searching' %}Suche {{ miner.get('recovery_miss_streak', 0) }}/20{% else %}{{ rs }}{% endif %}</span>
+              {% endif %}
+            </td>
+            <td>{{ miner.username }}</td>
+            <td class="miner-stats-cell">
+              <div class="miner-stats-stack">
+                <span class="miner-hashrate" data-ip="{{ miner.ip }}" title="Live-Hashrate">—</span>
+                <a href="http://{{ miner.ip }}/" target="_blank" rel="noopener noreferrer"
+                   class="miner-stats-link" title="Miner-Statistik öffnen">
+                  <svg class="miner-stats-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none"
+                       stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="3 17 9 11 14 14 21 7"></polyline>
+                  </svg>
+                </a>
+              </div>
+            </td>
+            <td class="miner-status-cell">
+              <div class="miner-status miner-status-unknown"
+                   data-ip="{{ miner.ip }}"
+                   data-status="{{ miner_status.get(miner.ip, '') }}">
+                <span class="miner-status-label">—</span>
+              </div>
+            </td>
+            <td>{{ miner.model or '-' }}</td>
+            <td>
+              <form method="post" action="/update_note" class="note-form ajax-form">
+                <input type="hidden" name="ip" value="{{ miner.ip }}">
+                <input type="text" name="note" value="{{ miner.note or '' }}" placeholder="Notiz" class="form-control">
+                <button type="submit" class="btn btn-save" title="Notiz speichern">💾</button>
+              </form>
+            </td>
+            <td>
+              <form method="post" action="/miner_action" class="action-form ajax-form">
+                <input type="hidden" name="ip" value="{{ miner.ip }}">
+                <button type="submit" name="action" value="resume" class="btn-action btn-resume">Resume</button>
+                <button type="submit" name="action" value="pause" class="btn-action btn-pause">Pause</button>
+              </form>
+            </td>
+            <td>
+              <form method="post" action="/delete_miner" onsubmit="return confirm('Diesen Miner wirklich löschen?');">
+                <input type="hidden" name="ip" value="{{ miner.ip }}">
+                <button type="submit" class="btn-delete">🗑️ Löschen</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h5 class="panel-title">🔌 Schaltbare Geräte (Home Assistant)</h5>
+    {% if ha_devices %}
+    <div class="table-wrap">
+      <table class="miner-table ha-device-table">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Entity-ID</th>
+            <th>Status</th>
+            <th>Notiz</th>
+            <th>Aktionen</th>
+            <th>Löschen</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for dev in ha_devices %}
+          <tr>
+            <td>{{ dev.label or dev.entity_id }}</td>
+            <td class="ip-cell"><code style="font-size: 0.78rem;">{{ dev.entity_id }}</code></td>
+            <td class="miner-status-cell">
+              <div class="miner-status miner-status-unknown ha-device-status"
+                   data-entity-id="{{ dev.entity_id }}"
+                   data-status="{{ ha_status.get(dev.entity_id, '') }}">
+                <span class="miner-status-label">—</span>
+              </div>
+            </td>
+            <td>
+              <form method="post" action="/update_device_note" class="note-form ajax-form">
+                <input type="hidden" name="entity_id" value="{{ dev.entity_id }}">
+                <input type="text" name="note" value="{{ dev.note or '' }}" placeholder="Notiz" class="form-control">
+                <button type="submit" class="btn btn-save" title="Notiz speichern">💾</button>
+              </form>
+            </td>
+            <td>
+              <form method="post" action="/device_action" class="action-form ajax-form">
+                <input type="hidden" name="entity_id" value="{{ dev.entity_id }}">
+                <button type="submit" name="action" value="on" class="btn-action btn-resume">Ein</button>
+                <button type="submit" name="action" value="off" class="btn-action btn-pause">Aus</button>
+              </form>
+            </td>
+            <td>
+              <form method="post" action="/delete_device" onsubmit="return confirm('Dieses Gerät wirklich entfernen?');">
+                <input type="hidden" name="entity_id" value="{{ dev.entity_id }}">
+                <button type="submit" class="btn-delete">🗑️ Löschen</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p style="color: var(--muted); margin: 0;">
+      Noch keine HA-Geräte. <a href="/add_device" style="color: var(--accent);">Gerät hinzufügen</a>
+    </p>
+    {% endif %}
+  </div>
+
+  <div class="panel">
+    <h5 class="panel-title">🧷 Schaltbare Gibbo-Pins</h5>
+    {% if gpio_pins %}
+    <div class="table-wrap">
+      <table class="miner-table ha-device-table">
+        <thead>
+          <tr>
+            <th>Pin</th>
+            <th>Name</th>
+            <th>Last (kW)</th>
+            <th>Status</th>
+            <th>Beschreibung</th>
+            <th>Aktionen</th>
+            <th>Löschen</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for pin in gpio_pins %}
+          <tr>
+            <td class="ip-cell"><code>Board {{ pin.pin }}</code></td>
+            <td>{{ pin.label or pin.id }}</td>
+            <td>{% if pin.power_kw is not none and pin.power_kw != '' %}{{ '%.2f'|format(pin.power_kw|float) }}{% else %}—{% endif %}</td>
+            <td class="miner-status-cell">
+              <div class="miner-status miner-status-unknown gpio-pin-status"
+                   data-pin-id="{{ pin.id }}"
+                   data-status="{{ gpio_status.get(pin.id, '') }}">
+                <span class="miner-status-label">—</span>
+              </div>
+            </td>
+            <td>
+              <form method="post" action="/update_gpio_pin_note" class="note-form ajax-form">
+                <input type="hidden" name="pin_id" value="{{ pin.id }}">
+                <input type="text" name="note" value="{{ pin.note or '' }}" placeholder="Kurzbeschreibung" class="form-control">
+                <button type="submit" class="btn btn-save" title="Beschreibung speichern">💾</button>
+              </form>
+            </td>
+            <td>
+              <form method="post" action="/gpio_pin_action" class="action-form ajax-form">
+                <input type="hidden" name="pin_id" value="{{ pin.id }}">
+                <button type="submit" name="action" value="on" class="btn-action btn-resume">Ein</button>
+                <button type="submit" name="action" value="off" class="btn-action btn-pause">Aus</button>
+              </form>
+            </td>
+            <td>
+              <form method="post" action="/delete_gpio_pin" onsubmit="return confirm('Diesen Gibbo-Pin wirklich entfernen?');">
+                <input type="hidden" name="pin_id" value="{{ pin.id }}">
+                <button type="submit" class="btn-delete">🗑️ Löschen</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <p style="color: var(--muted); margin: 0.75rem 0 0; font-size: 0.85rem;">
+      Pin/Last zuweisen unter <a href="/add_device#gibbo-pins" style="color: var(--accent);">Geräte hinzufügen → Schaltbare Gibbo-Pins</a>
+    </p>
+    {% else %}
+    <p style="color: var(--muted); margin: 0;">
+      Noch keine Gibbo-Pins. <a href="/add_device#gibbo-pins" style="color: var(--accent);">Pin hinzufügen</a>
+    </p>
+    {% endif %}
+  </div>
+
+{% endblock %}
+
+{% block extra_scripts %}
+
+  <script>
+    (function () {
+      const messageEl = document.getElementById("public_update_message");
+      const downloadBtn = document.getElementById("public_download_btn");
+      const progressWrap = document.getElementById("public_update_progress_wrap");
+      const progressBar = document.getElementById("public_update_progress_bar");
+      const progressPct = document.getElementById("public_update_progress_pct");
+      const progressLabel = document.getElementById("public_update_progress_label");
+      let pollTimer = null;
+
+      const PHASE_PCT = {
+        start: 8,
+        export: 28,
+        scan: 48,
+        push: 78,
+        apply: 78,
+        fetch: 35,
+        done: 100,
+        error: 100,
+      };
+
+      function setProgress(visible, percent, label) {
+        if (!progressWrap || !progressBar || !progressPct) return;
+        progressWrap.hidden = !visible;
+        const pct = Math.max(0, Math.min(100, Number(percent) || 0));
+        progressBar.style.width = pct + "%";
+        progressPct.textContent = Math.round(pct) + "%";
+        if (progressLabel && label) progressLabel.textContent = label;
+      }
+
+      function ensureUploadButton(allowed) {
+        let button = document.getElementById("public_upload_btn");
+        if (!allowed) {
+          if (button) button.remove();
+          return;
+        }
+        if (button) return;
+        if (!downloadBtn) return;
+        button = document.createElement("button");
+        button.type = "button";
+        button.id = "public_upload_btn";
+        button.className = "btn-primary-custom";
+        button.textContent = "Update hochladen";
+        button.addEventListener("click", onUpload);
+        downloadBtn.insertAdjacentElement("afterend", button);
+      }
+
+      function applyStatus(data) {
+        if (messageEl && data.message) messageEl.textContent = data.message;
+        ensureUploadButton(Boolean(data.upload_allowed));
+        const busy = Boolean(data.uploading || data.downloading);
+        if (downloadBtn) downloadBtn.disabled = busy;
+        const uploadBtn = document.getElementById("public_upload_btn");
+        if (uploadBtn) uploadBtn.disabled = busy;
+        if (busy) {
+          const phase = String(data.phase || "start");
+          const pct = (data.progress != null) ? Number(data.progress) : (PHASE_PCT[phase] != null ? PHASE_PCT[phase] : 20);
+          setProgress(true, pct, data.message || (data.uploading ? "Upload läuft…" : "Download läuft…"));
+        } else if (data.phase === "done") {
+          setProgress(true, 100, data.message || "Fertig.");
+          setTimeout(function () { setProgress(false, 0, ""); }, 3500);
+        } else if (data.phase === "error") {
+          setProgress(true, 100, data.message || "Fehler.");
+          if (progressBar) progressBar.style.background = "linear-gradient(90deg, #ef5350, #e53935)";
+        } else {
+          setProgress(false, 0, "");
+          if (progressBar) progressBar.style.background = "linear-gradient(90deg, #00e676, #00c853)";
+        }
+        if (busy && !pollTimer) pollTimer = setInterval(refreshUpdateStatus, 1200);
+        if (!busy && pollTimer) {
+          clearInterval(pollTimer);
+          pollTimer = null;
+        }
+      }
+
+      async function refreshUpdateStatus() {
+        try {
+          const response = await fetch("/api/public-update/status", { credentials: "same-origin" });
+          const data = await response.json();
+          applyStatus(data);
+        } catch (err) {
+          if (messageEl) messageEl.textContent = "Status nicht erreichbar: " + (err.message || err);
+        }
+      }
+
+      async function postUpdate(url) {
+        try {
+          const response = await fetch(url, {
+            method: "POST",
+            credentials: "same-origin",
+            headers: { "Accept": "application/json" },
+          });
+          const data = await response.json();
+          applyStatus(data);
+          if (window.showAppToast) window.showAppToast(data.message || "", data.ok ? "ok" : "error");
+        } catch (err) {
+          if (messageEl) messageEl.textContent = "Anfrage fehlgeschlagen: " + (err.message || err);
+          if (window.showAppToast) window.showAppToast("Upload-Anfrage fehlgeschlagen", "error");
+          setProgress(false, 0, "");
+        }
+      }
+
+      function onUpload() {
+        const button = document.getElementById("public_upload_btn");
+        if (!button || button.disabled) return;
+        setProgress(true, 5, "Upload wird gestartet…");
+        if (messageEl) messageEl.textContent = "Upload wird gestartet…";
+        button.disabled = true;
+        postUpdate("/api/public-update/upload");
+      }
+
+      if (downloadBtn) {
+        downloadBtn.addEventListener("click", function () {
+          setProgress(true, 5, "Download wird gestartet…");
+          if (messageEl) messageEl.textContent = "Download wird gestartet…";
+          postUpdate("/api/public-update/download");
+        });
+      }
+      const existingUpload = document.getElementById("public_upload_btn");
+      if (existingUpload) existingUpload.addEventListener("click", onUpload);
+      refreshUpdateStatus();
+    })();
+  </script>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script>
+    const CHART_COLORS = {
+      pv: "#ffc107",
+      hydro: "#42a5f5",
+      ladung: "#66bb6a",
+      entladung: "#ff7043",
+      betrieb: "#ef5350",
+      haus: "#9ccc65",
+      netz: "#8b9cb3",
+      verkauf: "#26c6da",
+    };
+    const LINE_CHART_COLORS = {
+      erzeugung: "#00ff41",
+      betrieb: "#ffea00",
+      netz: "#ce93d8",
+      batterie: "#42a5f5",
+    };
+    let generationChart = null;
+    let consumptionChart = null;
+    let energyLineChart = null;
+    let hashrateLineChart = null;
+    const chartInstances = {};
+
+    function formatDateDe(iso) {
+      if (!iso) return "";
+      const parts = iso.split("-");
+      if (parts.length !== 3) return iso;
+      return parts[2] + "." + parts[1] + "." + parts[0];
+    }
+
+    function buildPieChart(canvasId, emptyId, legendId, labels, values, colors, unit) {
+      const canvas = document.getElementById(canvasId);
+      const emptyEl = document.getElementById(emptyId);
+      const legendEl = document.getElementById(legendId);
+      if (!canvas || typeof Chart === "undefined") return null;
+
+      const total = values.reduce((a, b) => a + b, 0);
+      const hasData = total > 0;
+      const unitLabel = unit || "kWh";
+
+      if (emptyEl) emptyEl.classList.toggle("visible", !hasData);
+      canvas.style.opacity = hasData ? "1" : "0.15";
+
+      if (legendEl) {
+        legendEl.innerHTML = labels.map((label, i) =>
+          '<span class="chart-legend-item">' +
+          '<span class="chart-legend-dot" style="background:' + colors[i] + '"></span>' +
+          label + ": " + values[i].toFixed(1) + " " + unitLabel + '</span>'
+        ).join("");
+      }
+
+      const chartData = {
+        labels: labels,
+        datasets: [{
+          data: hasData ? values : [1],
+          backgroundColor: hasData ? colors : ["rgba(255,255,255,0.06)"],
+          borderColor: "rgba(15, 20, 27, 0.9)",
+          borderWidth: 2,
+          hoverOffset: 6,
+        }],
+      };
+
+      const options = {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: "rgba(20, 26, 34, 0.95)",
+            borderColor: "rgba(255,255,255,0.08)",
+            borderWidth: 1,
+            titleColor: "#fff",
+            bodyColor: "#8b9cb3",
+            callbacks: {
+              label: (ctx) => {
+                if (!hasData) return "n/a";
+                const val = ctx.parsed || 0;
+                const pct = total > 0 ? ((val / total) * 100).toFixed(1) : 0;
+                return " " + val.toFixed(1) + " " + unitLabel + " (" + pct + "%)";
+              },
+            },
+          },
+        },
+      };
+
+      const existing = chartInstances[canvasId];
+      if (existing) {
+        existing.data = chartData;
+        existing.options = options;
+        existing.update("none");
+        return existing;
+      }
+
+      const chart = new Chart(canvas, { type: "pie", data: chartData, options: options });
+      chartInstances[canvasId] = chart;
+      if (canvasId === "chart_generation") generationChart = chart;
+      if (canvasId === "chart_consumption") consumptionChart = chart;
+      return chart;
+    }
+
+    function formatKwhTotal(n) {
+      const v = Number(n);
+      if (!Number.isFinite(v)) return "—";
+      return v.toLocaleString("de-DE", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+    }
+
+    function setChartTotals(totals, erzeugId, verbrauchId, erzeugLabel, verbrauchLabel) {
+      const t = totals || {};
+      const erEl = document.getElementById(erzeugId);
+      const vbEl = document.getElementById(verbrauchId);
+      if (erEl) {
+        erEl.textContent = erzeugLabel + ": " + formatKwhTotal(t.erzeugung_gesamt_kwh) + " kWh";
+      }
+      if (vbEl) {
+        vbEl.textContent = verbrauchLabel + ": " + formatKwhTotal(t.verbrauch_gesamt_kwh) + " kWh";
+      }
+    }
+
+    function pieFromConfig(pieData, legacyObj, legacyLabels, legacyColors) {
+      if (pieData && pieData.labels && pieData.labels.length) {
+        return {
+          labels: pieData.labels,
+          values: pieData.values || [],
+          colors: pieData.colors || pieData.labels.map(() => "#888"),
+        };
+      }
+      return {
+        labels: legacyLabels,
+        values: legacyObj,
+        colors: legacyColors,
+      };
+    }
+
+    function updateEnergyChartsFromData(data, ids, dateElId, dateFormatter, totalIds) {
+      const gen = data.generation || {};
+      const con = data.consumption || {};
+      const unit = data.unit || "kWh";
+      if (totalIds) {
+        setChartTotals(
+          data.totals,
+          totalIds.erzeug,
+          totalIds.verbrauch,
+          totalIds.erzeugLabel,
+          totalIds.verbrauchLabel
+        );
+      }
+
+      const genPie = pieFromConfig(
+        data.pie_generation,
+        [gen.pv || 0, gen.hydro || 0, gen.ladung || 0, gen.entladung || 0],
+        ["PV-Platten", "Wasserkraft", "Ladung Batterie", "Entladung"],
+        [CHART_COLORS.pv, CHART_COLORS.hydro, CHART_COLORS.ladung, CHART_COLORS.entladung]
+      );
+      const conPie = pieFromConfig(
+        data.pie_consumption,
+        [con.betrieb || 0, con.haus || 0, con.netz || 0, con.verkauf || 0],
+        ["Betrieb", "Wohnhaus", "Netz", "Verkauf"],
+        [CHART_COLORS.betrieb, CHART_COLORS.haus, CHART_COLORS.netz, CHART_COLORS.verkauf]
+      );
+
+      buildPieChart(
+        ids.generation,
+        ids.generationEmpty,
+        ids.generationLegend,
+        genPie.labels,
+        genPie.values,
+        genPie.colors,
+        unit
+      );
+      buildPieChart(
+        ids.consumption,
+        ids.consumptionEmpty,
+        ids.consumptionLegend,
+        conPie.labels,
+        conPie.values,
+        conPie.colors,
+        unit
+      );
+
+      const dateEl = document.getElementById(dateElId);
+      if (dateEl && dateFormatter) {
+        dateEl.textContent = dateFormatter(data);
+      }
+    }
+
+    function updateEnergyCharts24h(data) {
+      updateEnergyChartsFromData(data, {
+        generation: "chart_generation",
+        generationEmpty: "chart_generation_empty",
+        generationLegend: "legend_generation",
+        consumption: "chart_consumption",
+        consumptionEmpty: "chart_consumption_empty",
+        consumptionLegend: "legend_consumption",
+      }, "energy_stats_date", (d) => {
+        const label = formatDateDe(d.date);
+        return "Tageswerte in kWh · Stand " + label + " · Reset täglich 0:00 Uhr";
+      }, {
+        erzeug: "total_erzeugung_24h",
+        verbrauch: "total_verbrauch_24h",
+        erzeugLabel: "Erzeugung 24 Stunden",
+        verbrauchLabel: "Verbrauch 24 Stunden",
+      });
+    }
+
+    function updateEnergyCharts30d(data) {
+      updateEnergyChartsFromData(data, {
+        generation: "chart_generation_30d",
+        generationEmpty: "chart_generation_30d_empty",
+        generationLegend: "legend_generation_30d",
+        consumption: "chart_consumption_30d",
+        consumptionEmpty: "chart_consumption_30d_empty",
+        consumptionLegend: "legend_consumption_30d",
+      }, "energy_stats_30d_date", (d) => {
+        const start = formatDateDe(d.period_start);
+        const end = formatDateDe(d.period_end);
+        const day = d.days_elapsed || 1;
+        const total = d.period_days || 30;
+        return "Zeitraum " + start + " – " + end + " · Tag " + day + " von " + total + " · Reset jeden Monat am 1.";
+      }, {
+        erzeug: "total_erzeugung_30d",
+        verbrauch: "total_verbrauch_30d",
+        erzeugLabel: "Erzeugung Monat",
+        verbrauchLabel: "Verbrauch Monat",
+      });
+    }
+
+    function updateEnergyChartsYear(data) {
+      updateEnergyChartsFromData(data, {
+        generation: "chart_generation_year",
+        generationEmpty: "chart_generation_year_empty",
+        generationLegend: "legend_generation_year",
+        consumption: "chart_consumption_year",
+        consumptionEmpty: "chart_consumption_year_empty",
+        consumptionLegend: "legend_consumption_year",
+      }, "energy_stats_year_date", (d) => {
+        const start = formatDateDe(d.period_start);
+        const end = formatDateDe(d.period_end);
+        const day = d.days_elapsed || 1;
+        const total = d.period_days || 365;
+        const year = d.period_year || "";
+        return "Jahr " + year + " · " + start + " – " + end + " · Tag " + day + " von " + total + " · Reset Neujahr";
+      }, {
+        erzeug: "total_erzeugung_year",
+        verbrauch: "total_verbrauch_year",
+        erzeugLabel: "Erzeugung Jahr",
+        verbrauchLabel: "Verbrauch Jahr",
+      });
+    }
+
+    function updateEnergyStats24h() {
+      fetch('/energy_stats_24h')
+        .then(response => response.json())
+        .then(data => updateEnergyCharts24h(data))
+        .catch(() => {});
+    }
+
+    function hexToRgba(hex, alpha) {
+      const h = String(hex || "#888").replace("#", "");
+      const r = parseInt(h.substring(0, 2), 16) || 0;
+      const g = parseInt(h.substring(2, 4), 16) || 0;
+      const b = parseInt(h.substring(4, 6), 16) || 0;
+      return "rgba(" + r + "," + g + "," + b + "," + alpha + ")";
+    }
+
+    function buildEnergyLineChart(data) {
+      const canvas = document.getElementById("chart_energy_line");
+      if (!canvas || typeof Chart === "undefined") return;
+
+      const labels = data.labels || [];
+      const hasData = labels.length > 0;
+      const nowM = data.now_minutes || 0;
+
+      const pointRadius = labels.length > 120 ? 0 : labels.length > 40 ? 1 : 2;
+
+      let datasets = [];
+      const configured = data.series || [];
+      if (configured.length) {
+        configured.forEach((ser, idx) => {
+          const isPercent = ser.y_axis === "percent";
+          datasets.push({
+            label: ser.label || ser.id,
+            data: ser.data || [],
+            borderColor: ser.color || "#42a5f5",
+            backgroundColor: ser.fill ? hexToRgba(ser.color, 0.22) : "transparent",
+            fill: ser.fill ? (isPercent ? false : "origin") : false,
+            tension: isPercent ? 0.35 : 0.15,
+            pointRadius: isPercent ? 0 : pointRadius,
+            pointHoverRadius: isPercent ? 3 : 4,
+            borderWidth: isPercent ? 2.5 : 2,
+            yAxisID: isPercent ? "y1" : "y",
+            order: isPercent ? 1 : idx + 2,
+          });
+        });
+        const legendEl = document.getElementById("energy_line_legend");
+        if (legendEl) {
+          legendEl.innerHTML = configured.map(ser =>
+            '<span><i style="background:' + (ser.color || "#888") + '"></i> ' +
+            (ser.label || ser.id) + '</span>'
+          ).join("");
+        }
+      } else {
+        datasets = [
+          {
+            label: "Erzeugung",
+            data: data.erzeugung || [],
+            borderColor: LINE_CHART_COLORS.erzeugung,
+            backgroundColor: "rgba(0, 255, 65, 0.2)",
+            fill: true,
+            tension: 0.15,
+            pointRadius: pointRadius,
+            pointHoverRadius: 4,
+            yAxisID: "y",
+            order: 2,
+          },
+          {
+            label: "Aktueller Verbrauch",
+            data: data.betrieb || [],
+            borderColor: LINE_CHART_COLORS.betrieb,
+            backgroundColor: "transparent",
+            fill: false,
+            tension: 0.15,
+            pointRadius: pointRadius,
+            yAxisID: "y",
+            order: 3,
+          },
+          {
+            label: "Netz",
+            data: data.netz || [],
+            borderColor: LINE_CHART_COLORS.netz,
+            backgroundColor: "rgba(206, 147, 216, 0.18)",
+            fill: "origin",
+            tension: 0.1,
+            pointRadius: pointRadius,
+            yAxisID: "y",
+            order: 4,
+          },
+          {
+            label: "Batterie %",
+            data: data.soc || [],
+            borderColor: LINE_CHART_COLORS.batterie,
+            backgroundColor: "transparent",
+            fill: false,
+            tension: 0.35,
+            pointRadius: 0,
+            borderWidth: 2.5,
+            yAxisID: "y1",
+            order: 1,
+          },
+        ];
+      }
+
+      const options = {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: "index", intersect: false },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: "rgba(20, 26, 34, 0.95)",
+            borderColor: "rgba(255,255,255,0.08)",
+            borderWidth: 1,
+            callbacks: {
+              label: (ctx) => {
+                const v = ctx.parsed.y;
+                if (v == null) return "";
+                if (ctx.dataset.yAxisID === "y1") {
+                  return " " + ctx.dataset.label + ": " + v.toFixed(0) + " %";
+                }
+                return " " + ctx.dataset.label + ": " + v.toFixed(1) + " kW";
+              },
+            },
+          },
+          annotation: undefined,
+        },
+        scales: {
+          x: {
+            grid: { color: "rgba(255,255,255,0.06)" },
+            ticks: {
+              color: "#8b9cb3",
+              maxTicksLimit: 25,
+              font: { size: 10 },
+              callback: function(val, index) {
+                const lbl = (this.chart?.data?.labels?.[index]) || "";
+                if (!lbl || !lbl.endsWith(":00")) return "";
+                return lbl;
+              },
+            },
+          },
+          y: {
+            type: "linear",
+            position: "left",
+            title: { display: true, text: "kW", color: "#8b9cb3", font: { size: 11 } },
+            grid: { color: "rgba(255,255,255,0.06)" },
+            ticks: { color: "#8b9cb3" },
+          },
+          y1: {
+            type: "linear",
+            position: "right",
+            min: 0,
+            max: 100,
+            title: { display: true, text: "%", color: LINE_CHART_COLORS.batterie, font: { size: 11 } },
+            grid: { drawOnChartArea: false },
+            ticks: { color: LINE_CHART_COLORS.batterie, callback: (v) => v + "%" },
+          },
+        },
+      };
+
+      const chartData = { labels, datasets };
+
+      const meta = { nowM, minutes: data.minutes || [] };
+
+      if (energyLineChart) {
+        energyLineChart.data = chartData;
+        energyLineChart.options = options;
+        energyLineChart.$lineMeta = meta;
+        energyLineChart.update("none");
+        return;
+      }
+
+      const nowLinePlugin = {
+        id: "nowLine",
+        afterDraw(chart) {
+          const m = chart.$lineMeta;
+          const xs = chart.scales.x;
+          const ys = chart.scales.y;
+          if (!m || !xs || !ys) return;
+          const idx = Math.min(Math.max(0, Math.round(m.nowM)), (m.minutes.length || 1) - 1);
+          const x = xs.getPixelForValue(idx);
+          const ctx = chart.ctx;
+          ctx.save();
+          ctx.strokeStyle = "rgba(66, 165, 245, 0.75)";
+          ctx.lineWidth = 1.5;
+          ctx.setLineDash([5, 4]);
+          ctx.beginPath();
+          ctx.moveTo(x, ys.top);
+          ctx.lineTo(x, ys.bottom);
+          ctx.stroke();
+          ctx.restore();
+        },
+      };
+
+      energyLineChart = new Chart(canvas, {
+        type: "line",
+        data: chartData,
+        options: options,
+        plugins: [nowLinePlugin],
+      });
+      energyLineChart.$lineMeta = meta;
+    }
+
+    function updateEnergyLineChart() {
+      fetch('/energy_timeseries_24h')
+        .then((r) => r.json())
+        .then((data) => {
+          buildEnergyLineChart(data);
+          const el = document.getElementById("energy_line_date");
+          if (el && data.date) {
+            const label = formatDateDe(data.date);
+            const n = (data.labels || []).length;
+            el.textContent =
+              "Live · " + n + " Minuten (00:00–jetzt) · Stand " + label + " · Reset täglich 0:00 Uhr";
+          }
+        })
+        .catch(() => {});
+    }
+
+    function updateEnergyStats30d() {
+      fetch('/energy_stats_30d')
+        .then(response => response.json())
+        .then(data => updateEnergyCharts30d(data))
+        .catch(() => {});
+    }
+
+    function updateEnergyStatsYear() {
+      fetch('/energy_stats_year')
+        .then(response => response.json())
+        .then(data => updateEnergyChartsYear(data))
+        .catch(() => {});
+    }
+
+    function formatBattery(soc) {
+      if (soc === null || soc === undefined || soc === "" || soc === "n/a") return "n/a";
+      const n = String(soc).replace("%", "").trim();
+      return n ? n + " %" : "n/a";
+    }
+    function setBatteryDisplay(data) {
+      const soc = (typeof data === "object" && data !== null) ? data.soc : data;
+      const text = formatBattery(soc);
+      const flowElement = document.getElementById("live_flow_battery_soc");
+      if (flowElement) flowElement.innerText = text;
+
+      const wrap = document.getElementById("flow_battery_power_wrap");
+      const kwEl = document.getElementById("live_flow_battery_kw");
+      const arrowEl = document.getElementById("live_flow_battery_arrow");
+      if (!wrap || !kwEl || !arrowEl) return;
+
+      const mode = (typeof data === "object" && data) ? data.mode : "idle";
+      const displayKw = (typeof data === "object" && data) ? data.display_kw : null;
+
+      wrap.classList.remove("charging", "discharging", "is-hidden");
+      if (mode === "charging" && displayKw !== null && displayKw !== undefined) {
+        wrap.classList.add("charging");
+        const n = Number(displayKw);
+        kwEl.textContent = (n > 0 ? "+" : "") + n.toFixed(1) + " kW";
+        arrowEl.textContent = "→";
+        arrowEl.title = "Laden (Pfeil zur Batterie)";
+      } else if (mode === "discharging" && displayKw !== null && displayKw !== undefined) {
+        wrap.classList.add("discharging");
+        const n = Number(displayKw);
+        kwEl.textContent = "+" + Math.abs(n).toFixed(1) + " kW";
+        arrowEl.textContent = "→";
+        arrowEl.title = "Entladen";
+      } else {
+        wrap.classList.add("is-hidden");
+      }
+    }
+    const FLOW_BUILTIN = [
+      { key: "pv", slot: 0, fields: "pv", cls: "flow-node-pv", icon: "☀️", label: "PV-Platten", sub: "Photovoltaik", valueId: "live_pv_kw", valueKey: "pv" },
+      { key: "wasserkraft", slot: 1, fields: "wasserkraft", cls: "flow-node-hydro", icon: "💧", label: "Wasserkraftwerk", sub: "Erzeugung Wasser", valueId: "live_hydro_kw", valueKey: "hydro" },
+      { key: "kelag", slot: 2, fields: "kelag", cls: "flow-node-grid", icon: "🔌", label: "Netz", sub: "Kelag / Netz", valueId: "live_grid_kw", valueKey: "grid" },
+      { key: "battery", slot: 5, fields: "battery_soc,battery_power", cls: "flow-node-battery", icon: "🔋", label: "Batterie", sub: "Speicherstand", isBattery: true },
+      { key: "wohnhaus", slot: 6, fields: "wohnhaus", cls: "flow-node-house", icon: "🏠", label: "Wohnhaus", sub: "Haushalt", valueId: "live_haus_kw", valueKey: "haus" },
+      { key: "betrieb", slot: 7, fields: "betrieb", cls: "flow-node-load", icon: "🏭", label: "Betrieb", sub: "Verbrauch Betrieb", valueId: "live_company_kw", valueKey: "betrieb_anzeige" },
+    ];
+    const FLOW_MAX_NODES = 9;
+    window._lastFlowData = {};
+    window._flowHiddenBuiltins = [];
+
+    function isBuiltinVisible(def) {
+      return !(window._flowHiddenBuiltins || []).includes(def.key);
+    }
+
+    function countVisibleFlowNodes() {
+      const builtins = FLOW_BUILTIN.filter(isBuiltinVisible).length;
+      const custom = (window._dashCustomMeta || []).filter(f => f.enabled !== false).length;
+      return builtins + custom;
+    }
+
+    function fmtFlowKw(v) {
+      return (v && v !== "n/a") ? v + " kW" : "n/a";
+    }
+
+    function flowDeleteBtn(attrs) {
+      return '<button type="button" class="flow-node-delete" ' + attrs + ' title="Feld entfernen" aria-label="Feld entfernen">×</button>';
+    }
+
+    function buildBuiltinNodeHtml(def, flowData) {
+      const delBtn = flowDeleteBtn('data-builtin-key="' + def.key + '"');
+      if (def.isBattery) {
+        const soc = flowData.battery_soc || "n/a";
+        const socTxt = (soc && soc !== "n/a") ? (String(soc).includes("%") ? soc : soc + " %") : "n/a";
+        return (
+          '<div class="flow-node ' + def.cls + ' flow-node-clickable flow-slot-' + def.slot + '" data-flow-fields="' + def.fields + '" title="Klicken zum Konfigurieren">' +
+          delBtn +
+          '<div class="flow-battery-layout"><div class="flow-battery-left">' +
+          '<div class="flow-icon">' + def.icon + '</div>' +
+          '<div class="flow-label">' + def.label + '</div>' +
+          '<div class="flow-value" id="live_flow_battery_soc">' + socTxt + '</div>' +
+          '<div class="flow-sub">' + def.sub + '</div></div></div>' +
+          '<div class="flow-battery-power is-hidden" id="flow_battery_power_wrap">' +
+          '<div class="flow-power-kw" id="live_flow_battery_kw">— kW</div>' +
+          '<div class="flow-power-arrow" id="live_flow_battery_arrow">→</div></div>' +
+          '<div class="flow-config-hint">⚙ Sensoren zuordnen</div></div>'
+        );
+      }
+      const raw = flowData[def.valueKey];
+      return (
+        '<div class="flow-node ' + def.cls + ' flow-node-clickable flow-slot-' + def.slot + '" data-flow-fields="' + def.fields + '" title="Klicken zum Konfigurieren">' +
+        delBtn +
+        '<div class="flow-icon">' + def.icon + '</div>' +
+        '<div class="flow-label">' + def.label + '</div>' +
+        '<div class="flow-value" id="' + def.valueId + '">' + fmtFlowKw(raw) + '</div>' +
+        '<div class="flow-sub">' + def.sub + '</div>' +
+        '<div class="flow-config-hint">⚙ Sensoren zuordnen</div></div>'
+      );
+    }
+
+    function buildCustomNodeHtml(field, flowData) {
+      const val = (flowData.custom_fields || {})[field.id];
+      const display = val ? (val.display || "n/a") : "n/a";
+      const slot = field.slot != null ? field.slot : 3;
+      return (
+        '<div class="flow-node flow-node-custom flow-node-clickable flow-slot-' + slot + '" data-flow-fields="custom:' + field.id + '" title="Klicken zum Konfigurieren">' +
+        flowDeleteBtn('data-custom-id="' + field.id + '"') +
+        '<div class="flow-icon">' + (field.icon || "⚡") + '</div>' +
+        '<div class="flow-label">' + (field.name || field.id) + '</div>' +
+        '<div class="flow-value flow-value-custom" data-custom-id="' + field.id + '">' + (display !== "n/a" ? display + " kW" : "n/a") + '</div>' +
+        '<div class="flow-sub">Eigenes Feld</div>' +
+        '<div class="flow-config-hint">⚙ Sensoren zuordnen</div></div>'
+      );
+    }
+
+    function buildPlaceholderHtml(slot) {
+      return (
+        '<div class="flow-node-placeholder flow-slot-' + slot + '" data-add-slot="' + slot + '">' +
+        '<span>＋ Feld hinzufügen</span></div>'
+      );
+    }
+
+    function renderFlowGrid(flowData) {
+      const host = document.getElementById("flow_slots_host");
+      if (!host) return;
+      flowData = flowData || window._lastFlowData || {};
+      const customFields = (window._dashCustomMeta || []).filter(f => f.enabled !== false);
+      const customBySlot = {};
+      customFields.forEach(f => {
+        if (f.slot != null) customBySlot[f.slot] = f;
+      });
+      let html = "";
+      const canAddMore = countVisibleFlowNodes() < FLOW_MAX_NODES;
+      for (let slot = 0; slot < FLOW_MAX_NODES; slot++) {
+        const builtin = FLOW_BUILTIN.find(b => b.slot === slot && isBuiltinVisible(b));
+        if (builtin) {
+          html += buildBuiltinNodeHtml(builtin, flowData);
+        } else if (customBySlot[slot]) {
+          html += buildCustomNodeHtml(customBySlot[slot], flowData);
+        } else if (canAddMore) {
+          html += buildPlaceholderHtml(slot);
+        }
+      }
+      host.innerHTML = html;
+      bindFlowGridEvents();
+      if (flowData.battery_soc !== undefined) {
+        setBatteryDisplay({
+          soc: flowData.battery_soc,
+          mode: flowData.battery_mode || "idle",
+          display_kw: flowData.battery_display_kw,
+        });
+      }
+    }
+
+    function bindFlowGridEvents() {
+      document.querySelectorAll("#flow_slots_host .flow-node-clickable[data-flow-fields]").forEach(node => {
+        node.onclick = (e) => {
+          if (e.target.closest(".flow-node-delete")) return;
+          const keys = (node.dataset.flowFields || "").split(",").map(s => s.trim()).filter(Boolean);
+          const labels = keys.map(k => {
+            if (k.startsWith("custom:")) {
+              const id = k.slice(7);
+              const f = (window._dashCustomMeta || []).find(x => x.id === id);
+              return f ? f.name : id;
+            }
+            return (FLOW_FIELD_META[k] || {}).label || k;
+          });
+          openFlowConfigModal(keys, labels.join(" · "));
+        };
+      });
+      document.querySelectorAll(".flow-node-delete[data-custom-id]").forEach(btn => {
+        btn.onclick = (e) => {
+          e.stopPropagation();
+          deleteCustomFlowField(btn.dataset.customId);
+        };
+      });
+      document.querySelectorAll(".flow-node-delete[data-builtin-key]").forEach(btn => {
+        btn.onclick = (e) => {
+          e.stopPropagation();
+          deleteBuiltinFlowField(btn.dataset.builtinKey);
+        };
+      });
+      document.querySelectorAll(".flow-node-placeholder").forEach(el => {
+        el.onclick = () => addCustomFlowField();
+      });
+    }
+
+    function updateFlowValues() {
+      fetch('/flow_data')
+        .then(response => response.json())
+        .then(data => {
+          window._lastFlowData = data;
+          const fmt = fmtFlowKw;
+          const set = (id, key) => {
+            const el = document.getElementById(id);
+            if (el) el.innerText = fmt(data[key]);
+          };
+          set("live_grid_kw", "grid");
+          set("live_company_kw", "betrieb_anzeige");
+          set("live_hydro_kw", "hydro");
+          set("live_pv_kw", "pv");
+          set("live_haus_kw", "haus");
+          document.querySelectorAll(".flow-value-custom").forEach(el => {
+            const id = el.dataset.customId;
+            const val = (data.custom_fields || {})[id];
+            const display = val ? (val.display || "n/a") : "n/a";
+            el.innerText = display !== "n/a" ? display + " kW" : "n/a";
+          });
+          if (data.battery_soc !== undefined) {
+            setBatteryDisplay({
+              soc: data.battery_soc,
+              mode: data.battery_mode || "idle",
+              display_kw: data.battery_display_kw,
+            });
+          }
+        })
+        .catch(() => {});
+    }
+
+    function loadCustomFlowMeta() {
+      const overlay = document.getElementById("flow_config_overlay");
+      if (overlay && overlay.classList.contains("open")) {
+        return Promise.resolve();
+      }
+      return fetch("/api/dashboard/config")
+        .then(r => r.json())
+        .then(data => {
+          window._dashCustomMeta = data.config?.custom_flow_fields || [];
+          window._flowHiddenBuiltins = data.config?.flow_hidden_builtins || [];
+          renderFlowGrid(window._lastFlowData);
+        })
+        .catch(() => {});
+    }
+
+    function addCustomFlowField() {
+      if (countVisibleFlowNodes() >= FLOW_MAX_NODES) {
+        alert("Maximal " + FLOW_MAX_NODES + " Kästchen um den Inverter. Entferne zuerst ein Feld.");
+        return;
+      }
+      const name = prompt("Name für das neue Feld:", "Neues Feld");
+      if (!name || !name.trim()) return;
+      fetch("/api/dashboard/config")
+        .then(r => r.json())
+        .then(data => {
+          const cfg = data.config || {};
+          cfg.custom_flow_fields = cfg.custom_flow_fields || [];
+          cfg.custom_flow_fields.push({
+            id: "feld_" + Date.now().toString(36).slice(-6),
+            name: name.trim(),
+            icon: "⚡",
+            enabled: true,
+            sensors: [],
+          });
+          return fetch("/api/dashboard/config", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(cfg),
+          });
+        })
+        .then(r => r.json())
+        .then(() => loadCustomFlowMeta())
+        .catch(() => {});
+    }
+
+    function deleteCustomFlowField(fieldId) {
+      if (!fieldId || !confirm("Dieses Feld wirklich löschen?")) return;
+      fetch("/api/dashboard/config")
+        .then(r => r.json())
+        .then(data => {
+          const cfg = data.config || {};
+          cfg.custom_flow_fields = (cfg.custom_flow_fields || []).filter(f => f.id !== fieldId);
+          return fetch("/api/dashboard/config", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(cfg),
+          });
+        })
+        .then(r => r.json())
+        .then(() => loadCustomFlowMeta())
+        .catch(() => {});
+    }
+
+    function deleteBuiltinFlowField(builtinKey) {
+      if (!builtinKey || !confirm("Dieses Feld wirklich entfernen?")) return;
+      fetch("/api/dashboard/config")
+        .then(r => r.json())
+        .then(data => {
+          const cfg = data.config || {};
+          const hidden = cfg.flow_hidden_builtins || [];
+          if (!hidden.includes(builtinKey)) {
+            hidden.push(builtinKey);
+          }
+          cfg.flow_hidden_builtins = hidden;
+          return fetch("/api/dashboard/config", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(cfg),
+          });
+        })
+        .then(r => r.json())
+        .then(() => loadCustomFlowMeta())
+        .catch(() => {});
+    }
+    function renderMinerStatusElement(el, status) {
+      const raw = (status || el.dataset.status || "").toLowerCase();
+      let state = "unknown";
+      let label = "—";
+      if (raw === "running" || raw === "run") {
+        state = "running";
+        label = "running";
+      } else if (raw === "paused" || raw === "pause") {
+        state = "paused";
+        label = "pause";
+      } else if (raw === "error") {
+        state = "error";
+        label = "error";
+      }
+      el.className = "miner-status miner-status-" + state;
+      el.dataset.status = raw;
+      if (state === "running") {
+        el.innerHTML =
+          '<div class="status-spinner" aria-hidden="true">' +
+          '<i></i><i></i><i></i><i></i><i></i><i></i>' +
+          '<i></i><i></i><i></i><i></i><i></i><i></i>' +
+          '</div>' +
+          '<span class="miner-status-label">' + label + '</span>';
+        return;
+      }
+      if (state === "paused") {
+        el.innerHTML =
+          '<div class="status-pause-icon" aria-hidden="true">' +
+          '<span></span><span></span>' +
+          '</div>' +
+          '<span class="miner-status-label">' + label + '</span>';
+        return;
+      }
+      if (state === "error") {
+        el.innerHTML =
+          '<span class="status-error-dot" aria-hidden="true"></span>' +
+          '<span class="miner-status-label">' + label + '</span>';
+        return;
+      }
+      el.innerHTML = '<span class="miner-status-label">' + label + '</span>';
+    }
+    function renderMinerHashrate(el, detail, statusHint) {
+      if (!el) return;
+      const status = ((detail && detail.status) || statusHint || "").toLowerCase();
+      let text = "—";
+      let cls = "miner-hashrate";
+      if (detail && detail.hashrate_display) {
+        text = detail.hashrate_display;
+      }
+      if (status === "running" && detail && detail.hashrate_ths != null && Number(detail.hashrate_ths) > 0) {
+        cls += " is-live";
+      } else if (status === "paused" || status === "pause") {
+        text = "0 TH/s";
+        cls += " is-zero";
+      }
+      el.className = cls;
+      el.textContent = text;
+    }
+    function fmtThs(v) {
+      if (v == null || Number.isNaN(Number(v))) return "—";
+      const n = Number(v);
+      if (n >= 100) return n.toFixed(0) + " TH/s";
+      if (n >= 10) return n.toFixed(1) + " TH/s";
+      return n.toFixed(2) + " TH/s";
+    }
+    function renderHashrateLineChart(data) {
+      const canvas = document.getElementById("chart_hashrate_total");
+      if (!canvas || typeof Chart === "undefined") return;
+      const labels = data.labels || [];
+      const live = (data.live || []).map((v) => (v == null ? null : Number(v)));
+      const target = (data.target || []).map((v) => (v == null ? null : Number(v)));
+      const liveNow = data.live_ths != null ? data.live_ths : (live.length ? live[live.length - 1] : null);
+      const targetNow = data.target_ths != null ? data.target_ths : (target.length ? target[target.length - 1] : null);
+      const liveEl = document.getElementById("hashrate_live_total");
+      const targetEl = document.getElementById("hashrate_target_total");
+      const updEl = document.getElementById("hashrate_chart_updated");
+      if (liveEl) liveEl.textContent = fmtThs(liveNow);
+      if (targetEl) targetEl.textContent = fmtThs(targetNow);
+      if (updEl) {
+        const ts = data.updated_at || "";
+        updEl.textContent = ts ? ("Stand " + ts.replace("T", " ").slice(0, 19)) : (labels.length ? (labels.length + " Punkte heute") : "Noch keine Punkte");
+      }
+      const chartData = {
+        labels: labels,
+        datasets: [
+          {
+            label: "Live",
+            data: live,
+            borderColor: "#69f0ae",
+            backgroundColor: "rgba(105, 240, 174, 0.12)",
+            borderWidth: 2,
+            pointRadius: labels.length > 180 ? 0 : 2,
+            pointHoverRadius: 4,
+            tension: 0.25,
+            fill: true,
+            spanGaps: true,
+          },
+          {
+            label: "Soll",
+            data: target,
+            borderColor: "#ffc107",
+            backgroundColor: "transparent",
+            borderWidth: 2,
+            borderDash: [6, 4],
+            pointRadius: 0,
+            pointHoverRadius: 3,
+            tension: 0.15,
+            fill: false,
+            spanGaps: true,
+          },
+        ],
+      };
+      const options = {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: "index", intersect: false },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: "rgba(20, 26, 34, 0.95)",
+            borderColor: "rgba(255,255,255,0.08)",
+            borderWidth: 1,
+            callbacks: {
+              label: (ctx) => {
+                const v = ctx.parsed.y;
+                if (v == null) return " " + ctx.dataset.label + ": —";
+                return " " + ctx.dataset.label + ": " + fmtThs(v);
+              },
+            },
+          },
+        },
+        scales: {
+          x: {
+            grid: { color: "rgba(255,255,255,0.06)" },
+            ticks: {
+              color: "#8b9cb3",
+              maxTicksLimit: 16,
+              font: { size: 10 },
+              callback: function(val, index) {
+                const lbl = (this.chart?.data?.labels?.[index]) || "";
+                if (!lbl) return "";
+                if (labels.length <= 30) return lbl;
+                return lbl.endsWith("0") || lbl.endsWith("5") ? lbl : "";
+              },
+            },
+          },
+          y: {
+            beginAtZero: true,
+            title: { display: true, text: "TH/s", color: "#8b9cb3", font: { size: 11 } },
+            grid: { color: "rgba(255,255,255,0.06)" },
+            ticks: {
+              color: "#8b9cb3",
+              callback: (v) => v,
+            },
+          },
+        },
+      };
+      if (hashrateLineChart) {
+        hashrateLineChart.data = chartData;
+        hashrateLineChart.options = options;
+        hashrateLineChart.update("none");
+        return;
+      }
+      hashrateLineChart = new Chart(canvas, {
+        type: "line",
+        data: chartData,
+        options: options,
+      });
+    }
+    function updateHashrateChart() {
+      fetch('/hashrate_timeseries_24h')
+        .then((r) => r.json())
+        .then((data) => renderHashrateLineChart(data || {}))
+        .catch(() => {});
+      updateSocFillTarget();
+    }
+    function updateSocFillTarget() {
+      const el = document.getElementById("soc_fill_target_20");
+      if (!el) return;
+      fetch('/api/control_algorithm/status')
+        .then((r) => r.json())
+        .then((data) => {
+          const curve = (data && data.curve_plan) || ((data && data.decision_board) || {}).curve_plan || {};
+          const maxSoc = data && data.max_soc_percent;
+          let fillTarget = null;
+          let fillHour = 20;
+          if (curve && Array.isArray(curve.points) && curve.points.length) {
+            const peakH = curve.peak_hour != null ? Number(curve.peak_hour) : 20;
+            const peakPt = curve.points.find((p) => Number(p.hour) === peakH) || curve.points[curve.points.length - 1];
+            if (peakPt && peakPt.target_soc != null) {
+              fillTarget = Number(peakPt.target_soc);
+              fillHour = peakPt.hour != null ? Number(peakPt.hour) : peakH;
+            }
+          }
+          if (fillTarget == null && maxSoc != null) fillTarget = Number(maxSoc);
+          if (fillTarget == null) {
+            el.textContent = "—";
+            return;
+          }
+          const live = data && (data.live_soc != null ? data.live_soc : null);
+          let txt = Number(fillTarget).toFixed(0) + " %";
+          if (live != null) txt += " (jetzt " + Number(live).toFixed(0) + " %)";
+          el.textContent = txt;
+          el.title = "Füllkurve: Soll um " + String(fillHour).padStart(2, "0") + ":00 → Max-SoC";
+        })
+        .catch(() => {});
+    }
+    function updateMinerStatus() {
+      fetch('/miner_status')
+        .then(response => response.json())
+        .then(data => {
+          const details = (data && data._details) || {};
+          document.querySelectorAll('.miner-status[data-ip]').forEach(el => {
+            const ip = el.dataset.ip;
+            const st = (details[ip] && details[ip].status) || data[ip];
+            renderMinerStatusElement(el, st);
+          });
+          document.querySelectorAll('.miner-hashrate[data-ip]').forEach(el => {
+            const ip = el.dataset.ip;
+            const detail = details[ip] || null;
+            const st = (detail && detail.status) || data[ip];
+            renderMinerHashrate(el, detail, st);
+          });
+        })
+        .catch(() => {});
+    }
+    function updateHaDeviceStatus() {
+      fetch('/api/ha/device_status')
+        .then(response => response.json())
+        .then(data => {
+          document.querySelectorAll('.ha-device-status[data-entity-id]').forEach(el => {
+            const eid = el.dataset.entityId;
+            if (Object.prototype.hasOwnProperty.call(data, eid)) {
+              renderMinerStatusElement(el, data[eid]);
+            }
+          });
+        })
+        .catch(() => {});
+    }
+    function renderGpioPinStatusElement(el, status) {
+      renderMinerStatusElement(el, status);
+      // Label wie alte Statusnachricht: running / paused (nicht "pause")
+      const raw = (status || el.dataset.status || "").toLowerCase();
+      const labelEl = el.querySelector(".miner-status-label");
+      if (!labelEl) return;
+      if (raw === "running" || raw === "run") labelEl.textContent = "running";
+      else if (raw === "paused" || raw === "pause" || raw === "off" || raw === "stopped") {
+        labelEl.textContent = "paused";
+      }
+    }
+    function updateGpioPinStatus() {
+      fetch('/api/gpio/pin_status')
+        .then(response => response.json())
+        .then(data => {
+          document.querySelectorAll('.gpio-pin-status[data-pin-id]').forEach(el => {
+            const pid = el.dataset.pinId;
+            if (Object.prototype.hasOwnProperty.call(data, pid)) {
+              renderGpioPinStatusElement(el, data[pid]);
+            }
+          });
+        })
+        .catch(() => {});
+    }
+    window.updateMinerStatus = updateMinerStatus;
+    window.updateHaDeviceStatus = updateHaDeviceStatus;
+    window.updateGpioPinStatus = updateGpioPinStatus;
+    window.renderMinerStatusElement = renderMinerStatusElement;
+    window.onAjaxActionComplete = function (data, form) {
+      const ds = data && data.device_status;
+      if (ds && ds.status) {
+        if (ds.ip) {
+          const el = document.querySelector('.miner-status[data-ip="' + ds.ip + '"]');
+          if (el) renderMinerStatusElement(el, ds.status);
+        }
+        if (ds.entity_id) {
+          const elHa = document.querySelector('.ha-device-status[data-entity-id="' + ds.entity_id + '"]');
+          if (elHa) renderMinerStatusElement(elHa, ds.status);
+          const elGpio = document.querySelector('.gpio-pin-status[data-pin-id="' + ds.entity_id + '"]');
+          if (elGpio) renderGpioPinStatusElement(elGpio, ds.status);
+        }
+        if (ds.pin_id) {
+          const el = document.querySelector('.gpio-pin-status[data-pin-id="' + ds.pin_id + '"]');
+          if (el) renderGpioPinStatusElement(el, ds.status);
+        }
+      } else if (form && form.classList.contains("action-form")) {
+        updateMinerStatus();
+        updateHaDeviceStatus();
+        updateGpioPinStatus();
+      }
+    };
+    function initMinerStatus() {
+      document.querySelectorAll('.miner-status[data-ip]').forEach(el => {
+        renderMinerStatusElement(el, el.dataset.status);
+      });
+      document.querySelectorAll('.ha-device-status[data-entity-id]').forEach(el => {
+        renderMinerStatusElement(el, el.dataset.status);
+      });
+      document.querySelectorAll('.gpio-pin-status[data-pin-id]').forEach(el => {
+        renderGpioPinStatusElement(el, el.dataset.status);
+      });
+    }
+    const FLOW_FIELD_META = {
+      pv: { label: "PV-Platten", hint: "Photovoltaik-Leistung", addBtn: "Produzent hinzufügen", unit: "kW" },
+      wasserkraft: { label: "Wasserkraftwerk", hint: "Erzeugung Wasserkraft", addBtn: "Produzent hinzufügen", unit: "kW" },
+      kelag: { label: "Netz", hint: "Netzleistung (+ Bezug / − Einspeisung)", addBtn: "Sensor hinzufügen", unit: "kW" },
+      wohnhaus: { label: "Wohnhaus Verbrauch", hint: "Haushaltsverbrauch", addBtn: "Sensor hinzufügen", unit: "kW" },
+      betrieb: { label: "Betrieb", hint: "Betriebsverbrauch (sonst berechnet)", addBtn: "Sensor hinzufügen", unit: "kW" },
+      battery_soc: { label: "Batterie SOC", hint: "Ladestand in %", addBtn: "Sensor hinzufügen", unit: "%" },
+      battery_power: { label: "Batterie Leistung", hint: "Lade-/Entladeleistung", addBtn: "Sensor hinzufügen", unit: "kW" },
+    };
+
+    let flowConfigEntities = [];
+    let flowConfigDraft = null;
+    let flowConfigFieldKeys = [];
+    let flowConfigLiveTimer = null;
+    let flowConfigDashCfg = null;
+
+    function formatFlowLiveValue(key, value) {
+      if (value === null || value === undefined) return "n/a";
+      if (key === "battery_soc") return Number(value).toFixed(0) + " %";
+      return Number(value).toFixed(2) + " kW";
+    }
+
+    function buildEntityOptions(selectedId) {
+      let html = '<option value="">— Sensor wählen —</option>';
+      flowConfigEntities.forEach(ent => {
+        const label = ent.device + " · " + ent.name + " (" + ent.state + (ent.unit ? " " + ent.unit : "") + ")";
+        const sel = ent.entity_id === selectedId ? " selected" : "";
+        html += '<option value="' + ent.entity_id + '"' + sel + '>' + label + '</option>';
+      });
+      if (selectedId && !flowConfigEntities.some(e => e.entity_id === selectedId)) {
+        html += '<option value="' + selectedId + '" selected>' + selectedId + '</option>';
+      }
+      return html;
+    }
+
+    function renderFlowSensorRows(sectionEl, fieldKey) {
+      const listEl = sectionEl.querySelector(".flow-sensor-list");
+      if (!listEl || !flowConfigDraft) return;
+      const field = flowConfigDraft.fields[fieldKey] || { enabled: false, sensors: [] };
+      const sensors = field.sensors || [];
+      listEl.innerHTML = "";
+      sensors.forEach((sensor, idx) => {
+        const row = document.createElement("div");
+        row.className = "flow-sensor-row";
+        row.innerHTML =
+          '<select class="form-control flow-sensor-select" data-field="' + fieldKey + '" data-idx="' + idx + '">' +
+          buildEntityOptions(sensor.entity_id) +
+          '</select>' +
+          '<select class="form-control flow-sign-select" data-field="' + fieldKey + '" data-idx="' + idx + '">' +
+          '<option value="+"' + (sensor.sign !== "-" ? " selected" : "") + '>+</option>' +
+          '<option value="-"' + (sensor.sign === "-" ? " selected" : "") + '>−</option>' +
+          '</select>' +
+          '<button type="button" class="flow-sensor-remove" data-field="' + fieldKey + '" data-idx="' + idx + '" title="Entfernen">×</button>';
+        listEl.appendChild(row);
+      });
+      listEl.querySelectorAll(".flow-sensor-select").forEach(sel => {
+        sel.addEventListener("change", () => {
+          const fk = sel.dataset.field;
+          const i = Number(sel.dataset.idx);
+          flowConfigDraft.fields[fk].sensors[i].entity_id = sel.value;
+          refreshFlowConfigLive();
+        });
+      });
+      listEl.querySelectorAll(".flow-sign-select").forEach(sel => {
+        sel.addEventListener("change", () => {
+          const fk = sel.dataset.field;
+          const i = Number(sel.dataset.idx);
+          flowConfigDraft.fields[fk].sensors[i].sign = sel.value;
+          refreshFlowConfigLive();
+        });
+      });
+      listEl.querySelectorAll(".flow-sensor-remove").forEach(btn => {
+        btn.addEventListener("click", () => {
+          const fk = btn.dataset.field;
+          const i = Number(btn.dataset.idx);
+          flowConfigDraft.fields[fk].sensors.splice(i, 1);
+          renderFlowSensorRows(sectionEl, fk);
+          refreshFlowConfigLive();
+        });
+      });
+    }
+
+    function renderFlowConfigSections() {
+      const container = document.getElementById("flow_config_sections");
+      if (!container || !flowConfigDraft) return;
+      container.innerHTML = "";
+      flowConfigFieldKeys.forEach(fieldKey => {
+        const meta = FLOW_FIELD_META[fieldKey] || { label: fieldKey, hint: "", addBtn: "Sensor hinzufügen", unit: "kW" };
+        const field = flowConfigDraft.fields[fieldKey] || { enabled: false, sensors: [] };
+        const section = document.createElement("div");
+        section.className = "flow-config-section";
+        section.dataset.fieldKey = fieldKey;
+        const isCustom = fieldKey.startsWith("custom:");
+        const customMeta = (flowConfigDraft.customMeta || {})[fieldKey] || {};
+        let nameRow = "";
+        if (isCustom) {
+          nameRow =
+            '<label style="display:block;margin-bottom:0.55rem;font-size:0.82rem;">Feldname' +
+            '<input type="text" class="form-control flow-custom-name" data-field="' + fieldKey + '" value="' +
+            (customMeta.name || "").replace(/"/g, "&quot;") + '" style="margin-top:0.25rem"></label>';
+        }
+        section.innerHTML =
+          '<h5>' + (isCustom ? (customMeta.name || "Eigenes Feld") : meta.label) + '</h5>' +
+          '<small>' + (isCustom ? "Eigener Verbrauch / Erzeugung" : meta.hint) + '</small>' +
+          nameRow +
+          '<label class="flow-config-enabled">' +
+          '<input type="checkbox" class="flow-enabled-cb" data-field="' + fieldKey + '"' + (field.enabled ? " checked" : "") + '> Aktiv (im Stromfluss anzeigen)' +
+          '</label>' +
+          '<div class="flow-sensor-list"></div>' +
+          '<button type="button" class="flow-config-add" data-field="' + fieldKey + '">+ ' + (isCustom ? "Sensor hinzufügen" : meta.addBtn) + '</button>' +
+          '<div class="flow-config-live" id="flow_live_' + fieldKey.replace(/:/g, "_") + '">Summe: —</div>';
+        container.appendChild(section);
+        renderFlowSensorRows(section, fieldKey);
+        section.querySelector(".flow-custom-name")?.addEventListener("input", (e) => {
+          if (!flowConfigDraft.customMeta) flowConfigDraft.customMeta = {};
+          if (!flowConfigDraft.customMeta[fieldKey]) flowConfigDraft.customMeta[fieldKey] = {};
+          flowConfigDraft.customMeta[fieldKey].name = e.target.value;
+        });
+        section.querySelector(".flow-enabled-cb")?.addEventListener("change", (e) => {
+          flowConfigDraft.fields[fieldKey].enabled = e.target.checked;
+          refreshFlowConfigLive();
+        });
+        section.querySelector(".flow-config-add")?.addEventListener("click", () => {
+          if (!flowConfigDraft.fields[fieldKey].sensors) {
+            flowConfigDraft.fields[fieldKey].sensors = [];
+          }
+          // SOC u.ä.: neuer Sensor ersetzt die Liste (kein Alt-Müll stapeln)
+          const replaceSingle = fieldKey === "battery_soc";
+          if (replaceSingle) {
+            flowConfigDraft.fields[fieldKey].sensors = [{ entity_id: "", sign: "+" }];
+          } else {
+            flowConfigDraft.fields[fieldKey].sensors.push({ entity_id: "", sign: "+" });
+          }
+          flowConfigDraft.fields[fieldKey].enabled = true;
+          const cb = section.querySelector(".flow-enabled-cb");
+          if (cb) cb.checked = true;
+          renderFlowSensorRows(section, fieldKey);
+          refreshFlowConfigLive();
+        });
+      });
+      refreshFlowConfigLive();
+    }
+
+    function parseEntityPreviewValue(entityId, fieldKey) {
+      const ent = flowConfigEntities.find(e => e.entity_id === entityId);
+      if (!ent || !ent.available) return null;
+      const raw = String(ent.state || "").replace(",", ".").trim().replace("%", "");
+      const val = Number(raw);
+      if (!Number.isFinite(val)) return null;
+      const unit = String(ent.unit || "").toLowerCase();
+      if (fieldKey === "battery_soc") return val;
+      if (unit === "w") return val / 1000;
+      if (unit === "mw") return val * 1000;
+      return val;
+    }
+
+    function computeDraftLiveSum(fieldKey, sensors) {
+      if (!sensors || !sensors.length) return null;
+      let total = 0;
+      let hasAny = false;
+      sensors.forEach(s => {
+        if (!s.entity_id) return;
+        const live = parseEntityPreviewValue(s.entity_id, fieldKey);
+        if (live === null) return;
+        hasAny = true;
+        total += s.sign === "-" ? -live : live;
+      });
+      return hasAny ? total : null;
+    }
+
+    function refreshFlowConfigLive() {
+      if (!flowConfigDraft) return;
+      flowConfigFieldKeys.forEach(fieldKey => {
+        const el = document.getElementById("flow_live_" + fieldKey.replace(/:/g, "_"));
+        if (!el) return;
+        const draftField = flowConfigDraft.fields[fieldKey];
+        if (!draftField?.enabled) {
+          el.textContent = "Deaktiviert";
+          return;
+        }
+        const sensors = draftField.sensors || [];
+        if (!sensors.length || !sensors.some(s => s.entity_id)) {
+          el.textContent = "Keine Sensoren zugeordnet";
+          return;
+        }
+        const sum = computeDraftLiveSum(fieldKey, sensors);
+        const parts = sensors
+          .filter(s => s.entity_id)
+          .map(s => {
+            const v = parseEntityPreviewValue(s.entity_id, fieldKey);
+            const short = s.entity_id.split(".").pop();
+            const valTxt = v === null ? "?" : formatFlowLiveValue(fieldKey, v);
+            return (s.sign === "-" ? "−" : "+") + " " + short + " (" + valTxt + ")";
+          })
+          .join(" · ");
+        el.textContent = "Summe: " + formatFlowLiveValue(fieldKey, sum) + " · " + parts;
+      });
+    }
+
+    function openFlowConfigModal(fieldKeys, title) {
+      flowConfigFieldKeys = fieldKeys;
+      const overlay = document.getElementById("flow_config_overlay");
+      const titleEl = document.getElementById("flow_config_title");
+      const subtitleEl = document.getElementById("flow_config_subtitle");
+      const statusEl = document.getElementById("flow_config_status");
+      if (!overlay) return;
+      if (titleEl) titleEl.textContent = title || "Sensoren zuordnen";
+      if (subtitleEl) subtitleEl.textContent = "Sensoren wählen und mit +/− kombinieren — Werte werden live summiert";
+      if (statusEl) { statusEl.textContent = ""; statusEl.className = "flow-config-status"; }
+
+      Promise.all([
+        fetch("/api/ha/mapping").then(r => r.json()),
+        fetch("/api/dashboard/config").then(r => r.json()),
+        fetch("/api/ha/entities").then(r => r.json()),
+      ])
+        .then(([mappingData, dashData, entitiesData]) => {
+          flowConfigEntities = entitiesData.entities || [];
+          flowConfigDashCfg = dashData.config || {};
+          function reloadEntities() {
+            fetch("/api/ha/entities")
+              .then(r => r.json())
+              .then(d => { flowConfigEntities = d.entities || []; refreshFlowConfigLive(); })
+              .catch(() => {});
+          }
+          if (flowConfigLiveTimer) clearInterval(flowConfigLiveTimer);
+          flowConfigLiveTimer = setInterval(() => { reloadEntities(); }, 4000);
+          const cfg = mappingData.config || {};
+          flowConfigDraft = { fields: {}, customMeta: {} };
+          fieldKeys.forEach(key => {
+            if (key.startsWith("custom:")) {
+              const id = key.slice(7);
+              const entry = (flowConfigDashCfg.custom_flow_fields || []).find(f => f.id === id) || {
+                enabled: true, sensors: [], name: id, icon: "⚡",
+              };
+              flowConfigDraft.fields[key] = {
+                enabled: entry.enabled !== false,
+                sensors: (entry.sensors || []).map(s => ({
+                  entity_id: s.entity_id || "",
+                  sign: s.sign || "+",
+                })),
+              };
+              flowConfigDraft.customMeta[key] = {
+                id: id,
+                name: entry.name || id,
+                icon: entry.icon || "⚡",
+              };
+              return;
+            }
+            const entry = (cfg.fields || {})[key] || { enabled: false, sensors: [] };
+            const availableIds = new Set(
+              (flowConfigEntities || []).filter(e => e.available !== false).map(e => e.entity_id)
+            );
+            let sensors = (entry.sensors && entry.sensors.length)
+              ? entry.sensors.map(s => ({ entity_id: s.entity_id || "", sign: s.sign || "+" }))
+              : (entry.entity_id ? [{ entity_id: entry.entity_id, sign: "+" }] : []);
+            // Unavailable Alt-Sensoren aus der Zuordnungszeile entfernen
+            sensors = sensors.filter(s => !s.entity_id || availableIds.has(s.entity_id));
+            if (key === "battery_soc" && sensors.length > 1) {
+              sensors = [sensors[sensors.length - 1]];
+            }
+            flowConfigDraft.fields[key] = {
+              enabled: !!entry.enabled && sensors.some(s => s.entity_id),
+              sensors: sensors,
+            };
+          });
+          renderFlowConfigSections();
+          overlay.classList.add("open");
+          overlay.setAttribute("aria-hidden", "false");
+        })
+        .catch(() => {
+          if (statusEl) {
+            statusEl.textContent = "Konfiguration konnte nicht geladen werden.";
+            statusEl.className = "flow-config-status err";
+          }
+        });
+    }
+
+    function closeFlowConfigModal() {
+      const overlay = document.getElementById("flow_config_overlay");
+      if (overlay) {
+        overlay.classList.remove("open");
+        overlay.setAttribute("aria-hidden", "true");
+      }
+      if (flowConfigLiveTimer) {
+        clearInterval(flowConfigLiveTimer);
+        flowConfigLiveTimer = null;
+      }
+      flowConfigDraft = null;
+    }
+
+    function saveFlowConfig() {
+      const statusEl = document.getElementById("flow_config_status");
+      if (!flowConfigDraft) return;
+      const haKeys = flowConfigFieldKeys.filter(k => !k.startsWith("custom:"));
+      const customKeys = flowConfigFieldKeys.filter(k => k.startsWith("custom:"));
+
+      const haPromise = haKeys.length
+        ? fetch("/api/ha/mapping").then(r => r.json()).then(data => {
+            const cfg = data.config || { fields: {} };
+            haKeys.forEach(key => {
+              const draft = flowConfigDraft.fields[key];
+              cfg.fields[key] = {
+                enabled: !!draft.enabled,
+                sensors: (draft.sensors || [])
+                  .filter(s => s.entity_id)
+                  .map(s => ({ entity_id: s.entity_id, sign: s.sign === "-" ? "-" : "+" })),
+              };
+            });
+            return fetch("/api/ha/mapping", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(cfg),
+            }).then(r => r.json());
+          })
+        : Promise.resolve({ ok: true });
+
+      const dashPromise = customKeys.length
+        ? fetch("/api/dashboard/config").then(r => r.json()).then(data => {
+            const cfg = data.config || {};
+            const fields = cfg.custom_flow_fields || [];
+            customKeys.forEach(key => {
+              const id = key.slice(7);
+              const draft = flowConfigDraft.fields[key];
+              const meta = (flowConfigDraft.customMeta || {})[key] || {};
+              const idx = fields.findIndex(f => f.id === id);
+              const entry = {
+                id: id,
+                name: (meta.name || "Feld").trim() || "Feld",
+                icon: meta.icon || "⚡",
+                enabled: !!draft.enabled,
+                sensors: (draft.sensors || [])
+                  .filter(s => s.entity_id)
+                  .map(s => ({ entity_id: s.entity_id, sign: s.sign === "-" ? "-" : "+" })),
+              };
+              if (idx >= 0) fields[idx] = entry;
+              else fields.push(entry);
+            });
+            cfg.custom_flow_fields = fields;
+            return fetch("/api/dashboard/config", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(cfg),
+            }).then(r => r.json());
+          })
+        : Promise.resolve({ ok: true });
+
+      Promise.all([haPromise, dashPromise])
+        .then(([haRes, dashRes]) => {
+          if (!haRes.ok || !dashRes.ok) {
+            throw new Error((haRes.error || dashRes.error) || "Speichern fehlgeschlagen");
+          }
+          if (statusEl) {
+            statusEl.textContent = "Gespeichert — Werte werden aktualisiert.";
+            statusEl.className = "flow-config-status ok";
+          }
+          loadCustomFlowMeta();
+          updateFlowValues();
+          setTimeout(closeFlowConfigModal, 900);
+        })
+        .catch(err => {
+          if (statusEl) {
+            statusEl.textContent = String(err.message || err);
+            statusEl.className = "flow-config-status err";
+          }
+        });
+    }
+
+    function initFlowConfigUi() {
+      document.getElementById("flow_config_close")?.addEventListener("click", closeFlowConfigModal);
+      document.getElementById("flow_config_overlay")?.addEventListener("click", (e) => {
+        if (e.target.id === "flow_config_overlay") closeFlowConfigModal();
+      });
+      document.getElementById("flow_config_save")?.addEventListener("click", saveFlowConfig);
+      document.getElementById("flow_add_custom_btn")?.addEventListener("click", addCustomFlowField);
+    }
+
+    function initRecoveryButtons() {
+      document.querySelectorAll(".recovery-yes, .recovery-no").forEach(btn => {
+        btn.addEventListener("click", () => {
+          const ip = btn.getAttribute("data-ip");
+          const exists = btn.classList.contains("recovery-yes");
+          if (!ip) return;
+          fetch(`/api/miner/${encodeURIComponent(ip)}/recovery/confirm`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ exists }),
+          })
+            .then(r => r.json())
+            .then(data => {
+              if (data.ok) {
+                const row = btn.closest(".recovery-item");
+                if (row) row.remove();
+                if (!document.querySelector(".recovery-item")) {
+                  document.getElementById("recovery-banner")?.remove();
+                }
+                if (!exists) location.reload();
+              } else {
+                alert(data.error || data.message || "Fehler");
+              }
+            })
+            .catch(err => alert(String(err)));
+        });
+      });
+    }
+
+    setInterval(updateFlowValues, 5000);
+    setInterval(updateEnergyStats24h, 5000);
+    setInterval(updateEnergyLineChart, 30000);
+    setInterval(updateEnergyStats30d, 5000);
+    setInterval(updateEnergyStatsYear, 5000);
+    setInterval(updateMinerStatus, 5000);
+    setInterval(updateHaDeviceStatus, 5000);
+    setInterval(updateGpioPinStatus, 3000);
+    setInterval(updateHashrateChart, 60000);
+    window.onload = function () {
+      initFlowConfigUi();
+      initRecoveryButtons();
+      loadCustomFlowMeta().then(() => updateFlowValues());
+      updateFlowValues();
+      updateEnergyStats24h();
+      updateEnergyLineChart();
+      updateEnergyStats30d();
+      updateEnergyStatsYear();
+      initMinerStatus();
+      updateMinerStatus();
+      updateHaDeviceStatus();
+      updateGpioPinStatus();
+      updateHashrateChart();
+    };
+  </script>
+{% endblock %}

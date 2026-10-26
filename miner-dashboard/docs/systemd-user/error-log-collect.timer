@@ -1,0 +1,10 @@
+[Unit]
+Description=piMiner error-log → Telegram every 14 days (03:15)
+
+[Timer]
+OnCalendar=*-*-01,15 03:15:00
+Persistent=true
+Unit=error-log-collect.service
+
+[Install]
+WantedBy=timers.target

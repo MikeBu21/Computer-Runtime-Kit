@@ -1,0 +1,15 @@
+[Unit]
+Description=Home Assistant
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/piminer/homeassistant
+Environment=TZ=Europe/Vienna
+ExecStart=/home/piminer/homeassistant/venv/bin/hass -c /home/piminer/homeassistant/config
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

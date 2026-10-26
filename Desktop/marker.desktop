@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Marker Bot Starten
+Comment=Startet das marker.py Skript zur Marker-Erkennung
+Exec=lxterminal -e 'bash -c "cd /home/piMiner/markerpruefung && source env/bin/activate && python3 marker.py; exec bash"'
+Icon=utilities-terminal
+Terminal=true
+Type=Application
+Categories=Utility;
+

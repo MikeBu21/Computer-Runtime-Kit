@@ -1,0 +1,128 @@
+{
+  "config": {
+    "abort": {
+      "already_configured": "Device is already configured",
+      "already_configured_device": "Device is already configured",
+      "already_in_progress": "Configuration flow is already in progress"
+    },
+    "error": {
+      "cannot_connect": "Failed to connect",
+      "invalid_host": "Invalid hostname or IP address",
+      "timeout_connect": "Timeout establishing connection",
+      "unknown": "Unexpected error"
+    },
+    "step": {
+      "user": {
+        "title": "Inverter configuration",
+        "data": {
+          "name": "Device name",
+          "host": "Hostname or IP address",
+          "port": "Port",
+          "transport": "Transport protocol",
+          "lookup_file": "Profile"
+        },
+        "data_description": {
+          "name": "This name will be prefixed to all sensors (change as you like)",
+          "host": "Hostname or IP address of the device to connect to",
+          "port": "Port (8899) of the device to connect to",
+          "transport": "Transport protocol used during communication with the device",
+          "lookup_file": "The yaml file containing inverter parameter definitions"
+        },
+        "sections": {
+          "additional_options": {
+            "name": "Additional options",
+            "data": {
+              "mod": "Modifier",
+              "mppt": "Number of MPPTs",
+              "phase": "Number of Phases",
+              "pack": "Number of Battery packs",
+              "battery_nominal_voltage": "Lithium-ion battery nominal voltage",
+              "battery_life_cycle_rating": "Lithium-ion battery expected life cycle rating",
+              "mb_slave_id": "Modbus Slave ID (usually 1)"
+            }
+          }
+        }
+      }
+    }
+  },
+  "options": {
+    "error": {
+      "cannot_connect": "Failed to connect",
+      "invalid_host": "Invalid hostname or IP address",
+      "timeout_connect": "Timeout establishing connection",
+      "unknown": "Unexpected error"
+    },
+    "step": {
+      "init": {
+        "title": "Inverter configuration",
+        "data": {
+          "host": "Hostname or IP address",
+          "port": "Port",
+          "transport": "Transport protocol",
+          "lookup_file": "Profile"
+        },
+        "data_description": {
+          "host": "Hostname or IP address of the device to connect to",
+          "port": "Port (8899) of the device to connect to",
+          "transport": "Transport protocol used during communication with the device",
+          "lookup_file": "The yaml file containing inverter parameter definitions"
+        },
+        "sections": {
+          "additional_options": {
+            "name": "Additional options",
+            "data": { 
+              "mod": "Modifier",
+              "mppt": "Number of MPPTs",
+              "phase": "Number of Phases",
+              "pack": "Number of Battery packs",
+              "battery_nominal_voltage": "Lithium-ion battery nominal voltage",
+              "battery_life_cycle_rating": "Lithium-ion battery expected life cycle rating",
+              "mb_slave_id": "Modbus Slave ID (usually 1)"
+            }
+          }
+        }
+      }
+    }
+  },
+  "selector": {
+    "transport": {
+      "options": {
+        "tcp": "TCP",
+        "udp": "UDP",
+        "modbus_rtu": "Modbus RTU",
+        "modbus_tcp": "Modbus TCP"
+      } 
+    }
+  },
+  "entity": {
+    "sensor": {
+      "today_battery_charge": {
+        "name": "Today's Battery Charge"
+      },
+      "today_battery_discharge": {
+        "name": "Today's Battery Discharge"
+      },
+      "today_battery_life_cycles": {
+        "name": "Today's Battery Life Cycles"
+      },
+      "today_energy_export": {
+        "name": "Today's Energy Export"
+      },
+      "today_energy_import": {
+        "name": "Today's Energy Import"
+      },
+      "today_generation": {
+        "name": "Today's Generation"
+      },
+      "today_load_consumption": {
+        "name": "Today's Load Consumption"
+      },
+      "today_losses": {
+        "name": "Today's Losses"
+      },
+      "today_production": {
+        "name": "Today's Production"
+      }
+    }
+  }
+}

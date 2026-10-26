@@ -1,0 +1,7 @@
+{
+  "login_url": "https://www.energie-plan.at/login/",
+  "dashboard_url": "https://cloud.enline.at/power",
+  "wait_selector": "#tariffCircuits tr.tariffCircuitItem",
+  "username": "ab@buttazoni.at",
+  "password": "zMYBWipTVzQul7TEOktW"
+}

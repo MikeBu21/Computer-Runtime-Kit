@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Miner Starter
+Comment=Startet alle Miner-Dienste sichtbar im Terminal
+Exec=/home/piMiner/miner-dashboard/start_all.sh
+Icon=utilities-terminal
+Terminal=false
+Type=Application
+Categories=Utility;
+

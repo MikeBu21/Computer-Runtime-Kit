@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+
+{% block title %}💬 Telegram Bot{% endblock %}
+
+{% block extra_head %}
+  <style>
+    .telegram-hero {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 1rem;
+      align-items: center;
+      background: linear-gradient(135deg, rgba(33, 150, 243, 0.18), rgba(0, 230, 118, 0.08));
+      border: 1px solid rgba(33, 150, 243, 0.3);
+      border-radius: 18px;
+      padding: 1.25rem;
+      margin-bottom: 1.25rem;
+    }
+    .telegram-icon {
+      width: 58px;
+      height: 58px;
+      border-radius: 18px;
+      background: rgba(33, 150, 243, 0.18);
+      display: grid;
+      place-items: center;
+      font-size: 1.7rem;
+    }
+    .telegram-hero h3 {
+      margin: 0;
+      color: #fff;
+      font-size: 1.15rem;
+      font-weight: 700;
+    }
+    .telegram-hero p {
+      margin: 0.35rem 0 0;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+    .token-input-wrap {
+      position: relative;
+    }
+    .token-input-wrap .form-control {
+      padding-right: 3rem;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      letter-spacing: 0.01em;
+    }
+    .token-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      background: rgba(33, 150, 243, 0.12);
+      color: #90caf9;
+      border: 1px solid rgba(33, 150, 243, 0.24);
+      border-radius: 999px;
+      padding: 0.35rem 0.7rem;
+      font-size: 0.8rem;
+      font-weight: 700;
+      margin-bottom: 1rem;
+    }
+    .hint-list {
+      color: var(--muted);
+      font-size: 0.9rem;
+      margin: 1rem 0 0;
+      padding-left: 1.15rem;
+    }
+    .hint-list li { margin-bottom: 0.35rem; }
+  </style>
+{% endblock %}
+
+{% block content %}
+  <div class="page-header">
+    <h2>💬 Telegram Bot</h2>
+    <p>Bot-Token für Steuerung und Status per Telegram</p>
+  </div>
+
+  <div class="panel" style="max-width: 640px;">
+    <div class="telegram-hero">
+      <div class="telegram-icon">💬</div>
+      <div>
+        <h3>Telegram-Verbindung</h3>
+        <p>Speichere hier den Bot-Token. Der Bot kann danach Status und Steuerbefehle verarbeiten.</p>
+      </div>
+    </div>
+
+    {% if message %}
+    <div class="alert-success-custom">{{ message }}</div>
+    {% endif %}
+
+    <div class="token-badge">🔐 Token wird lokal am Pi gespeichert</div>
+
+    <form method="post">
+      <div class="mb-3">
+        <label for="telegram_token" class="form-label">Telegram Bot Token</label>
+        <div class="token-input-wrap">
+          <input type="text" class="form-control" id="telegram_token" name="telegram_token"
+            value="{{ token or '' }}" placeholder="123456789:ABCdefGHI..." required>
+        </div>
+      </div>
+      <div class="action-row">
+        <button type="submit" class="btn-primary-custom">💾 Token speichern</button>
+        <a href="/" class="btn-secondary-custom">🔙 Zurück</a>
+      </div>
+    </form>
+
+    <ul class="hint-list">
+      <li>Den Token bekommst du im Telegram-Chat mit <strong>BotFather</strong>.</li>
+      <li>Nach dem Speichern den Telegram-Bot-Dienst neu starten, falls er schon läuft.</li>
+    </ul>
+  </div>
+{% endblock %}

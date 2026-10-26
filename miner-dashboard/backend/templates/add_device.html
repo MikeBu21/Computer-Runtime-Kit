@@ -1,0 +1,290 @@
+{% extends "base.html" %}
+
+{% block title %}🔌 Geräte hinzufügen{% endblock %}
+
+{% block extra_head %}
+  <style>
+    .flow-sensor-row {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 0.45rem;
+      align-items: center;
+      margin-bottom: 0.5rem;
+    }
+    .flow-sensor-row select {
+      font-size: 0.82rem;
+    }
+    .entity-preview {
+      margin-top: 0.65rem;
+      padding: 0.55rem 0.7rem;
+      border-radius: 10px;
+      background: rgba(0, 230, 118, 0.1);
+      border: 1px solid rgba(0, 230, 118, 0.25);
+      font-size: 0.85rem;
+      color: var(--accent);
+    }
+    .entity-preview.warn {
+      background: rgba(255, 152, 0, 0.1);
+      border-color: rgba(255, 152, 0, 0.35);
+      color: #ffcc80;
+    }
+    .entity-preview strong { color: #fff; }
+    .entity-sync-status {
+      margin-top: 0.35rem;
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+    .add-device-error {
+      margin-bottom: 1rem;
+      padding: 0.75rem 1rem;
+      border-radius: 10px;
+      background: rgba(244, 67, 54, 0.12);
+      border: 1px solid rgba(244, 67, 54, 0.35);
+      color: #ff8a80;
+      font-size: 0.9rem;
+    }
+    .add-device-hint {
+      display: block;
+      color: var(--muted);
+      font-size: 0.76rem;
+      margin-bottom: 0.65rem;
+    }
+  </style>
+{% endblock %}
+
+{% block content %}
+  <div class="page-header">
+    <h2>🔌 Geräte hinzufügen</h2>
+    <p>Home-Assistant-Gerät auswählen — gleiche Liste wie im Stromfluss-Diagramm</p>
+  </div>
+
+  {% if error %}
+  <div class="add-device-error">{{ error }}</div>
+  {% endif %}
+
+  <div class="panel" style="max-width: 640px;">
+    <form method="post" id="add_device_form">
+      <div class="mb-3">
+        <label class="form-label">Home-Assistant-Gerät</label>
+        <small class="add-device-hint">Gleiche Auswahlliste wie beim Klick auf ein Kästchen im Stromfluss (⚙ Sensoren zuordnen). Nur schaltbare Geräte (switch, light, …) können hinzugefügt werden.</small>
+        <div class="flow-sensor-row">
+          <select class="form-control flow-sensor-select" id="entity_id" name="entity_id" required>
+            <option value="">— Sensor wählen —</option>
+          </select>
+        </div>
+        <div class="entity-sync-status" id="entity_sync_status">Lade Geräte aus Home Assistant…</div>
+        <div class="entity-preview" id="entity_preview" style="display: none;">
+          <strong id="preview_label">—</strong>
+          <div id="preview_hint" style="margin-top: 0.35rem; font-size: 0.8rem;"></div>
+        </div>
+      </div>
+      <div class="mb-3">
+        <label for="label" class="form-label">Anzeigename (optional)</label>
+        <input type="text" class="form-control" id="label" name="label"
+          placeholder="z.B. Heizkörper Sofaecke">
+      </div>
+      <div class="mb-3">
+        <label for="note" class="form-label">Notiz (optional)</label>
+        <input type="text" class="form-control" id="note" name="note" placeholder="Kurzbeschreibung">
+      </div>
+      <div class="action-row">
+        <button type="submit" class="btn-primary-custom" id="submit_btn">✅ Gerät hinzufügen</button>
+        <a href="/" class="btn-secondary-custom">🔙 Zurück</a>
+      </div>
+    </form>
+  </div>
+
+  {% if ha_devices %}
+  <div class="panel" style="margin-top: 1.25rem;">
+    <h3 style="font-size: 1rem; margin-bottom: 0.75rem;">Bereits hinzugefügte HA-Geräte</h3>
+    <ul style="margin: 0; padding-left: 1.2rem; color: var(--text);">
+      {% for dev in ha_devices %}
+      <li>{{ dev.label or dev.entity_id }} <code style="font-size: 0.8rem;">{{ dev.entity_id }}</code></li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  <div class="panel" id="gibbo-pins" style="max-width: 640px; margin-top: 1.5rem;">
+    <h3 style="font-size: 1.05rem; margin-bottom: 0.35rem;">🧷 Schaltbare Gibbo-Pins</h3>
+    <p style="color: var(--muted); font-size: 0.85rem; margin-bottom: 1rem;">
+      Raspberry-Pi-Pins (Board-Nummerierung) auswählen, Last in kW zuweisen (wie im Steuerungsalgorithmus)
+      und kurz beschreiben, wofür der Pin/die Last gedacht ist.
+    </p>
+    {% if gpio_error %}
+    <div class="add-device-error">{{ gpio_error }}</div>
+    {% endif %}
+    <form method="post" action="/add_gpio_pin" id="add_gpio_form">
+      <div class="mb-3">
+        <label class="form-label" for="gpio_pin">Gibbo-Pin (Board)</label>
+        <select class="form-control" id="gpio_pin" name="pin" required>
+          <option value="">— Pin wählen —</option>
+          {% for p in available_gpio_pins %}
+          <option value="{{ p }}">Board-Pin {{ p }} (BCM {{ pin_bcm_map[p] }})</option>
+          {% endfor %}
+        </select>
+        {% if not available_gpio_pins %}
+        <small class="add-device-hint">Alle verfügbaren Pins sind bereits zugewiesen.</small>
+        {% endif %}
+      </div>
+      <div class="mb-3">
+        <label class="form-label" for="gpio_label">Anzeigename (optional)</label>
+        <input type="text" class="form-control" id="gpio_label" name="label"
+          placeholder="z.B. Heizstab Stufe 1">
+      </div>
+      <div class="mb-3">
+        <label class="form-label" for="gpio_power_kw">Leistung / Last (kW)</label>
+        <input type="number" step="0.1" min="0" class="form-control" id="gpio_power_kw" name="power_kw"
+          placeholder="z.B. 2.0" value="">
+        <small class="add-device-hint">Wird im Steuerungsalgorithmus als Geräte-Last verwendet.</small>
+      </div>
+      <div class="mb-3">
+        <label class="form-label" for="gpio_priority">Priorität (0–10, optional)</label>
+        <input type="number" step="0.5" min="0" max="10" class="form-control" id="gpio_priority" name="priority"
+          value="5" placeholder="5">
+      </div>
+      <div class="mb-3">
+        <label class="form-label" for="gpio_note">Kurzbeschreibung</label>
+        <input type="text" class="form-control" id="gpio_note" name="note"
+          placeholder="Wofür ist dieser Pin / diese Last?">
+      </div>
+      <div class="action-row">
+        <button type="submit" class="btn-primary-custom" {% if not available_gpio_pins %}disabled{% endif %}>
+          ✅ Pin hinzufügen
+        </button>
+        <a href="/" class="btn-secondary-custom">🔙 Zurück</a>
+      </div>
+    </form>
+  </div>
+
+  {% if gpio_pins %}
+  <div class="panel" style="margin-top: 1.25rem;">
+    <h3 style="font-size: 1rem; margin-bottom: 0.75rem;">Bereits zugewiesene Gibbo-Pins</h3>
+    <ul style="margin: 0; padding-left: 1.2rem; color: var(--text);">
+      {% for pin in gpio_pins %}
+      <li>
+        Board {{ pin.pin }} — {{ pin.label or pin.id }}
+        {% if pin.power_kw is not none and pin.power_kw != '' %}
+        · {{ '%.2f'|format(pin.power_kw|float) }} kW
+        {% endif %}
+        {% if pin.note %}<span style="color: var(--muted);"> — {{ pin.note }}</span>{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+{% endblock %}
+
+{% block extra_scripts %}
+  <script>
+    const EXISTING_IDS = new Set({{ existing_ids | tojson }});
+    const REFRESH_MS = 30000;
+    const CONTROLLABLE_DOMAINS = new Set([
+      "switch", "light", "input_boolean", "fan", "input_button",
+      "cover", "siren", "valve", "lock", "media_player",
+    ]);
+    let entities = [];
+    let refreshTimer = null;
+
+    function isControllable(entityId) {
+      const domain = (entityId || "").split(".")[0];
+      return CONTROLLABLE_DOMAINS.has(domain);
+    }
+
+    /** Gleiches Label wie buildEntityOptions() im Dashboard-Stromfluss */
+    function buildEntityOptionLabel(ent) {
+      return ent.device + " · " + ent.name + " (" + ent.state + (ent.unit ? " " + ent.unit : "") + ")";
+    }
+
+    function buildEntityOptions(selectedId) {
+      let html = '<option value="">— Sensor wählen —</option>';
+      entities.forEach(ent => {
+        if (EXISTING_IDS.has(ent.entity_id)) return;
+        const label = buildEntityOptionLabel(ent);
+        const sel = ent.entity_id === selectedId ? " selected" : "";
+        html += '<option value="' + ent.entity_id + '"' + sel + '>' + label + '</option>';
+      });
+      if (selectedId && !entities.some(e => e.entity_id === selectedId)) {
+        html += '<option value="' + selectedId + '" selected>' + selectedId + '</option>';
+      }
+      return html;
+    }
+
+    function rebuildEntitySelect(preserveValue) {
+      const sel = document.getElementById("entity_id");
+      const current = preserveValue ? sel.value : "";
+      sel.innerHTML = buildEntityOptions(current);
+      updatePreview();
+    }
+
+    function updateSyncStatus(count, updatedAt) {
+      const el = document.getElementById("entity_sync_status");
+      if (!el) return;
+      const available = entities.filter(e => !EXISTING_IDS.has(e.entity_id)).length;
+      let text = available + " von " + count + " HA-Objekten verfügbar";
+      if (updatedAt) {
+        try {
+          text += " · Stand: " + new Date(updatedAt).toLocaleString("de-AT");
+        } catch (e) {
+          text += " · Stand: " + updatedAt;
+        }
+      }
+      text += " · Aktualisierung alle 30 s";
+      el.textContent = text;
+    }
+
+    function updatePreview() {
+      const sel = document.getElementById("entity_id");
+      const ent = entities.find(e => e.entity_id === sel.value);
+      const preview = document.getElementById("entity_preview");
+      const hint = document.getElementById("preview_hint");
+      const submitBtn = document.getElementById("submit_btn");
+      if (!ent) {
+        preview.style.display = "none";
+        submitBtn.disabled = false;
+        return;
+      }
+      preview.style.display = "block";
+      document.getElementById("preview_label").textContent = buildEntityOptionLabel(ent);
+      const controllable = isControllable(ent.entity_id);
+      preview.classList.toggle("warn", !controllable);
+      hint.textContent = controllable
+        ? "Schaltbares Gerät — kann hinzugefügt werden."
+        : "Nur ein Sensor/Status — nicht schaltbar. Bitte Steckdose, Schalter oder Licht wählen.";
+      submitBtn.disabled = !controllable;
+      const labelInput = document.getElementById("label");
+      if (!labelInput.value) {
+        labelInput.placeholder = (ent.device + " · " + ent.name).trim();
+      }
+    }
+
+    function loadHaEntities(isRefresh) {
+      return fetch("/api/ha/entities")
+        .then(r => r.json())
+        .then(data => {
+          entities = data.entities || [];
+          rebuildEntitySelect(isRefresh);
+          updateSyncStatus(data.count || entities.length, data.updated_at);
+        })
+        .catch(() => {
+          const el = document.getElementById("entity_sync_status");
+          if (el) el.textContent = "Geräteliste konnte nicht geladen werden.";
+        });
+    }
+
+    document.getElementById("entity_id").addEventListener("change", updatePreview);
+    document.getElementById("add_device_form").addEventListener("submit", (e) => {
+      const eid = document.getElementById("entity_id").value;
+      if (eid && !isControllable(eid)) {
+        e.preventDefault();
+        updatePreview();
+      }
+    });
+
+    loadHaEntities(false);
+    refreshTimer = setInterval(() => loadHaEntities(true), REFRESH_MS);
+    window.addEventListener("beforeunload", () => {
+      if (refreshTimer) clearInterval(refreshTimer);
+    });
+  </script>
+{% endblock %}

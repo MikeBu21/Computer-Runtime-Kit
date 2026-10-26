@@ -1,0 +1,7 @@
+# Steuerungsalgorithmus / PV-Prognose (in backend/venv installieren)
+# Installation:
+#   cd /home/piMiner/miner-dashboard/backend
+#   python3 -m venv venv          # nur beim ersten Mal
+#   ./venv/bin/pip install -r requirements-control-algorithm.txt
+
+open-meteo-solar-forecast>=0.1.29

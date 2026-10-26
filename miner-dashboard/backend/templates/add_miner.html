@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+
+{% block title %}➕ Miner hinzufügen{% endblock %}
+
+{% block content %}
+  <div class="page-header">
+    <h2>➕ Miner hinzufügen</h2>
+    <p>IP und Zugangsdaten eingeben — die MAC-Adresse wird automatisch ermittelt</p>
+  </div>
+
+  {% if error %}
+  <div class="panel" style="max-width: 560px; margin-bottom: 1rem; border-color: #f44336;">
+    {{ error }}
+  </div>
+  {% endif %}
+
+  <div class="panel" style="max-width: 560px;">
+    <p style="color: var(--muted); font-size: 0.9rem; margin-bottom: 1rem;">
+      Beim Speichern sucht das System die MAC-Adresse automatisch über das Netzwerk (ARP) und per SSH.
+    </p>
+    <form method="post">
+      <div class="mb-3">
+        <label for="ip" class="form-label">IP-Adresse</label>
+        <input type="text" class="form-control" id="ip" name="ip" placeholder="192.0.2.10" required>
+      </div>
+      <div class="mb-3">
+        <label for="username" class="form-label">Benutzername</label>
+        <input type="text" class="form-control" id="username" name="username" value="root" required>
+      </div>
+      <div class="mb-3">
+        <label for="password" class="form-label">Passwort</label>
+        <input type="password" class="form-control" id="password" name="password" required>
+      </div>
+      <div class="mb-3">
+        <label for="model" class="form-label">Modell (optional)</label>
+        <input type="text" class="form-control" id="model" name="model" placeholder="z.B. Antminer S19 XP">
+      </div>
+      <div class="action-row">
+        <button type="submit" class="btn-primary-custom">✅ Miner hinzufügen</button>
+        <a href="/" class="btn-secondary-custom">🔙 Zurück</a>
+      </div>
+    </form>
+  </div>
+{% endblock %}

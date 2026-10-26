@@ -1,0 +1,13 @@
+# Storage readonly probe
+SC32G
+05/2023
+
+life_time=N/A
+dmesg FAT/orphan:
+[Tue Sep 15 19:36:04 2026] EXT4-fs (mmcblk0p2): orphan cleanup on readonly fs
+[Tue Sep 15 19:36:06 2026] FAT-fs (sda1): Volume was not properly unmounted. Some data may be corrupt. Please run fsck.
+
+df:
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/mmcblk0p2   29G   15G   13G  53% /
+/dev/sda1       511M   80M  432M  16% /boot/firmware

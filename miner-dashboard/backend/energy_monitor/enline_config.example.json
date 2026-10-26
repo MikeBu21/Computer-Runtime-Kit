@@ -1,0 +1,7 @@
+{
+  "login_url": "https://www.energie-plan.at/login/",
+  "dashboard_url": "",
+  "wait_selector": "table, text=Kontrollmessung",
+  "username": "ihre-email@example.com",
+  "password": "ihr-passwort"
+}

@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Mining Dashboard{% endblock %}</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0b0f14;
+      --surface: #141a22;
+      --surface-2: #1b2430;
+      --border: rgba(255, 255, 255, 0.08);
+      --text: #e8eef7;
+      --muted: #8b9cb3;
+      --accent: #00e676;
+      --accent-soft: rgba(0, 230, 118, 0.12);
+      --sidebar-width: 260px;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: radial-gradient(circle at top left, #122033 0%, var(--bg) 45%);
+      color: var(--text);
+      font-family: 'Inter', 'Segoe UI', sans-serif;
+    }
+
+    .app-layout { display: flex; min-height: 100vh; }
+
+    .sidebar {
+      width: var(--sidebar-width);
+      min-height: 100vh;
+      background: linear-gradient(180deg, #101820 0%, #0d1218 100%);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+      position: sticky;
+      top: 0;
+      height: 100vh;
+    }
+
+    .sidebar-brand {
+      display: flex;
+      align-items: center;
+      gap: 0.65rem;
+      padding: 1.35rem 1.25rem 1.1rem;
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: #fff;
+      text-decoration: none;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .sidebar-brand-icon {
+      width: 34px;
+      height: 34px;
+      border-radius: 10px;
+      background: var(--accent-soft);
+      display: grid;
+      place-items: center;
+      font-size: 1rem;
+    }
+
+    .sidebar-nav {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+      padding: 1rem 0.75rem;
+    }
+
+    .sidebar-nav .nav-link {
+      display: flex;
+      align-items: center;
+      gap: 0.65rem;
+      color: var(--muted) !important;
+      padding: 0.72rem 0.9rem;
+      margin: 0 !important;
+      border-radius: 10px;
+      font-weight: 500;
+      font-size: 0.92rem;
+      transition: background 0.18s ease, color 0.18s ease, transform 0.18s ease;
+    }
+
+    .sidebar-nav .nav-link:hover {
+      color: #fff !important;
+      background: rgba(255, 255, 255, 0.06);
+      transform: translateX(2px);
+    }
+
+    .sidebar-nav .nav-link.active {
+      color: #fff !important;
+      background: var(--accent-soft);
+      border: 1px solid rgba(0, 230, 118, 0.25);
+    }
+
+    .sidebar-nav .nav-link-sub {
+      margin-left: 0.75rem;
+      padding-left: 1.1rem;
+      font-size: 0.86rem;
+      border-left: 2px solid rgba(255, 255, 255, 0.08);
+    }
+
+    .main-content {
+      flex: 1;
+      overflow-x: auto;
+      padding: 1.75rem 2rem 2.5rem;
+    }
+
+    .page-header { margin-bottom: 1.75rem; }
+    .page-header h2 {
+      margin: 0 0 0.35rem;
+      font-size: 1.65rem;
+      font-weight: 700;
+      color: #fff;
+    }
+    .page-header p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 1.35rem;
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.28);
+      margin-bottom: 1.25rem;
+    }
+
+    .panel-title {
+      margin: 0 0 1rem;
+      font-size: 1rem;
+      font-weight: 700;
+      color: #fff;
+    }
+
+    .form-label {
+      color: var(--muted);
+      font-size: 0.85rem;
+      font-weight: 600;
+      margin-bottom: 0.35rem;
+    }
+
+    .form-control, .form-select {
+      background: #0f141b;
+      border: 1px solid var(--border);
+      color: #fff;
+      border-radius: 10px;
+      padding: 0.65rem 0.85rem;
+    }
+
+    .form-control:focus, .form-select:focus {
+      background: #0f141b;
+      color: #fff;
+      border-color: rgba(0, 230, 118, 0.45);
+      box-shadow: 0 0 0 0.2rem rgba(0, 230, 118, 0.12);
+    }
+
+    .form-control::placeholder { color: #5f6f84; }
+
+    .form-check-input {
+      background-color: #0f141b;
+      border-color: var(--border);
+    }
+
+    .form-check-input:checked {
+      background-color: var(--accent);
+      border-color: var(--accent);
+    }
+
+    .form-check-label { color: var(--text); }
+
+    .btn-primary-custom {
+      background: linear-gradient(135deg, #00e676, #00c853);
+      color: #0a1a12;
+      border: none;
+      border-radius: 10px;
+      padding: 0.65rem 1.25rem;
+      font-weight: 700;
+      transition: transform 0.15s ease, filter 0.15s ease;
+    }
+
+    .btn-primary-custom:hover {
+      filter: brightness(1.05);
+      transform: translateY(-1px);
+      color: #0a1a12;
+    }
+
+    .btn-secondary-custom {
+      background: rgba(255, 255, 255, 0.08);
+      color: #fff;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 0.65rem 1.25rem;
+      font-weight: 600;
+      text-decoration: none;
+      display: inline-block;
+    }
+
+    .btn-secondary-custom:hover {
+      background: rgba(255, 255, 255, 0.12);
+      color: #fff;
+    }
+
+    .btn-danger-custom {
+      background: rgba(244, 67, 54, 0.18);
+      color: #ff8a80;
+      border: 1px solid rgba(244, 67, 54, 0.35);
+      border-radius: 10px;
+      padding: 0.65rem 1.25rem;
+      font-weight: 700;
+    }
+
+    .btn-danger-custom:hover {
+      background: rgba(244, 67, 54, 0.28);
+      color: #ffcdd2;
+    }
+
+    .alert-success-custom {
+      background: rgba(0, 230, 118, 0.12);
+      border: 1px solid rgba(0, 230, 118, 0.3);
+      color: var(--accent);
+      border-radius: 12px;
+      padding: 0.85rem 1rem;
+      margin-bottom: 1rem;
+    }
+
+    .miner-block {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 1rem 1.1rem;
+      margin-bottom: 0.85rem;
+    }
+
+    .miner-block-title {
+      font-weight: 700;
+      color: #fff;
+      margin-bottom: 0.85rem;
+      font-size: 0.95rem;
+    }
+
+    .field-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 0.75rem;
+    }
+
+    .stat-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .stat-card {
+      background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01));
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 1.25rem 1.35rem;
+    }
+
+    .stat-card h5 {
+      margin: 0 0 0.75rem;
+      color: var(--muted);
+      font-size: 0.85rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .energy-value {
+      margin: 0;
+      font-size: 2rem;
+      font-weight: 700;
+      color: #fff;
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+    }
+
+    table {
+      width: 100%;
+      margin: 0;
+      border-collapse: collapse;
+      min-width: 700px;
+    }
+
+    th, td {
+      padding: 0.9rem 1rem;
+      border-bottom: 1px solid var(--border);
+      vertical-align: middle;
+    }
+
+    th {
+      background: var(--surface-2);
+      color: var(--accent);
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      font-weight: 700;
+    }
+
+    .ip-cell {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      color: #dbe7ff;
+    }
+
+    .action-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      margin-top: 1.25rem;
+    }
+
+    @media (max-width: 900px) {
+      .app-layout { flex-direction: column; }
+      .sidebar {
+        width: 100%;
+        height: auto;
+        min-height: auto;
+        position: static;
+      }
+      .sidebar-nav { flex-direction: row; flex-wrap: wrap; }
+      .main-content { padding: 1rem; }
+    }
+
+    .app-toast {
+      position: fixed;
+      bottom: 1.25rem;
+      left: 50%;
+      transform: translateX(-50%) translateY(120%);
+      z-index: 10000;
+      max-width: min(92vw, 520px);
+      padding: 0.85rem 1.15rem;
+      border-radius: 12px;
+      background: #1b2430;
+      border: 1px solid rgba(0, 230, 118, 0.35);
+      color: #e8eef7;
+      font-size: 0.9rem;
+      font-weight: 500;
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+      opacity: 0;
+      pointer-events: none;
+      transition: transform 0.25s ease, opacity 0.25s ease;
+    }
+
+    .app-toast.visible {
+      transform: translateX(-50%) translateY(0);
+      opacity: 1;
+    }
+
+    .app-toast.error {
+      border-color: rgba(239, 83, 80, 0.45);
+      color: #ffcdd2;
+    }
+  </style>
+  {% block extra_head %}{% endblock %}
+</head>
+<body>
+  <div class="app-layout">
+    <nav class="sidebar">
+      <a class="sidebar-brand" href="/">
+        <span class="sidebar-brand-icon">⛏️</span>
+        <span>Mining Dashboard</span>
+      </a>
+      <div class="sidebar-nav navbar-nav">
+        <a class="nav-link{% if request.path == '/' %} active{% endif %}" href="/">📊 Dashboard</a>
+        <a class="nav-link{% if request.path == '/add_miner' %} active{% endif %}" href="/add_miner">➕ Miner hinzufügen</a>
+        <a class="nav-link{% if request.path == '/add_device' %} active{% endif %}" href="/add_device">🔌 Geräte hinzufügen</a>
+        <a class="nav-link{% if request.path == '/smartmeter' %} active{% endif %}" href="/smartmeter">⚡ Smartmeter</a>
+        <a class="nav-link{% if request.path == '/settings' %} active{% endif %}" href="/settings">⚙️ Einstellungen</a>
+        <a class="nav-link{% if request.path == '/dienste' %} active{% endif %}" href="/dienste">🚀 Dienste</a>
+        <a class="nav-link{% if request.path == '/reboot' %} active{% endif %}" href="/reboot">🔁 Neustart</a>
+        <a class="nav-link{% if request.path == '/automatikmodus' %} active{% endif %}" href="/automatikmodus">🤖 Automatikmodus</a>
+        <a class="nav-link{% if request.path == '/zeitsteuerung' %} active{% endif %}" href="/zeitsteuerung">⏱ Zeitsteuerung</a>
+        <a class="nav-link{% if request.path == '/telegrambot' %} active{% endif %}" href="/telegrambot">💬 Telegram Bot</a>
+        <a class="nav-link{% if request.path == '/steuerungsalgorithmus' %} active{% endif %}" href="/steuerungsalgorithmus">🧠 Steuerungsalgorythmus</a>
+        <a class="nav-link{% if request.path == '/grundverbrauchsrechner' %} active{% endif %}" href="/grundverbrauchsrechner">🧮 Grundverbrauchsrechner</a>
+        <a class="nav-link nav-link-sub{% if request.path == '/statistik-konfigurieren' %} active{% endif %}" href="/statistik-konfigurieren">📈 Statistik konfigurieren</a>
+        <a class="nav-link{% if request.path == '/fehlerberichte' %} active{% endif %}" href="/fehlerberichte">📋 Fehlerberichte</a>
+      </div>
+    </nav>
+
+    <main class="main-content">
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+
+  <div id="app_toast" class="app-toast" role="status" aria-live="polite" hidden></div>
+
+  <script>
+    (function () {
+      let toastTimer = null;
+
+      window.showAppToast = function (message, type) {
+        const toast = document.getElementById("app_toast");
+        if (!toast || !message) return;
+        toast.textContent = message;
+        toast.classList.remove("error");
+        if (type === "error") toast.classList.add("error");
+        toast.hidden = false;
+        toast.classList.add("visible");
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(function () {
+          toast.classList.remove("visible");
+          setTimeout(function () { toast.hidden = true; }, 250);
+        }, 4200);
+      };
+
+      async function submitAjaxForm(form, submitter) {
+        const scrollY = window.scrollY;
+        const buttons = form.querySelectorAll("button, input[type=submit]");
+        buttons.forEach(function (btn) { btn.disabled = true; });
+
+        try {
+          const body = new FormData(form);
+          if (submitter && submitter.name) {
+            body.set(submitter.name, submitter.value);
+          }
+          body.set("_ajax", "1");
+
+          const response = await fetch(form.getAttribute("action") || form.action, {
+            method: (form.method || "POST").toUpperCase(),
+            body: body,
+            credentials: "same-origin",
+            headers: { "Accept": "application/json" },
+          });
+
+          const contentType = response.headers.get("content-type") || "";
+          let data = {};
+          if (contentType.includes("application/json")) {
+            data = await response.json();
+          } else {
+            const text = (await response.text()).trim();
+            if (text) data.message = text;
+          }
+
+          const ok = data.ok !== false && response.ok;
+          const message = data.message || (ok ? "Gespeichert." : "Aktion fehlgeschlagen.");
+          showAppToast(message, ok ? "ok" : "error");
+
+          if (typeof window.onAjaxActionComplete === "function") {
+            window.onAjaxActionComplete(data, form);
+          } else if (form.classList.contains("action-form")) {
+            if (typeof window.updateMinerStatus === "function") window.updateMinerStatus();
+            if (typeof window.updateHaDeviceStatus === "function") window.updateHaDeviceStatus();
+          }
+        } catch (err) {
+          showAppToast("Verbindungsfehler: " + (err.message || err), "error");
+        } finally {
+          buttons.forEach(function (btn) { btn.disabled = false; });
+          window.scrollTo(0, scrollY);
+        }
+      }
+
+      function bindAjaxForms() {
+        document.querySelectorAll("form.ajax-form").forEach(function (form) {
+          if (form.dataset.ajaxBound === "1") return;
+          form.dataset.ajaxBound = "1";
+          form.addEventListener("submit", function (e) {
+            e.preventDefault();
+            submitAjaxForm(form, e.submitter || null);
+          });
+        });
+      }
+
+      document.addEventListener("DOMContentLoaded", function () {
+        bindAjaxForms();
+        const params = new URLSearchParams(window.location.search);
+        const hinweis = params.get("hinweis");
+        if (hinweis) {
+          showAppToast(hinweis, "ok");
+          params.delete("hinweis");
+          const qs = params.toString();
+          history.replaceState({}, "", window.location.pathname + (qs ? "?" + qs : ""));
+        }
+      });
+
+      window.bindAjaxForms = bindAjaxForms;
+    })();
+  </script>
+
+  {% block extra_scripts %}{% endblock %}
+</body>
+</html>

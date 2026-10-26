@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+
+{% block title %}🔁 Neustart{% endblock %}
+
+{% block content %}
+  <div class="page-header">
+    <h2>🔁 Raspberry Pi Neustart</h2>
+    <p>Startet den Raspberry Pi neu – alle Dienste werden kurz unterbrochen</p>
+  </div>
+
+  <div class="panel" style="max-width: 560px;">
+    <p style="color: var(--muted); margin-bottom: 1.25rem;">
+      ⚠️ Der Neustart kann etwa 1–2 Minuten dauern. Das Dashboard ist danach wieder erreichbar.
+    </p>
+    <form method="post" onsubmit="return confirm('Raspberry Pi wirklich neu starten?');">
+      <div class="action-row">
+        <button type="submit" class="btn-danger-custom">🔁 Jetzt neu starten</button>
+        <a href="/" class="btn-secondary-custom">Abbrechen</a>
+      </div>
+    </form>
+  </div>
+{% endblock %}

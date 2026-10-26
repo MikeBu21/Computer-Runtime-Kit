@@ -1,0 +1,18 @@
+[
+  {
+    "ip": "192.0.2.10",
+    "username": "root",
+    "password": "",
+    "model": "Beispiel-Miner",
+    "note": "Beispielgerät",
+    "auto": false,
+    "auto_battery": false,
+    "pause_kw": "3",
+    "resume_kw": "5",
+    "lower_kw": "",
+    "raise_kw": "",
+    "control_source": "computed.erzeugung",
+    "battery_control_source": "flow.battery_soc",
+    "automation_rules": []
+  }
+]

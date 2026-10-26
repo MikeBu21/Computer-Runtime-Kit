@@ -1,0 +1,172 @@
+import subprocess
+import os
+import json
+import asyncio
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
+from apscheduler.schedulers.background import BackgroundScheduler
+
+# ========== Konfiguration ==========
+JSON_PATH = os.path.join(os.path.dirname(__file__), 'miners.json')
+ENERGY_FILE = "energy_value.txt"
+ENERGY_CHAT_FILE = "config/energy_chat_ids.json"
+ENERGY_THRESHOLD = 60.0
+ENERGY_CHECK_INTERVAL = 30  # Sekunden
+# ===================================
+
+def load_token():
+    config_path = os.path.join(os.path.dirname(__file__), 'telegram_config.json')
+    if os.path.exists(config_path):
+        with open(config_path, "r") as f:
+            data = json.load(f)
+            return data.get("telegram_token", "")
+    return ""
+
+def load_miners():
+    with open(JSON_PATH, "r") as f:
+        return json.load(f)
+
+def generate_command_list():
+    miners = load_miners()
+    commands_msg = "[Befehle]\n"
+    for i, miner in enumerate(miners, 1):
+        commands_msg += f"/pause{i}  -> Miner {miner['ip']}\n"
+    for i, miner in enumerate(miners, 1):
+        commands_msg += f"/resume{i} -> Miner {miner['ip']}\n"
+    commands_msg += "\n/status ->  |bericht aller Miner"
+    return commands_msg
+
+def load_status_data():
+    status_path = os.path.join(os.path.dirname(__file__), 'miner_status.json')
+    if os.path.exists(status_path):
+        with open(status_path, "r") as f:
+            return json.load(f)
+    return []
+
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        miners = load_miners()
+        statuses = load_status_data()
+        status_map = {entry['ip']: entry['status'] for entry in statuses}
+
+        message = "Miner Status:\n"
+        for i, miner in enumerate(miners, 1):
+            status_raw = status_map.get(miner['ip'], "unbekannt")
+            if status_raw.lower() == "running":
+                status_emoji = "✅"
+            elif status_raw.lower() == "paused":
+                status_emoji = "⏸️"
+            else:
+                status_emoji = "❌"
+            message += f"{i}. IP: {miner['ip']} | Status: {status_emoji} {status_raw} | Notiz: {miner['note']}\n"
+
+        await update.message.reply_text(message)
+        await update.message.reply_text(generate_command_list())
+    except Exception as e:
+        await update.message.reply_text(f"Fehler bei Status: {e}")
+
+async def pause(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        miners = load_miners()
+        cmd_text = update.message.text.lower()
+        num = int(cmd_text.replace("/pause", ""))
+        ip = miners[num - 1]['ip']
+        cmd = json.dumps({"command": "pause"})
+        subprocess.run(f"echo '{cmd}' | nc {ip} 4028", shell=True)
+        await update.message.reply_text(f"Miner {num} pausiert.")
+        await update.message.reply_text(generate_command_list())
+    except Exception as e:
+        await update.message.reply_text(f"Fehler bei /pause: {e}")
+        await update.message.reply_text(generate_command_list())
+
+async def resume(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        miners = load_miners()
+        cmd_text = update.message.text.lower()
+        num = int(cmd_text.replace("/resume", ""))
+        ip = miners[num - 1]['ip']
+        cmd = json.dumps({"command": "resume"})
+        subprocess.run(f"echo '{cmd}' | nc {ip} 4028", shell=True)
+        await update.message.reply_text(f"Miner {num} resumed.")
+        await update.message.reply_text(generate_command_list())
+    except Exception as e:
+        await update.message.reply_text(f"Fehler bei /resume: {e}")
+        await update.message.reply_text(generate_command_list())
+
+async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Befehl nicht erkannt.")
+    await update.message.reply_text(generate_command_list())
+
+# Energie-Funktionen
+def load_energy_chat_ids():
+    if not os.path.exists(ENERGY_CHAT_FILE):
+        return []
+    with open(ENERGY_CHAT_FILE, "r") as f:
+        return json.load(f)
+
+def save_energy_chat_id(chat_id):
+    chat_ids = load_energy_chat_ids()
+    if chat_id not in chat_ids:
+        chat_ids.append(chat_id)
+        os.makedirs(os.path.dirname(ENERGY_CHAT_FILE), exist_ok=True)
+        with open(ENERGY_CHAT_FILE, "w") as f:
+            json.dump(chat_ids, f)
+
+def read_energy_value():
+    if not os.path.exists(ENERGY_FILE):
+        return 0.0
+    try:
+        with open(ENERGY_FILE, "r") as f:
+            return float(f.read().strip())
+    except:
+        return 0.0
+
+async def send_energy_alert(bot, value):
+    chat_ids = load_energy_chat_ids()
+    for chat_id in chat_ids:
+        try:
+            await bot.send_message(chat_id=chat_id, text=f"⚠️ Energie-Wert über 60 kW: {value:.2f} kW")
+        except:
+            continue
+
+def check_energy(bot_instance):
+    value = read_energy_value()
+    if value > ENERGY_THRESHOLD:
+        asyncio.run(send_energy_alert(bot_instance, value))
+
+# Bot starten
+def start_bot():
+    token = load_token()
+    if not token:
+        print(" ^}^l Kein Telegram-Bot-Token gefunden.")
+        return
+
+    app = Application.builder().token(token).build()
+
+    # Energie-Nutzer registrieren
+    async def track_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        save_energy_chat_id(update.effective_chat.id)
+
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), track_user), group=0)
+
+    app.add_handler(CommandHandler("status", status))
+
+    miners = load_miners()
+    for i in range(len(miners)):
+        num = str(i + 1)
+        app.add_handler(CommandHandler(f"pause{num}", pause))
+        app.add_handler(CommandHandler(f"resume{num}", resume))
+
+    app.add_handler(MessageHandler(filters.COMMAND, unknown))
+
+    # Energie-Checker starten
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(lambda: check_energy(app.bot), "interval", seconds=ENERGY_CHECK_INTERVAL)
+    scheduler.start()
+
+    print("✅ Bot läuft ... mit STRG+C beenden.")
+    app.run_polling()
+
+if __name__ == "__main__":
+    start_bot()
+

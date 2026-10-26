@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+
+{% block title %}🚀 Dienste{% endblock %}
+
+{% block content %}
+  <div class="page-header">
+    <h2>🚀 Dienste starten</h2>
+    <p>Miner-Steuerung, Home Assistant und Tailscale mit einem Klick starten</p>
+  </div>
+
+  <div class="panel" style="max-width: 720px; margin-bottom: 1.25rem;">
+    <div class="action-row" style="flex-wrap: wrap; gap: 0.75rem;">
+      <button type="button" class="btn-primary-custom" id="start_all_btn">▶ Alle Dienste starten</button>
+      <button type="button" class="btn-secondary-custom" id="refresh_status_btn">🔄 Status aktualisieren</button>
+    </div>
+    <p id="action_message" style="margin: 1rem 0 0; color: var(--muted); min-height: 1.25rem;"></p>
+  </div>
+
+  <div class="panel" style="max-width: 720px;">
+    <div id="services_list" style="display: grid; gap: 1rem;">
+      {% for service in services %}
+      <div class="service-card" data-service="{{ service.id }}">
+        <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; flex-wrap: wrap;">
+          <div>
+            <strong>{{ service.label }}</strong>
+            <div class="service-detail" style="color: var(--muted); margin-top: 0.35rem;">{{ service.detail }}</div>
+            {% if service.url %}
+            <div style="margin-top: 0.35rem;">
+              <a href="{{ service.url }}" target="_blank" rel="noopener" style="color: var(--accent);">{{ service.url }}</a>
+            </div>
+            {% endif %}
+          </div>
+          <div style="display: flex; align-items: center; gap: 0.75rem;">
+            <span class="service-badge {% if service.reachable %}badge-ok{% elif service.active %}badge-warn{% else %}badge-off{% endif %}">
+              {% if service.reachable %}Online{% elif service.active %}Aktiv{% else %}Aus{% endif %}
+            </span>
+            <button type="button" class="btn-secondary-custom start-service-btn" data-service="{{ service.id }}">Starten</button>
+          </div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <style>
+    .service-badge {
+      display: inline-block;
+      padding: 0.25rem 0.65rem;
+      border-radius: 999px;
+      font-size: 0.85rem;
+      font-weight: 600;
+    }
+    .badge-ok { background: rgba(0, 230, 118, 0.15); color: #00e676; }
+    .badge-warn { background: rgba(255, 193, 7, 0.15); color: #ffc107; }
+    .badge-off { background: rgba(255, 255, 255, 0.08); color: var(--muted); }
+    .service-card {
+      padding: 1rem;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: var(--surface-2);
+    }
+  </style>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+  const messageEl = document.getElementById('action_message');
+
+  function setMessage(text, ok = true) {
+    messageEl.textContent = text;
+    messageEl.style.color = ok ? 'var(--accent)' : '#f44336';
+  }
+
+  async function refreshStatus() {
+    const response = await fetch('/api/services/status');
+    const data = await response.json();
+    for (const service of data.services) {
+      const card = document.querySelector(`.service-card[data-service="${service.id}"]`);
+      if (!card) continue;
+      const detail = card.querySelector('.service-detail');
+      const badge = card.querySelector('.service-badge');
+      if (detail) detail.textContent = service.detail;
+      if (badge) {
+        badge.textContent = service.reachable ? 'Online' : (service.active ? 'Aktiv' : 'Aus');
+        badge.className = 'service-badge ' + (
+          service.reachable ? 'badge-ok' : (service.active ? 'badge-warn' : 'badge-off')
+        );
+      }
+    }
+  }
+
+  async function startService(id) {
+    setMessage('Starte …', true);
+    const response = await fetch(`/api/services/start/${id}`, { method: 'POST' });
+    const data = await response.json();
+    setMessage(data.message || 'Fertig.', data.ok);
+    await refreshStatus();
+  }
+
+  async function startAll() {
+    setMessage('Starte alle Dienste …', true);
+    const response = await fetch('/api/services/start-all', { method: 'POST' });
+    const data = await response.json();
+    const text = (data.results || []).map(r => `${r.id}: ${r.message}`).join(' · ');
+    setMessage(text || data.message || 'Fertig.', data.ok);
+    await refreshStatus();
+  }
+
+  document.getElementById('start_all_btn').addEventListener('click', startAll);
+  document.getElementById('refresh_status_btn').addEventListener('click', refreshStatus);
+  document.querySelectorAll('.start-service-btn').forEach(btn => {
+    btn.addEventListener('click', () => startService(btn.dataset.service));
+  });
+</script>
+{% endblock %}

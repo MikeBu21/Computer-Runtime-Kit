@@ -1,0 +1,17 @@
+[
+  {
+    "ip": "192.168.1.139",
+    "username": "root",
+    "password": "Beispiel",
+    "model": "Antminer S19",
+    "note": "",
+    "auto": false,
+    "time_pause": false,
+    "time_ths": false,
+    "mac": "aa:bb:cc:dd:ee:ff",
+    "mac_source": "manual",
+    "recovery_state": "ok",
+    "last_seen_ip": "192.168.1.139",
+    "recovery_updated_at": null
+  }
+]

@@ -1,0 +1,8 @@
+[Unit]
+Description=Retry Telegram send of buffered piMiner error packages
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/piminer/minersteuerung/scripts/error_log_pipeline/pi
+Environment=ERROR_LOG_PIPELINE_CONFIG=/home/piminer/minersteuerung/scripts/error_log_pipeline/pi/config.json
+ExecStart=/usr/bin/python3 /home/piminer/minersteuerung/scripts/error_log_pipeline/pi/send_telegram.py

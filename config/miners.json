@@ -1,0 +1,10 @@
+[
+  {
+    "name": "Beispiel-Miner",
+    "ip": "192.0.2.10",
+    "user": "root",
+    "password": "",
+    "type": "beispiel",
+    "enabled": false
+  }
+]

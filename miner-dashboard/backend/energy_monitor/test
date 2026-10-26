@@ -1,0 +1,23 @@
+import socket
+import json
+
+# IP-Adresse deines Miners
+miner_ip = "192.168.1.128"
+miner_port = 4028
+
+# Ziel-THS (z. B. 60 = 60 TH/s)
+ths_value = 60
+
+# Befehl zusammenbauen
+command = json.dumps({"command": "set_ths", "value": ths_value})
+
+try:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(3)
+        s.connect((miner_ip, miner_port))
+        s.sendall(command.encode())
+        response = s.recv(4096)
+        print("Antwort vom Miner:\n", response.decode())
+except Exception as e:
+    print("Fehler beim Senden:", e)
+

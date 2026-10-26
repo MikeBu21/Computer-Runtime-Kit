@@ -1,0 +1,518 @@
+{% extends "base.html" %}
+
+{% block title %}Grundverbrauchsrechner{% endblock %}
+
+{% block extra_head %}
+<style>
+  .gvr-hero {
+    display: grid;
+    grid-template-columns: 1.4fr 1fr;
+    gap: 1rem;
+    margin-bottom: 1.25rem;
+  }
+  .gvr-hero-main, .gvr-hero-side, .gvr-card, .gvr-panel {
+    background:
+      radial-gradient(ellipse at 15% 0%, rgba(0, 230, 118, 0.12), transparent 42%),
+      var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    padding: 1.25rem 1.35rem;
+  }
+  .gvr-kicker {
+    color: var(--muted);
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    margin: 0 0 0.35rem;
+  }
+  .gvr-value {
+    font-size: 4rem;
+    line-height: 0.95;
+    font-weight: 700;
+    color: #fff;
+    margin: 0.2rem 0;
+  }
+  .gvr-value span { font-size: 1.3rem; color: var(--muted); font-weight: 600; margin-left: 0.35rem; }
+  .gvr-value-side { font-size: 2.6rem; }
+  .gvr-sub { color: var(--muted); margin: 0.35rem 0 0; font-size: 0.92rem; }
+  .gvr-cards {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0.85rem;
+    margin-bottom: 1.25rem;
+  }
+  .gvr-card strong { display: block; font-size: 1.55rem; color: #fff; margin-top: 0.2rem; }
+  .gvr-card p { margin: 0.25rem 0 0; color: var(--muted); font-size: 0.85rem; }
+  .gvr-panel { margin-bottom: 1.25rem; }
+  .gvr-miner {
+    display: grid;
+    grid-template-columns: 1.2fr 2fr;
+    gap: 0.75rem;
+    align-items: center;
+    padding: 0.85rem 0;
+    border-top: 1px solid var(--border);
+  }
+  .gvr-miner:first-of-type { border-top: none; }
+  .gvr-modes { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+  .gvr-modes label {
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 0.4rem 0.75rem;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 0.85rem;
+  }
+  .gvr-modes input { margin-right: 0.35rem; }
+  .gvr-modes label.active {
+    color: #04140c;
+    background: linear-gradient(180deg, #00e676, #00c853);
+    border-color: transparent;
+    font-weight: 700;
+  }
+  .gvr-alert {
+    background: rgba(255, 193, 7, 0.1);
+    border: 1px solid rgba(255, 193, 7, 0.35);
+    color: #ffe082;
+    border-radius: 12px;
+    padding: 0.75rem 0.9rem;
+    margin-bottom: 0.6rem;
+    font-size: 0.92rem;
+  }
+  .gvr-note { color: var(--muted); font-size: 0.88rem; margin: 0.35rem 0; }
+  .gvr-chart-wrap { height: 340px; }
+  .gvr-chart-wrap.short { height: 240px; }
+  .gvr-cards.stats { grid-template-columns: repeat(4, 1fr); }
+  .gvr-meta { display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; margin-top: 0.8rem; }
+  .gvr-pill {
+    background: rgba(255,255,255,0.05);
+    border-radius: 999px;
+    padding: 0.25rem 0.7rem;
+    color: var(--muted);
+    font-size: 0.82rem;
+  }
+  @media (max-width: 900px) {
+    .gvr-hero, .gvr-cards, .gvr-miner { grid-template-columns: 1fr; }
+    .gvr-value { font-size: 3rem; }
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h2>Grundverbrauchsrechner</h2>
+  <p>Rechnet nur. Schaltet keine Miner. Empfohlener Dauerbezug, damit der Speicher auf Sicht den Stand hält.</p>
+</div>
+
+<div id="gvr_alerts"></div>
+
+<div class="gvr-hero">
+  <div class="gvr-hero-main">
+    <p class="gvr-kicker">Empfohlener Zukauf</p>
+    <p class="gvr-value" id="gvr_weekly">— <span>kW</span></p>
+    <p class="gvr-sub" id="gvr_weekly_sub">Stabiler Wert, höchstens einmal pro Woche automatisch neu.</p>
+    <div class="gvr-meta" id="gvr_meta"></div>
+  </div>
+  <div class="gvr-hero-side">
+    <p class="gvr-kicker">Tageswert</p>
+    <p class="gvr-value gvr-value-side" id="gvr_daily">— <span>kW</span></p>
+    <p class="gvr-sub">Alle 24 Stunden leicht nachgeführt. Zum Ablesen, nicht als Schaltbefehl.</p>
+  </div>
+</div>
+
+<div class="gvr-cards" id="gvr_cards"></div>
+<div class="gvr-cards stats" id="gvr_highlights"></div>
+
+<div class="gvr-panel">
+  <h3 class="panel-title">Womit gerechnet wird</h3>
+  <p class="gvr-note">Durchgehend zählt die eingestellte Leistung 24 Stunden. Aus zählt nicht. Historische Miner-Laufzeit ist schon aus dem Grundverbrauch herausgerechnet.</p>
+  <div id="gvr_miners"></div>
+  <p class="gvr-note" id="gvr_save_state"></p>
+</div>
+
+<div class="gvr-panel">
+  <h3 class="panel-title">Letztes Jahr</h3>
+  <p class="gvr-note" id="gvr_long_note">365 Tage, jeder Punkt ein Tag. Gemessene Tage bleiben gespeichert, leere Tage füllen sich von selbst.</p>
+  <div class="gvr-chart-wrap"><canvas id="gvr_chart_long"></canvas></div>
+</div>
+
+<div class="gvr-panel">
+  <h3 class="panel-title">Wochen</h3>
+  <p class="gvr-note">Jeder Balken ist der mittlere Grundverbrauch einer Kalenderwoche, in kWh pro Tag. Die letzten zwölf Wochen mit Messung.</p>
+  <div class="gvr-chart-wrap short"><canvas id="gvr_chart_weeks"></canvas></div>
+</div>
+
+<div class="gvr-panel">
+  <h3 class="panel-title">Haus und Sonne</h3>
+  <p class="gvr-note" id="gvr_sun_note">Nur Tage, an denen der Grundverbrauch und die PV beide gemessen sind.</p>
+  <div class="gvr-chart-wrap short"><canvas id="gvr_chart_sun"></canvas></div>
+</div>
+
+<div class="gvr-panel">
+  <h3 class="panel-title">Hinweise zur Rechnung</h3>
+  <p class="gvr-note" id="gvr_formula"></p>
+  <div id="gvr_notices"></div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+(function () {
+  const nf = new Intl.NumberFormat("de-DE", { maximumFractionDigits: 2, minimumFractionDigits: 2 });
+  const nf1 = new Intl.NumberFormat("de-DE", { maximumFractionDigits: 1, minimumFractionDigits: 1 });
+  let longChart = null;
+  let weekChart = null;
+  let sunChart = null;
+  let report = null;
+
+  function kw(value) {
+    if (value == null || Number.isNaN(Number(value))) return "—";
+    return nf.format(Number(value));
+  }
+
+  function setBig(id, value) {
+    const el = document.getElementById(id);
+    el.innerHTML = kw(value) + ' <span>kW</span>';
+  }
+
+  function esc(text) {
+    return String(text == null ? "" : text)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function card(title, main, sub) {
+    return '<div class="gvr-card"><p class="gvr-kicker">' + title + '</p><strong>' + main + '</strong><p>' + sub + '</p></div>';
+  }
+
+  function renderMiners(data) {
+    const host = document.getElementById("gvr_miners");
+    host.innerHTML = (data.miners || []).map(function (m) {
+      const modes = [
+        ["continuous", "Durchgehend"],
+        ["off", "Aus"]
+      ].map(function (pair) {
+        const on = m.mode === pair[0] ? " active" : "";
+        return '<label class="' + on.trim() + '"><input type="radio" name="mode_' + m.ip + '" value="' + pair[0] + '"' +
+          (m.mode === pair[0] ? " checked" : "") + '> ' + pair[1] + '</label>';
+      }).join("");
+      return '<div class="gvr-miner"><div><strong>' + esc(m.name) + '</strong><div class="gvr-note">' +
+        nf1.format(m.power_kw) + ' kW aus dem Steuerungsalgorithmus</div></div><div class="gvr-modes">' +
+        modes + '</div></div>';
+    }).join("");
+    host.querySelectorAll("input").forEach(function (input) {
+      input.addEventListener("change", saveModes);
+    });
+  }
+
+  function render(data) {
+    report = data;
+    setBig("gvr_weekly", data.weekly_kw);
+    setBig("gvr_daily", data.daily_kw);
+    const sub = document.getElementById("gvr_weekly_sub");
+    const bits = [];
+    if (data.weekly_kwh_per_day != null) bits.push(nf1.format(data.weekly_kwh_per_day) + " kWh am Tag");
+    if (data.month_projected_kwh != null) bits.push("etwa " + nf.format(data.month_projected_kwh) + " kWh in 30 Tagen");
+    if (data.next_week_change) bits.push("nächste automatische Wochenänderung " + data.next_week_change);
+    if (data.trend_label) bits.push("Grundverbrauch " + data.trend_label);
+    sub.textContent = bits.join(" · ") || "Stabiler Wert, höchstens einmal pro Woche automatisch neu.";
+    const meta = document.getElementById("gvr_meta");
+    const w = data.window || {};
+    meta.innerHTML = [
+      ["Tage mit PV", data.days_used],
+      ["Grundverbrauch im Fenster", w.base_kwh != null ? nf1.format(w.base_kwh) + " kWh" : "—"],
+      ["PV im Fenster", w.pv_kwh != null ? nf1.format(w.pv_kwh) + " kWh" : "—"],
+      ["Wasser", w.hydro_kwh != null ? nf1.format(w.hydro_kwh) + " kWh" : "—"],
+      ["Dauerläufer", nf1.format(w.continuous_kwh || 0) + " kWh"]
+    ].map(function (pair) {
+      return '<span class="gvr-pill">' + pair[0] + ": " + pair[1] + "</span>";
+    }).join("");
+
+    const today = (data.averages || {}).today || {};
+    const week = (data.averages || {}).week || {};
+    const month = (data.averages || {}).month || {};
+    document.getElementById("gvr_cards").innerHTML = [
+      card("Heute bisher", today.base_kwh != null ? nf1.format(today.base_kwh) + " kWh" : "—",
+        today.hours != null
+          ? nf1.format(today.hours) + " h gemessen · " + kw(today.base_kw) + " kW · 24-h-Schätzung " + nf1.format(today.extrapolated_kwh || 0) + " kWh"
+          : "noch keine Messung"),
+      card("Letzte 7 Tage", week.base_kwh != null ? nf1.format(week.base_kwh) + " kWh" : "—",
+        week.days ? week.days + " volle Tage · " + kw(week.base_kw) + " kW" : "zu wenig volle Tage"),
+      card("Letzte 30 Tage", month.base_kwh != null ? nf1.format(month.base_kwh) + " kWh" : "—",
+        month.days ? month.days + " volle Tage · " + kw(month.base_kw) + " kW" : "zu wenig volle Tage")
+    ].join("");
+
+    document.getElementById("gvr_alerts").innerHTML = (data.alerts || []).map(function (text) {
+      return '<div class="gvr-alert">' + esc(text) + "</div>";
+    }).join("");
+    document.getElementById("gvr_formula").textContent = data.formula || "";
+    document.getElementById("gvr_notices").innerHTML = (data.notices || []).map(function (text) {
+      return '<p class="gvr-note">' + esc(text) + "</p>";
+    }).join("");
+    renderMiners(data);
+    renderHighlights(data);
+    renderCharts(data);
+  }
+
+  function longDate(iso) {
+    const parts = String(iso || "").split("-");
+    if (parts.length < 3) return iso || "—";
+    return parts[2] + "." + parts[1] + "." + parts[0];
+  }
+
+  function renderHighlights(data) {
+    const hi = data.highlights || {};
+    const hungry = hi.hungriest;
+    const quiet = hi.quietest;
+    const cmp = hi.compare || {};
+    const sun = data.sun;
+    let compareMain = "—";
+    let compareSub = "Sieben Tage gegen die sieben Tage vier Wochen davor";
+    if (cmp.recent_kwh != null && cmp.delta_kwh != null && cmp.earlier_days) {
+      const delta = Number(cmp.delta_kwh);
+      compareMain = nf1.format(cmp.recent_kwh) + " kWh";
+      if (Math.abs(delta) < 0.3) {
+        compareSub = "etwa wie vor vier Wochen (" + nf1.format(cmp.earlier_kwh) + " kWh)";
+      } else if (delta > 0) {
+        compareSub = nf1.format(delta) + " kWh mehr pro Tag als vor vier Wochen";
+      } else {
+        compareSub = nf1.format(Math.abs(delta)) + " kWh weniger pro Tag als vor vier Wochen";
+      }
+    } else if (cmp.recent_kwh != null) {
+      compareMain = nf1.format(cmp.recent_kwh) + " kWh";
+      compareSub = "Vor vier Wochen liegen noch zu wenig Tage";
+    }
+    let sunMain = "—";
+    let sunSub = "Noch kein Tag mit Grundverbrauch und PV";
+    if (sun && sun.cover != null) {
+      sunMain = nf1.format(sun.cover) + "×";
+      sunSub = sun.days + " Sonnentage · Haus " + nf1.format(sun.base_kwh) + " kWh · PV " + nf1.format(sun.pv_kwh) + " kWh";
+    }
+    document.getElementById("gvr_highlights").innerHTML = [
+      card("Hungrigster Tag", hungry ? nf1.format(hungry.base_kwh) + " kWh" : "—", hungry ? longDate(hungry.date) : "noch kein voller Tag"),
+      card("Ruhigster Tag", quiet ? nf1.format(quiet.base_kwh) + " kWh" : "—", quiet ? longDate(quiet.date) : "noch kein voller Tag"),
+      card("Gegen vor vier Wochen", compareMain, compareSub),
+      card("Sonne deckt das Haus", sunMain, sunSub)
+    ].join("");
+  }
+
+  function dayLabel(iso) {
+    const parts = String(iso || "").split("-");
+    if (parts.length < 3) return iso;
+    return parts[2] + "." + parts[1] + ".";
+  }
+
+  function mean7(values) {
+    return values.map(function (_, index) {
+      const slice = values.slice(Math.max(0, index - 6), index + 1).filter(function (v) {
+        return v != null;
+      });
+      if (!slice.length) return null;
+      const sum = slice.reduce(function (a, b) { return a + b; }, 0);
+      return Math.round((sum / slice.length) * 100) / 100;
+    });
+  }
+
+  function drawBaseChart(canvas, rows, pointRadius) {
+    const labels = rows.map(function (r) { return dayLabel(r.date); });
+    const values = rows.map(function (r) { return r.base_kwh; });
+    return new Chart(canvas, {
+      type: "line",
+      data: {
+        labels: labels,
+        datasets: [
+          {
+            label: "Grundverbrauch an diesem Tag",
+            data: values,
+            borderColor: "#ffea00",
+            backgroundColor: "rgba(255, 234, 0, 0.12)",
+            pointRadius: pointRadius,
+            pointHoverRadius: 6,
+            pointBackgroundColor: "#ffea00",
+            borderWidth: 2,
+            tension: 0.15,
+            fill: true,
+            spanGaps: false
+          },
+          {
+            label: "Mittel der letzten 7 Tage",
+            data: mean7(values),
+            borderColor: "#ffffff",
+            borderDash: [6, 4],
+            pointRadius: 0,
+            borderWidth: 2,
+            tension: 0.25,
+            spanGaps: true
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { labels: { color: "#c5d0de" } },
+          tooltip: {
+            callbacks: {
+              title: function (items) {
+                const row = rows[items[0].dataIndex];
+                return row ? row.date : "";
+              },
+              label: function (item) {
+                if (item.parsed.y == null) return item.dataset.label;
+                return item.dataset.label + ": " + nf1.format(item.parsed.y) + " kWh";
+              }
+            }
+          }
+        },
+        scales: {
+          x: {
+            ticks: { color: "#8b9cb3", maxTicksLimit: 14, maxRotation: 0 },
+            grid: { color: "rgba(255,255,255,0.05)" }
+          },
+          y: {
+            beginAtZero: false,
+            title: { display: true, text: "kWh an diesem Tag", color: "#8b9cb3" },
+            ticks: { color: "#8b9cb3" },
+            grid: { color: "rgba(255,255,255,0.05)" }
+          }
+        }
+      }
+    });
+  }
+
+  function axisStyle() {
+    return {
+      ticks: { color: "#8b9cb3", maxTicksLimit: 12, maxRotation: 0 },
+      grid: { color: "rgba(255,255,255,0.05)" }
+    };
+  }
+
+  function renderCharts(data) {
+    const rows = data.year || [];
+    const note = document.getElementById("gvr_long_note");
+    if (note && rows.length) {
+      note.textContent = rows.length + " Tage, vom " + longDate(rows[0].date) + " bis " + longDate(rows[rows.length - 1].date) +
+        ". " + (data.filled_days || 0) + " davon sind gemessen, jeder Punkt ist so ein Tag. " +
+        "Leere Tage bleiben frei und füllen sich. Gelb = Grundverbrauch in kWh ohne Miner. Weiß gestrichelt = Mittel über 7 Tage.";
+    }
+    if (longChart) longChart.destroy();
+    longChart = drawBaseChart(document.getElementById("gvr_chart_long"), rows, 2);
+
+    const weeks = data.weeks || [];
+    if (weekChart) weekChart.destroy();
+    weekChart = new Chart(document.getElementById("gvr_chart_weeks"), {
+      type: "bar",
+      data: {
+        labels: weeks.map(function (w) { return w.label; }),
+        datasets: [{
+          label: "Grundverbrauch kWh pro Tag",
+          data: weeks.map(function (w) { return w.base_kwh; }),
+          backgroundColor: "rgba(255, 234, 0, 0.75)",
+          borderRadius: 6
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { labels: { color: "#c5d0de" } },
+          tooltip: {
+            callbacks: {
+              label: function (item) {
+                const week = weeks[item.dataIndex];
+                return nf1.format(item.parsed.y) + " kWh/Tag · " + (week ? week.days : 0) + " Tage";
+              }
+            }
+          }
+        },
+        scales: {
+          x: axisStyle(),
+          y: {
+            beginAtZero: false,
+            title: { display: true, text: "kWh pro Tag", color: "#8b9cb3" },
+            ticks: { color: "#8b9cb3" },
+            grid: { color: "rgba(255,255,255,0.05)" }
+          }
+        }
+      }
+    });
+
+    const sun = data.sun;
+    const sunNote = document.getElementById("gvr_sun_note");
+    if (sunChart) sunChart.destroy();
+    sunChart = null;
+    if (!sun) {
+      if (sunNote) sunNote.textContent = "Sobald Tage mit Grundverbrauch und gemessener PV gespeichert sind, steht hier, wie oft die Sonne das Haus deckt.";
+      return;
+    }
+    if (sunNote) {
+      sunNote.textContent = "An " + sun.days + " Tagen mit beiden Messungen. Ein solcher Tag hat den Hausverbrauch " +
+        nf1.format(sun.cover) + "-mal gedeckt.";
+    }
+    sunChart = new Chart(document.getElementById("gvr_chart_sun"), {
+      type: "bar",
+      data: {
+        labels: ["Grundverbrauch", "PV"],
+        datasets: [{
+          label: "kWh am Tag",
+          data: [sun.base_kwh, sun.pv_kwh],
+          backgroundColor: ["#ffea00", "#00e676"],
+          borderRadius: 8
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: axisStyle(),
+          y: {
+            beginAtZero: true,
+            title: { display: true, text: "kWh am Tag", color: "#8b9cb3" },
+            ticks: { color: "#8b9cb3" },
+            grid: { color: "rgba(255,255,255,0.05)" }
+          }
+        }
+      }
+    });
+  }
+
+  async function load() {
+    const response = await fetch("/api/grundverbrauch", { credentials: "same-origin" });
+    if (response.status === 401) {
+      window.location.href = "/login";
+      return;
+    }
+    render(await response.json());
+  }
+
+  async function saveModes() {
+    const modes = {};
+    document.querySelectorAll("#gvr_miners input:checked").forEach(function (input) {
+      modes[input.name.replace("mode_", "")] = input.value;
+    });
+    document.getElementById("gvr_save_state").textContent = "Rechne …";
+    const response = await fetch("/api/grundverbrauch/annahmen", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify({ modes: modes })
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      document.getElementById("gvr_save_state").textContent = data.error || "Speichern fehlgeschlagen.";
+      return;
+    }
+    render(data);
+    document.getElementById("gvr_save_state").textContent = "Annahme gespeichert. Nur die Rechnung hat sich geändert.";
+  }
+
+  load().catch(function (err) {
+    document.getElementById("gvr_alerts").innerHTML = '<div class="gvr-alert">Daten konnten nicht geladen werden.</div>';
+  });
+})();
+</script>
+{% endblock %}

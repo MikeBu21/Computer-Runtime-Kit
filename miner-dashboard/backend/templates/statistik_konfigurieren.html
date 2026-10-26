@@ -1,0 +1,829 @@
+{% extends "base.html" %}
+
+{% block title %}📈 Statistik konfigurieren{% endblock %}
+
+{% block extra_head %}
+  <style>
+    .stats-config-hero {
+      background:
+        radial-gradient(ellipse at 20% 0%, rgba(0, 230, 118, 0.14), transparent 45%),
+        radial-gradient(ellipse at 85% 30%, rgba(33, 150, 243, 0.12), transparent 40%),
+        var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 1.35rem 1.5rem;
+      margin-bottom: 1.25rem;
+    }
+    .stats-config-hero h2 { margin: 0 0 0.35rem; font-size: 1.35rem; }
+    .stats-config-hero p { margin: 0; color: var(--muted); font-size: 0.9rem; }
+    .stats-tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.45rem;
+      margin-bottom: 1.1rem;
+    }
+    .stats-tab {
+      border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--muted);
+      border-radius: 12px;
+      padding: 0.55rem 1rem;
+      font-size: 0.85rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .stats-tab:hover { color: #fff; background: rgba(255,255,255,0.08); }
+    .stats-tab.active {
+      color: #0a1410;
+      background: linear-gradient(180deg, #00e676, #00c853);
+      border-color: transparent;
+    }
+    .stats-panel-section { display: none; }
+    .stats-panel-section.active { display: block; }
+    .config-card {
+      background: rgba(15, 20, 27, 0.72);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 1.1rem 1.15rem;
+      margin-bottom: 1rem;
+    }
+    .config-card h5 {
+      margin: 0 0 0.75rem;
+      font-size: 0.95rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .config-table-wrap { overflow-x: auto; }
+    .config-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.82rem;
+    }
+    .config-table th {
+      text-align: left;
+      color: var(--muted);
+      font-weight: 600;
+      padding: 0.5rem 0.45rem;
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    .config-table td {
+      padding: 0.45rem;
+      border-bottom: 1px solid rgba(255,255,255,0.04);
+      vertical-align: middle;
+    }
+    .config-table tr:hover td { background: rgba(255,255,255,0.02); }
+    .config-table .form-control, .config-table select {
+      font-size: 0.8rem;
+      min-width: 8rem;
+    }
+    .color-input {
+      width: 2.4rem;
+      height: 2rem;
+      padding: 0.1rem;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: transparent;
+      cursor: pointer;
+    }
+    .btn-row-add {
+      border: 1px dashed rgba(0, 230, 118, 0.45);
+      background: rgba(0, 230, 118, 0.08);
+      color: var(--accent);
+      border-radius: 10px;
+      padding: 0.45rem 0.9rem;
+      font-size: 0.82rem;
+      font-weight: 600;
+      cursor: pointer;
+      margin-top: 0.65rem;
+    }
+    .btn-row-del {
+      border: 1px solid rgba(244, 67, 54, 0.35);
+      background: rgba(244, 67, 54, 0.1);
+      color: #ff8a80;
+      border-radius: 8px;
+      width: 2rem;
+      height: 2rem;
+      cursor: pointer;
+    }
+    .line-preview-card {
+      background:
+        linear-gradient(135deg, rgba(0, 230, 118, 0.06) 0%, transparent 50%),
+        linear-gradient(225deg, rgba(206, 147, 216, 0.08) 0%, transparent 45%),
+        rgba(10, 14, 20, 0.85);
+      border: 1px solid rgba(0, 230, 118, 0.2);
+      border-radius: 18px;
+      padding: 1rem 1.1rem 0.85rem;
+      margin-top: 1rem;
+      position: relative;
+      overflow: hidden;
+    }
+    .line-preview-card::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: repeating-linear-gradient(
+        90deg,
+        rgba(255,255,255,0.02) 0,
+        rgba(255,255,255,0.02) 1px,
+        transparent 1px,
+        transparent 48px
+      );
+      pointer-events: none;
+    }
+    .line-preview-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 0.65rem;
+      position: relative;
+      z-index: 1;
+    }
+    .line-preview-head h6 { margin: 0; font-size: 0.85rem; color: var(--accent); }
+    .line-preview-wrap {
+      height: 200px;
+      position: relative;
+      z-index: 1;
+    }
+    .line-preview-legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem 1rem;
+      margin-top: 0.65rem;
+      font-size: 0.72rem;
+      color: var(--muted);
+      position: relative;
+      z-index: 1;
+    }
+    .line-preview-legend span {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+    }
+    .line-preview-legend i {
+      display: inline-block;
+      width: 12px;
+      height: 3px;
+      border-radius: 2px;
+    }
+    .icon-picker {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.25rem;
+      max-width: 12rem;
+    }
+    .icon-pick {
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,0.04);
+      border-radius: 8px;
+      width: 2rem;
+      height: 2rem;
+      cursor: pointer;
+      font-size: 1rem;
+    }
+    .icon-pick.selected {
+      border-color: var(--accent);
+      background: rgba(0, 230, 118, 0.15);
+    }
+    .save-bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.65rem;
+      align-items: center;
+      margin-top: 1.25rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+    }
+    .save-status { font-size: 0.85rem; min-height: 1.2rem; }
+    .save-status.ok { color: var(--accent); }
+    .save-status.err { color: #ff8a80; }
+    .pie-subtabs { display: flex; gap: 0.4rem; margin-bottom: 0.75rem; }
+    .pie-subtab {
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--muted);
+      border-radius: 9px;
+      padding: 0.35rem 0.75rem;
+      font-size: 0.78rem;
+      cursor: pointer;
+    }
+    .pie-subtab.active { color: #fff; border-color: rgba(0,230,118,0.4); background: rgba(0,230,118,0.1); }
+  </style>
+{% endblock %}
+
+{% block content %}
+  <div class="stats-config-hero">
+    <h2>📈 Statistik & Stromfluss konfigurieren</h2>
+    <p>Sensoren im Dashboard-Stromfluss zuordnen (auf Kästchen klicken). Kreis- und Liniendiagramm sowie Automatik nutzen dieselben sichtbaren Werte.</p>
+  </div>
+
+  <div class="config-card" style="margin-bottom:1.25rem;">
+    <h5>🧠 Steuerungszuordnung (automatisch)</h5>
+    <p style="margin:0 0 0.75rem;color:var(--muted);font-size:0.82rem;">
+      Die Miner-Automatik und der Steuerungsalgorithmus lesen die Werte aus dem Stromfluss — keine separate „Verbrauchsdaten“-Seite mehr nötig.
+      Versteckte Kästchen (×) liefern keinen Wert an die Steuerung.
+    </p>
+    <div class="config-table-wrap">
+      <table class="config-table">
+        <thead>
+          <tr>
+            <th>Steuerung braucht</th>
+            <th>Quelle im Dashboard</th>
+            <th>Aktueller Wert</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for b in control_live.bindings %}
+          <tr{% if not b.visible %} style="opacity:0.45;"{% endif %}>
+            <td>{{ b.label }}</td>
+            <td><code style="font-size:0.78rem;">{{ b.source }}</code>{% if not b.visible %} <span style="color:var(--muted);">(Feld ausgeblendet)</span>{% endif %}</td>
+            <td>
+              {% if b.value is none %}—{% elif b.role == 'battery_soc' %}{{ '%.0f'|format(b.value) }} %{% else %}{{ '%.3f'|format(b.value) }} kW{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  {% if message or error %}
+  <div class="panel" style="margin-bottom: 1rem; border-color: {% if error %}#f44336{% else %}var(--accent){% endif %};">
+    <p style="margin:0;color:{% if error %}#ff8a80{% else %}var(--accent){% endif %};">{{ error or message }}</p>
+  </div>
+  {% endif %}
+
+  <div class="stats-tabs">
+    <button type="button" class="stats-tab active" data-tab="flow">➕ Eigene Stromfluss-Felder</button>
+    <button type="button" class="stats-tab" data-tab="pie" id="tab_pie">🥧 Kreisdiagramme</button>
+    <button type="button" class="stats-tab" data-tab="line" id="tab_line">📉 Liniendiagramm</button>
+  </div>
+
+  <div class="stats-panel-section active" id="section_flow">
+    <div class="config-card">
+      <h5>⚡ Zusätzliche Felder im Stromfluss</h5>
+      <p style="color:var(--muted);font-size:0.82rem;margin:0 0 0.85rem">
+        Felder erscheinen unter dem Stromfluss-Diagramm. Klicke im Dashboard auf ein Feld, um Sensoren zuzuordnen.
+      </p>
+      <div class="config-table-wrap">
+        <table class="config-table" id="table_custom_flow">
+          <thead>
+            <tr>
+              <th>Aktiv</th>
+              <th>Name</th>
+              <th>Symbol</th>
+              <th>Sensoren</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <button type="button" class="btn-row-add" id="add_custom_flow">＋ Feld hinzufügen</button>
+    </div>
+  </div>
+
+  <div class="stats-panel-section" id="section_pie">
+    <div class="pie-subtabs">
+      <button type="button" class="pie-subtab active" data-pie="generation">☀️ Erzeugungsmix</button>
+      <button type="button" class="pie-subtab" data-pie="consumption">🏠 Verbrauchsverteilung</button>
+    </div>
+    <div class="config-card" id="pie_gen_card">
+      <h5>☀️ Erzeugungsmix (Kreisdiagramm)</h5>
+      <div class="config-table-wrap">
+        <table class="config-table" id="table_pie_generation">
+          <thead>
+            <tr>
+              <th>Aktiv</th>
+              <th>Bezeichnung</th>
+              <th>Datenquelle</th>
+              <th>Farbe</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <button type="button" class="btn-row-add" data-add-pie="generation">＋ Segment hinzufügen</button>
+    </div>
+    <div class="config-card" id="pie_con_card" style="display:none">
+      <h5>🏠 Verbrauchsverteilung (Kreisdiagramm)</h5>
+      <div class="config-table-wrap">
+        <table class="config-table" id="table_pie_consumption">
+          <thead>
+            <tr>
+              <th>Aktiv</th>
+              <th>Bezeichnung</th>
+              <th>Datenquelle</th>
+              <th>Farbe</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <button type="button" class="btn-row-add" data-add-pie="consumption">＋ Segment hinzufügen</button>
+    </div>
+  </div>
+
+  <div class="stats-panel-section" id="section_line">
+    <div class="config-card">
+      <h5>📉 Liniendiagramm (24h Tagesverlauf)</h5>
+      <p style="color:var(--muted);font-size:0.82rem;margin:0 0 0.85rem">
+        Jede Zeile = eine Linie im Diagramm. Prozent-Achse rechts für SOC, kW-Achse links für Leistung.
+      </p>
+      <div class="config-table-wrap">
+        <table class="config-table" id="table_line_series">
+          <thead>
+            <tr>
+              <th>Aktiv</th>
+              <th>Bezeichnung</th>
+              <th>Datenquelle</th>
+              <th>Farbe</th>
+              <th>Füllung</th>
+              <th>Achse</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <button type="button" class="btn-row-add" id="add_line_series">＋ Linie hinzufügen</button>
+
+      <div class="line-preview-card">
+        <div class="line-preview-head">
+          <h6>✨ Live-Vorschau</h6>
+          <span style="font-size:0.72rem;color:var(--muted)">Aktualisiert alle 8 s</span>
+        </div>
+        <div class="line-preview-wrap">
+          <canvas id="line_preview_chart"></canvas>
+        </div>
+        <div class="line-preview-legend" id="line_preview_legend"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="save-bar">
+    <button type="button" class="btn-primary-custom" id="save_config_btn">💾 Alles speichern</button>
+    <a href="/" class="btn-secondary-custom">🔙 Dashboard</a>
+    <span class="save-status" id="save_status"></span>
+    <span class="save-status" id="config_dirty_hint" style="display:none;color:#ffc107;">Ungespeicherte Änderungen — Auto-Aktualisierung pausiert</span>
+  </div>
+{% endblock %}
+
+{% block extra_scripts %}
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script>
+    const FLOW_ICONS = {{ flow_icons | tojson }};
+    let configDraft = {{ dash_config | tojson }};
+    let sourceOptions = {{ source_options | tojson }};
+    let linePreviewChart = null;
+    let configDirty = false;
+
+    function markConfigDirty() {
+      configDirty = true;
+      const hint = document.getElementById("config_dirty_hint");
+      if (hint) hint.style.display = "inline";
+    }
+
+    function clearConfigDirty() {
+      configDirty = false;
+      const hint = document.getElementById("config_dirty_hint");
+      if (hint) hint.style.display = "none";
+    }
+
+    function uid(prefix) {
+      return prefix + "_" + Math.random().toString(36).slice(2, 8);
+    }
+
+    function buildSourceSelect(selected, selectClass, extraAttrs) {
+      const groups = {};
+      const known = new Set();
+      sourceOptions.forEach(opt => {
+        known.add(opt.value);
+        const g = opt.group || "Sonstige";
+        if (!groups[g]) groups[g] = [];
+        groups[g].push(opt);
+      });
+      const cls = selectClass || "form-control source-select";
+      let opts = "";
+      if (selected && !known.has(selected)) {
+        opts += '<option value="' + selected + '" selected>⚠ Nicht mehr im Stromfluss</option>';
+      }
+      Object.keys(groups).forEach(g => {
+        opts += '<optgroup label="' + g + '">';
+        groups[g].forEach(opt => {
+          const sel = opt.value === selected ? " selected" : "";
+          opts += '<option value="' + opt.value + '"' + sel + '>' + opt.label + '</option>';
+        });
+        opts += '</optgroup>';
+      });
+      return '<select class="' + cls + '"' + (extraAttrs || "") + '>' + opts + '</select>';
+    }
+
+    function refreshSourceOptions() {
+      return fetch("/api/dashboard/config")
+        .then(r => r.json())
+        .then(data => {
+          sourceOptions = data.source_options || sourceOptions;
+          if (configDirty) return;
+          if (data.config) configDraft = data.config;
+          renderAll();
+        })
+        .catch(() => {});
+    }
+
+    function renderCustomFlowTable() {
+      const tbody = document.querySelector("#table_custom_flow tbody");
+      if (!tbody) return;
+      tbody.innerHTML = "";
+      (configDraft.custom_flow_fields || []).forEach((field, idx) => {
+        const tr = document.createElement("tr");
+        const sensorCount = (field.sensors || []).filter(s => s.entity_id).length;
+        let icons = '<div class="icon-picker">';
+        FLOW_ICONS.forEach(ic => {
+          icons += '<button type="button" class="icon-pick' + (field.icon === ic ? " selected" : "") +
+            '" data-idx="' + idx + '" data-icon="' + ic + '">' + ic + '</button>';
+        });
+        icons += '</div>';
+        tr.innerHTML =
+          '<td><input type="checkbox" class="cf-enabled" data-idx="' + idx + '"' +
+          (field.enabled !== false ? " checked" : "") + '></td>' +
+          '<td><input type="text" class="form-control cf-name" data-idx="' + idx + '" value="' +
+          (field.name || "").replace(/"/g, "&quot;") + '"></td>' +
+          '<td>' + icons + '</td>' +
+          '<td style="color:var(--muted)">' + sensorCount + ' Sensor(en) · im Dashboard zuordnen</td>' +
+          '<td><button type="button" class="btn-row-del cf-del" data-idx="' + idx + '">×</button></td>';
+        tbody.appendChild(tr);
+      });
+      bindCustomFlowEvents();
+    }
+
+    function bindCustomFlowEvents() {
+      document.querySelectorAll(".cf-enabled").forEach(el => {
+        el.onchange = () => {
+          configDraft.custom_flow_fields[Number(el.dataset.idx)].enabled = el.checked;
+          markConfigDirty();
+        };
+      });
+      document.querySelectorAll(".cf-name").forEach(el => {
+        el.oninput = () => {
+          configDraft.custom_flow_fields[Number(el.dataset.idx)].name = el.value;
+          markConfigDirty();
+        };
+      });
+      document.querySelectorAll(".icon-pick").forEach(btn => {
+        btn.onclick = () => {
+          const idx = Number(btn.dataset.idx);
+          configDraft.custom_flow_fields[idx].icon = btn.dataset.icon;
+          markConfigDirty();
+          renderCustomFlowTable();
+        };
+      });
+      document.querySelectorAll(".cf-del").forEach(btn => {
+        btn.onclick = () => {
+          const idx = Number(btn.dataset.idx);
+          if (!confirm("Feld wirklich löschen?")) return;
+          configDraft.custom_flow_fields.splice(idx, 1);
+          markConfigDirty();
+          renderCustomFlowTable();
+        };
+      });
+    }
+
+    function renderPieTable(chart) {
+      const key = chart === "generation" ? "pie_generation" : "pie_consumption";
+      const tableId = chart === "generation" ? "#table_pie_generation" : "#table_pie_consumption";
+      const tbody = document.querySelector(tableId + " tbody");
+      if (!tbody) return;
+      tbody.innerHTML = "";
+      (configDraft[key] || []).forEach((row, idx) => {
+        const tr = document.createElement("tr");
+        tr.innerHTML =
+          '<td><input type="checkbox" class="pie-enabled" data-chart="' + chart + '" data-idx="' + idx + '"' +
+          (row.enabled !== false ? " checked" : "") + '></td>' +
+          '<td><input type="text" class="form-control pie-label" data-chart="' + chart + '" data-idx="' + idx +
+          '" value="' + (row.label || "").replace(/"/g, "&quot;") + '"></td>' +
+          '<td class="source-cell">' + buildSourceSelect(
+            row.source,
+            "form-control source-select pie-source",
+            ' data-chart="' + chart + '" data-idx="' + idx + '"'
+          ) + '</td>' +
+          '<td><input type="color" class="color-input pie-color" data-chart="' + chart + '" data-idx="' + idx +
+          '" value="' + (row.color || "#ffc107") + '"></td>' +
+          '<td><button type="button" class="btn-row-del pie-del" data-chart="' + chart + '" data-idx="' + idx + '">×</button></td>';
+        tbody.appendChild(tr);
+      });
+      bindPieEvents();
+    }
+
+    function bindPieEvents() {
+      document.querySelectorAll(".pie-enabled").forEach(el => {
+        el.onchange = () => {
+          const key = el.dataset.chart === "generation" ? "pie_generation" : "pie_consumption";
+          configDraft[key][Number(el.dataset.idx)].enabled = el.checked;
+          markConfigDirty();
+        };
+      });
+      document.querySelectorAll(".pie-label").forEach(el => {
+        el.oninput = () => {
+          const key = el.dataset.chart === "generation" ? "pie_generation" : "pie_consumption";
+          configDraft[key][Number(el.dataset.idx)].label = el.value;
+          markConfigDirty();
+        };
+      });
+      document.querySelectorAll("#table_pie_generation .pie-source, #table_pie_consumption .pie-source").forEach(sel => {
+        const chart = sel.dataset.chart;
+        const idx = Number(sel.dataset.idx);
+        sel.onchange = () => {
+          const key = chart === "generation" ? "pie_generation" : "pie_consumption";
+          if (configDraft[key] && configDraft[key][idx]) {
+            configDraft[key][idx].source = sel.value;
+            markConfigDirty();
+          }
+        };
+      });
+      document.querySelectorAll(".pie-color").forEach(el => {
+        el.oninput = () => {
+          const key = el.dataset.chart === "generation" ? "pie_generation" : "pie_consumption";
+          configDraft[key][Number(el.dataset.idx)].color = el.value;
+          markConfigDirty();
+        };
+      });
+      document.querySelectorAll(".pie-del").forEach(btn => {
+        btn.onclick = () => {
+          const key = btn.dataset.chart === "generation" ? "pie_generation" : "pie_consumption";
+          configDraft[key].splice(Number(btn.dataset.idx), 1);
+          markConfigDirty();
+          renderPieTable(btn.dataset.chart);
+        };
+      });
+    }
+
+    function renderLineTable() {
+      const tbody = document.querySelector("#table_line_series tbody");
+      if (!tbody) return;
+      tbody.innerHTML = "";
+      (configDraft.line_series || []).forEach((row, idx) => {
+        const tr = document.createElement("tr");
+        tr.innerHTML =
+          '<td><input type="checkbox" class="line-enabled" data-idx="' + idx + '"' +
+          (row.enabled !== false ? " checked" : "") + '></td>' +
+          '<td><input type="text" class="form-control line-label" data-idx="' + idx +
+          '" value="' + (row.label || "").replace(/"/g, "&quot;") + '"></td>' +
+          '<td class="source-cell">' + buildSourceSelect(
+            row.source,
+            "form-control source-select line-source",
+            ' data-idx="' + idx + '"'
+          ) + '</td>' +
+          '<td><input type="color" class="color-input line-color" data-idx="' + idx +
+          '" value="' + (row.color || "#00ff41") + '"></td>' +
+          '<td><input type="checkbox" class="line-fill" data-idx="' + idx + '"' + (row.fill ? " checked" : "") + '></td>' +
+          '<td><select class="form-control line-axis" data-idx="' + idx + '">' +
+          '<option value="kw"' + (row.y_axis !== "percent" ? " selected" : "") + '>kW</option>' +
+          '<option value="percent"' + (row.y_axis === "percent" ? " selected" : "") + '>%</option>' +
+          '</select></td>' +
+          '<td><button type="button" class="btn-row-del line-del" data-idx="' + idx + '">×</button></td>';
+        tbody.appendChild(tr);
+      });
+      bindLineEvents();
+    }
+
+    function bindLineEvents() {
+      document.querySelectorAll(".line-enabled").forEach(el => {
+        el.onchange = () => {
+          configDraft.line_series[Number(el.dataset.idx)].enabled = el.checked;
+          markConfigDirty();
+          refreshLinePreview();
+        };
+      });
+      document.querySelectorAll(".line-label").forEach(el => {
+        el.oninput = () => {
+          configDraft.line_series[Number(el.dataset.idx)].label = el.value;
+          markConfigDirty();
+        };
+      });
+      document.querySelectorAll("#table_line_series .line-source").forEach(sel => {
+        const idx = Number(sel.dataset.idx);
+        sel.onchange = () => {
+          if (configDraft.line_series && configDraft.line_series[idx]) {
+            configDraft.line_series[idx].source = sel.value;
+            markConfigDirty();
+            refreshLinePreview();
+          }
+        };
+      });
+      document.querySelectorAll("#table_line_series .line-color").forEach(el => {
+        el.oninput = () => {
+          configDraft.line_series[Number(el.dataset.idx)].color = el.value;
+          markConfigDirty();
+          refreshLinePreview();
+        };
+      });
+      document.querySelectorAll("#table_line_series .line-fill").forEach(el => {
+        el.onchange = () => {
+          configDraft.line_series[Number(el.dataset.idx)].fill = el.checked;
+          markConfigDirty();
+          refreshLinePreview();
+        };
+      });
+      document.querySelectorAll("#table_line_series .line-axis").forEach(el => {
+        el.onchange = () => {
+          configDraft.line_series[Number(el.dataset.idx)].y_axis = el.value;
+          markConfigDirty();
+          refreshLinePreview();
+        };
+      });
+      document.querySelectorAll("#table_line_series .line-del").forEach(btn => {
+        btn.onclick = () => {
+          configDraft.line_series.splice(Number(btn.dataset.idx), 1);
+          markConfigDirty();
+          renderLineTable();
+          refreshLinePreview();
+        };
+      });
+    }
+
+    function hexToRgba(hex, alpha) {
+      const h = String(hex || "#888").replace("#", "");
+      return "rgba(" + parseInt(h.substring(0,2),16) + "," + parseInt(h.substring(2,4),16) + "," +
+        parseInt(h.substring(4,6),16) + "," + alpha + ")";
+    }
+
+    function refreshLinePreview() {
+      fetch("/energy_timeseries_24h")
+        .then(r => r.json())
+        .then(data => {
+          const canvas = document.getElementById("line_preview_chart");
+          if (!canvas || typeof Chart === "undefined") return;
+          const labels = (data.labels || []).filter((_, i) => i % 60 === 0);
+          const series = (configDraft.line_series || []).filter(s => s.enabled !== false);
+          const datasets = series.map((ser, idx) => {
+            const fullData = (data.series || []).find(s => s.id === ser.id);
+            const raw = fullData ? fullData.data : [];
+            const sampled = raw.filter((_, i) => i % 60 === 0);
+            const isPct = ser.y_axis === "percent";
+            return {
+              label: ser.label,
+              data: sampled,
+              borderColor: ser.color,
+              backgroundColor: ser.fill ? hexToRgba(ser.color, 0.2) : "transparent",
+              fill: ser.fill && !isPct,
+              tension: 0.2,
+              pointRadius: 0,
+              yAxisID: isPct ? "y1" : "y",
+            };
+          });
+          const legendEl = document.getElementById("line_preview_legend");
+          if (legendEl) {
+            legendEl.innerHTML = series.map(s =>
+              '<span><i style="background:' + s.color + '"></i> ' + s.label + '</span>'
+            ).join("");
+          }
+          const opts = {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: {
+              x: { ticks: { color: "#8b9cb3", maxTicksLimit: 8 }, grid: { color: "rgba(255,255,255,0.05)" } },
+              y: { position: "left", ticks: { color: "#8b9cb3" }, grid: { color: "rgba(255,255,255,0.05)" } },
+              y1: { position: "right", min: 0, max: 100, grid: { drawOnChartArea: false }, ticks: { color: "#42a5f5" } },
+            },
+          };
+          if (linePreviewChart) {
+            linePreviewChart.data = { labels, datasets };
+            linePreviewChart.update("none");
+          } else {
+            linePreviewChart = new Chart(canvas, { type: "line", data: { labels, datasets }, options: opts });
+          }
+        })
+        .catch(() => {});
+    }
+
+    function saveConfig() {
+      const status = document.getElementById("save_status");
+      fetch("/api/dashboard/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(configDraft),
+      })
+        .then(r => r.json())
+        .then(res => {
+          if (!res.ok) throw new Error(res.error || "Fehler");
+          configDraft = res.config;
+          sourceOptions = res.source_options || sourceOptions;
+          if (status) { status.textContent = "Gespeichert ✓"; status.className = "save-status ok"; }
+          clearConfigDirty();
+          renderCustomFlowTable();
+          renderPieTable("generation");
+          renderPieTable("consumption");
+          renderLineTable();
+          refreshLinePreview();
+        })
+        .catch(err => {
+          if (status) { status.textContent = String(err.message || err); status.className = "save-status err"; }
+        });
+    }
+
+    function renderAll() {
+      renderCustomFlowTable();
+      renderPieTable("generation");
+      renderPieTable("consumption");
+      renderLineTable();
+      refreshLinePreview();
+    }
+
+    function initTabs() {
+      document.querySelectorAll(".stats-tab").forEach(tab => {
+        tab.onclick = () => {
+          document.querySelectorAll(".stats-tab").forEach(t => t.classList.remove("active"));
+          document.querySelectorAll(".stats-panel-section").forEach(s => s.classList.remove("active"));
+          tab.classList.add("active");
+          document.getElementById("section_" + tab.dataset.tab).classList.add("active");
+        };
+      });
+      document.querySelectorAll(".pie-subtab").forEach(tab => {
+        tab.onclick = () => {
+          document.querySelectorAll(".pie-subtab").forEach(t => t.classList.remove("active"));
+          tab.classList.add("active");
+          const isGen = tab.dataset.pie === "generation";
+          document.getElementById("pie_gen_card").style.display = isGen ? "block" : "none";
+          document.getElementById("pie_con_card").style.display = isGen ? "none" : "block";
+        };
+      });
+      if (location.hash === "#pie") document.getElementById("tab_pie").click();
+      if (location.hash === "#line") document.getElementById("tab_line").click();
+    }
+
+    function countFlowNodesDraft() {
+      const hidden = configDraft.flow_hidden_builtins || [];
+      const builtins = 6 - hidden.length;
+      const custom = (configDraft.custom_flow_fields || []).filter(f => f.enabled !== false).length;
+      return builtins + custom;
+    }
+
+    document.getElementById("add_custom_flow")?.addEventListener("click", () => {
+      if (countFlowNodesDraft() >= 9) {
+        alert("Maximal 9 Kästchen um den Inverter. Entferne zuerst ein Feld im Dashboard.");
+        return;
+      }
+      configDraft.custom_flow_fields = configDraft.custom_flow_fields || [];
+      configDraft.custom_flow_fields.push({
+        id: uid("feld"),
+        name: "Neues Feld",
+        icon: "⚡",
+        enabled: true,
+        sensors: [],
+      });
+      markConfigDirty();
+      renderCustomFlowTable();
+    });
+
+    document.querySelectorAll("[data-add-pie]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const chart = btn.dataset.addPie;
+        const key = chart === "generation" ? "pie_generation" : "pie_consumption";
+        configDraft[key] = configDraft[key] || [];
+        configDraft[key].push({
+          id: uid(chart === "generation" ? "gen" : "con"),
+          label: "Neues Segment",
+          source: "field.pv",
+          color: "#ffc107",
+          enabled: true,
+        });
+        markConfigDirty();
+        renderPieTable(chart);
+      });
+    });
+
+    document.getElementById("add_line_series")?.addEventListener("click", () => {
+      configDraft.line_series = configDraft.line_series || [];
+      configDraft.line_series.push({
+        id: uid("line"),
+        label: "Neue Linie",
+        source: "field.pv",
+        color: "#00ff41",
+        fill: false,
+        y_axis: "kw",
+        enabled: true,
+      });
+      markConfigDirty();
+      renderLineTable();
+      refreshLinePreview();
+    });
+
+    document.getElementById("save_config_btn")?.addEventListener("click", saveConfig);
+
+    document.addEventListener("DOMContentLoaded", () => {
+      initTabs();
+      renderAll();
+      setInterval(refreshLinePreview, 8000);
+      setInterval(refreshSourceOptions, 10000);
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible") refreshSourceOptions();
+      });
+    });
+  </script>
+{% endblock %}

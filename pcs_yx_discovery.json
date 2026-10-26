@@ -1,0 +1,36 @@
+{
+  "zeitstempel": "2026-06-05 19:43:06",
+  "punkte": {
+    "pub_acdc:1:pcs_yx105": {
+      "key": "pub_acdc:1:pcs_yx105",
+      "quality": 513,
+      "time": 1780680659889
+    },
+    "pub_acdc:1:pcs_yx106": {
+      "key": "pub_acdc:1:pcs_yx106",
+      "quality": 513,
+      "time": 1780680659889
+    },
+    "pub_acdc:1:pcs_yx115": {
+      "key": "pub_acdc:1:pcs_yx115",
+      "quality": 1,
+      "time": 1780680659889
+    },
+    "pub_acdc:1:pcs_yx85": 1,
+    "pub_acdc:1:pcs_yx87": 1,
+    "pub_acdc:1:pcs_yx88": {
+      "key": "pub_acdc:1:pcs_yx88",
+      "quality": 513,
+      "time": 1780680659889
+    }
+  },
+  "aktiv": [
+    "pub_acdc:1:pcs_yx85",
+    "pub_acdc:1:pcs_yx87"
+  ],
+  "aktiv_labels": [
+    "pub_acdc:1:pcs_yx85",
+    "pub_acdc:1:pcs_yx87"
+  ],
+  "ok": false
+}

@@ -1,0 +1,18 @@
+[Unit]
+Description=Miner Boot-Reparatur nach Stromausfall (JSON/Typen + RAM-Hydrate)
+After=local-fs.target
+Before=miner-dashboard.service miner-maintenance.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/piminer/minersteuerung/miner-dashboard
+Environment=MINER_RAM_CACHE=1
+Environment=MINER_RAM_ROOT=/dev/shm/minersteuerung
+Environment=MINER_RAM_FLUSH_SEC=3600
+Environment=MINER_LOG_DIR=/dev/shm/minersteuerung/logs
+Environment=MINER_ROOT=/home/piminer/minersteuerung
+ExecStart=/home/piminer/minersteuerung/miner-dashboard/boot_repair_after_powerloss.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=default.target

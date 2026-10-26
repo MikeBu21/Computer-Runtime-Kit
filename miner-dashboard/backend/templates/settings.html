@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+
+{% block title %}⚙️ Einstellungen{% endblock %}
+
+{% block content %}
+  <div class="page-header">
+    <h2>⚙️ Einstellungen</h2>
+    <p>Login-Daten für das Dashboard ändern</p>
+  </div>
+
+  <div class="panel" style="max-width: 560px;">
+    <form method="post">
+      <div class="mb-3">
+        <label for="new_username" class="form-label">Neuer Benutzername</label>
+        <input type="text" class="form-control" id="new_username" name="new_username" required>
+      </div>
+      <div class="mb-3">
+        <label for="new_password" class="form-label">Neues Passwort</label>
+        <input type="password" class="form-control" id="new_password" name="new_password" required>
+      </div>
+      <div class="action-row">
+        <button type="submit" class="btn-primary-custom">💾 Speichern</button>
+        <a href="/" class="btn-secondary-custom">🔙 Zurück</a>
+      </div>
+    </form>
+  </div>
+{% endblock %}

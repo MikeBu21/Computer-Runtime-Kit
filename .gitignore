@@ -1,0 +1,94 @@
+# Runtime / rebuildable only — credentials and config ARE tracked (plain text by design).
+# Do not add secret/config exclusions here.
+
+# Python virtual envs & caches (recreate with pip from requirements)
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+scraper_env/
+smartmeter-env/
+*.egg-info/
+.pytest_cache/
+
+# IDE / editor / tools
+.cursor/
+.cursor-server/
+.vscode/
+.idea/
+.wdm/
+.npm/
+.pki/
+.mozilla/
+.pp_backup/
+
+# OS & session
+.DS_Store
+Thumbs.db
+.xsession-errors*
+.sudo_as_admin_successful
+.cache/
+.config/
+.local/
+.bash_history*
+.zsh_history
+.history
+.ssh/
+.Xauthority
+
+# Large binaries & archives
+*.deb
+*.tgz
+*.tar.gz
+*.zip
+Python-3.9.18/
+screenshot.png
+fehler_screenshot.png
+seite_debug.html
+
+# Home Assistant runtime (config + custom_components ARE tracked)
+homeassistant/venv/
+homeassistant/config/home-assistant_v2.db
+homeassistant/config/home-assistant_v2.db-*
+homeassistant/config/home-assistant.log*
+homeassistant/config/.ha_run.lock
+homeassistant/config/tts/
+homeassistant/config/deps/
+
+# Runtime / logs / temp data (not needed to clone+run)
+*.log
+logs/
+control_algorithm_state.json
+control_algorithm_heartbeat.json
+control_algorithm_steering_history.json
+control_algorithm_steering_history.lock
+**/control_algorithm_state.json
+**/control_algorithm_heartbeat.json
+**/control_algorithm_steering_history.json
+**/control_algorithm_steering_history.lock
+enline_debug/
+backup-*
+*.bak*
+*.vor-restore*
+*.deployed*
+pcs_alarm_log.txt
+scraper_last_body.txt
+scraper_last_rtdata.json
+miner_status.json
+daten.json
+dsmr_output.txt
+ip_recovery_notifications.json
+**/ip_recovery_notifications.json
+**/.ip_recovery.lock
+
+# Nested third-party git repos (clone separately if needed)
+Gurux.DLMS.Python/
+dsmr-reader/
+miner_web_interface/grpc-web/
+
+# Go build cache
+go/pkg/
+
+# Raspberry Pi docs
+Bookshelf/

@@ -1,0 +1,766 @@
+#
+# Afore | Hybrid Inverter | Three Phase | LV Battery Supported
+#
+# Reference: https://github.com/user-attachments/files/17139137/211208.-.Afore.T6.communication.protocol.V1.0-211109.xlsx
+#
+# Tested with Afore F5K-SL and BLUESUN BSE15KH3
+#
+
+default:
+  update_interval: 5
+  code: 0x04
+  digits: 6
+
+parameters:
+  - group: PV
+    items:
+      - name: "PV Power"
+        class: "power"
+        mppt: 1
+        state_class: "measurement"
+        uom: "W"
+        rule: 1
+        registers: [0x022A, 0x0229]
+        icon: "mdi:solar-power-variant"
+
+      - name: "PV1 Voltage"
+        class: "voltage"
+        mppt: 1
+        state_class: "measurement"
+        uom: "V"
+        scale: 0.1
+        rule: 1
+        registers: [0x022B]
+        icon: "mdi:solar-power-variant"
+
+      - name: "PV2 Voltage"
+        class: "voltage"
+        mppt: 2
+        state_class: "measurement"
+        uom: "V"
+        scale: 0.1
+        rule: 1
+        registers: [0x022E]
+        icon: "mdi:solar-power-variant"
+
+      - name: "PV1 Current"
+        class: "current"
+        mppt: 1
+        state_class: "measurement"
+        uom: "A"
+        scale: 0.01
+        rule: 1
+        registers: [0x022C]
+        icon: "mdi:solar-power-variant"
+
+      - name: "PV2 Current"
+        class: "current"
+        mppt: 2
+        state_class: "measurement"
+        uom: "A"
+        scale: 0.01
+        rule: 1
+        registers: [0x022F]
+        icon: "mdi:solar-power-variant"
+
+      - name: "PV1 Power"
+        class: "power"
+        mppt: 1
+        state_class: "measurement"
+        uom: "W"
+        rule: 1
+        registers: [0x022D]
+        icon: "mdi:solar-power-variant"
+
+      - name: "PV2 Power"
+        class: "power"
+        mppt: 2
+        state_class: "measurement"
+        uom: "W"
+        rule: 1
+        registers: [0x0230]
+        icon: "mdi:solar-power-variant"
+
+  - group: Battery
+    items:
+      - name: "Battery State"
+        class: "enum"
+        state_class: "measurement"
+        rule: 1
+        registers: [0x07D0]
+        lookup:
+          - key: 4
+            value: "charging"
+          - key: 5
+            value: "discharging"
+          - key: 6
+            value: "idle"
+        icon: "mdi:battery"
+
+      - name: "Battery Temperature"
+        class: "temperature"
+        state_class: "measurement"
+        uom: "°C"
+        scale: 0.1
+        rule: 1
+        registers: [0x07D1]
+
+      - name: "Battery"
+        class: "battery"
+        state_class: "measurement"
+        uom: "%"
+        rule: 1
+        registers: [0x07D2]
+
+      - name: "Battery SOH"
+        state_class: "measurement"
+        uom: "%"
+        rule: 1
+        registers: [0x07D3]
+        icon: "mdi:battery-heart"
+
+      - name: "Battery Voltage"
+        class: "voltage"
+        state_class: "measurement"
+        uom: "V"
+        scale: 0.1
+        rule: 1
+        registers: [0x07D4]
+
+      - name: "Battery Current"
+        class: "current"
+        state_class: "measurement"
+        uom: "A"
+        scale: 0.01
+        rule: 2
+        registers: [0x07D5]
+        icon: "mdi:current-dc"
+
+      - name: "Battery Power"
+        class: "power"
+        state_class: "measurement"
+        uom: "W"
+        rule: 2
+        registers: [0x07D8]
+
+  - group: Battery Meter
+    update_interval: 300
+    items:
+      - name: "Today Battery Charge"
+        friendly_name: "Today's Battery Charge"
+        class: "energy"
+        state_class: "total_increasing"
+        uom: "kWh"
+        scale: 0.1
+        rule: 1
+        registers: [0x07D9]
+        icon: "mdi:battery-plus"
+
+      - name: "Today Battery Discharge"
+        friendly_name: "Today's Battery Discharge"
+        class: "energy"
+        state_class: "total_increasing"
+        uom: "kWh"
+        scale: 0.1
+        rule: 1
+        registers: [0x07DA]
+        icon: "mdi:battery-minus"
+
+      - name: "Total Battery Charge"
+        class: "energy"
+        state_class: "total_increasing"
+        uom: "kWh"
+        scale: 0.1
+        rule: 1
+        registers: [0x07DC, 0x07DB]
+        icon: "mdi:battery-plus"
+        validation:
+          min: 0.1
+
+      - name: "Total Battery Discharge"
+        class: "energy"
+        state_class: "total_increasing"
+        uom: "kWh"
+        scale: 0.1
+        rule: 1
+        registers: [0x07DE, 0x07DD]
+        icon: "mdi:battery-minus"
+        validation:
+          min: 0.1
+
+  - group: Grid
+    items:
+      - name: "Grid L1 Voltage"
+        l: 1
+        class: "voltage"
+        state_class: "measurement"
+        uom: "V"
+        scale: 0.1
+        rule: 1
+        registers: [0x01FB]
+
+      - name: "Grid L2 Voltage"
+        l: 2
+        class: "voltage"
+        state_class: "measurement"
+        uom: "V"
+        scale: 0.1
+        rule: 1
+        registers: [0x01FC]
+
+      - name: "Grid L3 Voltage"
+        l: 3
+        class: "voltage"
+        state_class: "measurement"
+        uom: "V"
+        scale: 0.1
+        rule: 1
+        registers: [0x01FD]
+
+      - name: "Output L1 Current"
+        l: 1
+        class: "current"
+        state_class: "measurement"
+        uom: "A"
+        scale: 0.01
+        rule: 2
+        registers: [0x01FE]
+
+      - name: "Output L2 Current"
+        l: 2
+        class: "current"
+        state_class: "measurement"
+        uom: "A"
+        scale: 0.01
+        rule: 2
+        registers: [0x01FF]
+
+      - name: "Output L2 Current"
+        l: 2
+        class: "current"
+        state_class: "measurement"
+        uom: "A"
+        scale: 0.01
+        rule: 2
+        registers: [0x0200]
+
+      - name: "Grid L1 Frequency"
+        l: 1
+        class: "frequency"
+        state_class: "measurement"
+        uom: "Hz"
+        scale: 0.01
+        rule: 1
+        registers: [0x0201]
+
+      - name: "Grid L2 Frequency"
+        l: 2
+        class: "frequency"
+        state_class: "measurement"
+        uom: "Hz"
+        scale: 0.01
+        rule: 1
+        registers: [0x0202]
+
+      - name: "Grid L3 Frequency"
+        l: 3
+        class: "frequency"
+        state_class: "measurement"
+        uom: "Hz"
+        scale: 0.01
+        rule: 1
+        registers: [0x0203]
+
+      - name: "Output L1 Power"
+        l: 1
+        class: "power"
+        state_class: "measurement"
+        uom: "W"
+        rule: 2
+        registers: [0x0205, 0x0204]
+
+      - name: "Output L2 Power"
+        l: 2
+        class: "power"
+        state_class: "measurement"
+        uom: "W"
+        rule: 2
+        registers: [0x0207, 0x0206]
+
+      - name: "Output L3 Power"
+        l: 3
+        class: "power"
+        state_class: "measurement"
+        uom: "W"
+        rule: 2
+        registers: [0x0209, 0x0208]
+
+      - name: "Power"
+        class: "power"
+        state_class: "measurement"
+        uom: "W"
+        rule: 2
+        registers: [0x020B, 0x020A]
+
+      - name: "Power losses"
+        description: Includes consumption of the inverter device itself as well AC/DC conversion losses
+        class: "power"
+        state_class: "measurement"
+        uom: "W"
+        rule: 1
+        digits: 0
+        uint: enforce
+        sensors:
+          - registers: [0x022A, 0x0229]
+          - signed:
+            registers: [0x07D8]
+          - operator: subtract
+            signed:
+            registers: [0x020B, 0x020A]
+
+      - name: "Grid L1 Power"
+        l: 1
+        class: "power"
+        state_class: "measurement"
+        uom: "W"
+        rule: 2
+        registers: [0x0212, 0x0211]
+
+      - name: "Grid L2 Power"
+        l: 2
+        class: "power"
+        state_class: "measurement"
+        uom: "W"
+        rule: 2
+        registers: [0x0214, 0x0213]
+
+      - name: "Grid L3 Power"
+        l: 3
+        class: "power"
+        state_class: "measurement"
+        uom: "W"
+        rule: 2
+        registers: [0x0216, 0x0215]
+
+      - name: "Grid Power"
+        class: "power"
+        state_class: "measurement"
+        uom: "W"
+        rule: 2
+        registers: [0x0218, 0x0217]
+
+      - name: "Load L1 Power"
+        l: 1
+        class: "power"
+        state_class: "measurement"
+        uom: "W"
+        rule: 2
+        registers: [0x021E, 0x021D]
+
+      - name: "Load L2 Power"
+        l: 2
+        class: "power"
+        state_class: "measurement"
+        uom: "W"
+        rule: 2
+        registers: [0x0220, 0x021F]
+
+      - name: "Load L3 Power"
+        l: 3
+        class: "power"
+        state_class: "measurement"
+        uom: "W"
+        rule: 2
+        registers: [0x0222, 0x0221]
+
+      - name: "Load Power"
+        class: "power"
+        state_class: "measurement"
+        uom: "W"
+        rule: 2
+        registers: [0x0224, 0x0223]
+
+  - group: Device
+    update_interval: 10
+    items:
+      - name: Work Mode
+        update_interval: 300
+        platform: select
+        registers: [0x00CF, 0x00CE]
+        display:
+          mask: 0x11
+        code:
+          read: 0x03
+        rule: 1
+        lookup:
+          - key: 0
+            value: "Off"
+          - bit: 0
+            default:
+            value: "On"
+          - bit: [0, 4]
+            value: "Time of Use"
+
+      - name: "Device State"
+        rule: 1
+        registers: [0x09C4]
+        icon: "mdi:state-machine"
+        lookup:
+          - key: 0
+            value: "Init"
+          - key: 1
+            value: "Standby"
+          - key: 2
+            value: "Startup"
+          - key: 3
+            value: "Grid"
+          - key: 4
+            value: "Grid disconnected"
+          - key: 5
+            value: "Generator"
+          - key: 6
+            value: "Off grid"
+          - key: 7
+            value: "On grid"
+          - key: 8
+            value: "Shutdown"
+          - key: 9
+            value: "Off"
+          - key: 10
+            value: "Error"
+          - key: 11
+            value: "Update"
+          - key: 12
+            value: "Aging"
+          - key: 13
+            value: "Open loop"
+          - key: 14
+            value: "Sampling calibration"
+
+      - name: "EMS Mode"
+        update_interval: 300
+        platform: select
+        rule: 1
+        code:
+          read: 0x03
+          write: 0x06
+        registers: [0x09C4]
+        lookup:
+          - key: 0
+            value: "Self Use"
+          - key: 1
+            value: "Charging First"
+          - key: 2
+            value: "Export First"
+          - key: 3
+            value: "Battery Maintenance"
+          - key: 4
+            value: "Command"
+          - key: 5
+            value: "EMS"
+          - key: 6
+            value: "Time of Use"
+          - key: 7
+            value: "Imbalance Compensation"
+          - key: 8
+            value: "Q Compensation"
+
+      - name: "DC Temperature"
+        class: "temperature"
+        state_class: "measurement"
+        uom: "°C"
+        scale: 0.1
+        rule: 1
+        registers: [0x09D2]
+
+      - name: "Temperature"
+        class: "temperature"
+        state_class: "measurement"
+        uom: "°C"
+        scale: 0.1
+        rule: 1
+        registers: [0x09D3]
+
+  - group: Settings
+    update_interval: 300
+    code:
+      read: 0x03
+      write: 0x06
+    items:
+      - name: "Meter"
+        platform: select
+        rule: 1
+        registers: [0x00D3]
+        lookup:
+          - key: 0
+            value: "No Meter"
+          - key: 1
+            value: "Current Transformer"
+
+      - name: "Battery Control Mode"
+        platform: "select"
+        rule: 1
+        registers: [0x0BB8]
+        icon: "mdi:battery"
+        lookup:
+          - key: 0x0000
+            value: "No Battery"
+          - key: 0x0001
+            value: "Lithium"
+          - key: 0x0001
+            value: "Lead-Battery"
+          - key: 0x0001
+            value: "Simulated"
+
+      - name: Restart
+        platform: button
+        rule: 1
+        registers: [0x0210, 0x020F]
+        value:
+          bit: 3
+
+      - name: Factory reset
+        platform: button
+        rule: 1
+        registers: [0x0210, 0x020F]
+        value:
+          bit: 4
+
+      - name: Clear records
+        platform: button
+        rule: 1
+        registers: [0x0210, 0x020F]
+        value:
+          bit: 5
+
+      - name: Battery Charge & Discharge
+        platform: switch
+        rule: 1
+        registers: [0x09C5]
+        value:
+          on: 0xAA
+          off: 0xBB
+
+      - name: Timed Charging Power
+        platform: number
+        uom: "%"
+        scale: 0.1
+        rule: 1
+        registers: [0x09C8]
+        configurable:
+          min: 0
+          max: 100
+          step: 5
+        range:
+          min: 0
+          max: 1000
+
+      - name: Timed Max Charge
+        platform: number
+        uom: "%"
+        scale: 0.1
+        rule: 1
+        registers: [0x09C9]
+        configurable:
+          min: 0
+          max: 100
+          step: 5
+        range:
+          min: 0
+          max: 1000
+
+      - name: Timed Charge 1 Start
+        platform: time
+        rule: 9
+        dec: 0x100
+        registers: [0x09CD]
+
+      - name: Timed Charge 1 End
+        platform: time
+        rule: 9
+        dec: 0x100
+        registers: [0x09CE]
+
+      - name: Timed Charge 2 Start
+        platform: time
+        rule: 9
+        dec: 0x100
+        registers: [0x09CF]
+
+      - name: Timed Charge 2 End
+        platform: time
+        rule: 9
+        dec: 0x100
+        registers: [0x09D0]
+
+      - name: Timed Charge 3 Start
+        platform: time
+        rule: 9
+        dec: 0x100
+        registers: [0x09D1]
+
+      - name: Timed Charge 3 End
+        platform: time
+        rule: 9
+        dec: 0x100
+        registers: [0x09D2]
+
+      - name: Timed Charge 4 Start
+        platform: time
+        rule: 9
+        dec: 0x100
+        registers: [0x09D3]
+
+      - name: Timed Charge 4 End
+        platform: time
+        rule: 9
+        dec: 0x100
+        registers: [0x09D4]
+
+  - group: Meter
+    update_interval: 30
+    items:
+      - name: "Today Energy Export"
+        friendly_name: "Today's Energy Export"
+        class: "energy"
+        state_class: "total_increasing"
+        uom: "kWh"
+        scale: 0.1
+        rule: 1
+        registers: [0x03EA]
+        icon: mdi:transmission-tower
+
+      - name: "Today Energy Import"
+        friendly_name: "Today's Energy Import"
+        class: "energy"
+        state_class: "total_increasing"
+        uom: "kWh"
+        scale: 0.1
+        rule: 1
+        registers: [0x03EB]
+        icon: mdi:transmission-tower
+
+      - name: "Today Load Consumption"
+        friendly_name: "Today's Load Consumption"
+        class: "energy"
+        state_class: "total_increasing"
+        uom: "kWh"
+        scale: 0.1
+        rule: 1
+        registers: [0x03EC]
+
+      - name: "Today Production"
+        friendly_name: "Today's Production"
+        class: "energy"
+        state_class: "total_increasing"
+        uom: "kWh"
+        scale: 0.1
+        rule: 1
+        registers: [0x03EF, 0x03EE]
+        icon: mdi:solar-power
+        validation:
+          dev: 100
+          invalidate_all:
+
+      - name: "Total Production"
+        class: "energy"
+        state_class: "total_increasing"
+        uom: "kWh"
+        scale: 0.1
+        rule: 3
+        registers: [0x0403, 0x0402]
+        icon: "mdi:solar-power"
+        validation:
+          min: 0.1
+          dev: 100
+          invalidate_all: 2
+
+      - name: "Total Production B"
+        class: "energy"
+        state_class: "total_increasing"
+        uom: "kWh"
+        scale: 0.1
+        rule: 1
+        registers: [0x03F7, 0x03F6]
+        icon: mdi:solar-power
+        validation:
+          min: 0.1
+          dev: 100
+          invalidate_all: 2
+
+      - name: "Total Energy Export"
+        class: "energy"
+        state_class: "total_increasing"
+        uom: "kWh"
+        scale: 0.1
+        rule: 1
+        registers: [0x03FB, 0x03FA]
+        icon: mdi:transmission-tower
+        validation:
+          min: 0.1
+
+      - name: "Total Energy Import"
+        class: "energy"
+        state_class: "total_increasing"
+        uom: "kWh"
+        scale: 0.1
+        rule: 1
+        registers: [0x03FD, 0x03FC]
+        icon: mdi:transmission-tower
+        validation:
+          min: 0.1
+
+      - name: "Total Load Consumption"
+        class: "power"
+        state_class: "total_increasing"
+        uom: "kWh"
+        scale: 0.1
+        rule: 1
+        registers: [0x03FF, 0x03FE]
+        validation:
+          min: 0.1
+
+      - name: Today Losses
+        friendly_name: Today's Losses
+        description: Includes today's consumption of the inverter device itself as well AC/DC conversion losses
+        class: "energy"
+        state_class: "total_increasing"
+        ensure_increasing:
+        uom: "kWh"
+        rule: 1
+        digits: 1
+        scale: 0.1
+        uint: enforce
+        sensors:
+          - registers: [0x03EB]
+          - registers: [0x03EF, 0x03EE]
+          - registers: [0x07DA]
+          - operator: subtract
+            registers: [0x03EA]
+          - operator: subtract
+            registers: [0x03EC]
+          - operator: subtract
+            registers: [0x07D9]
+
+      - name: Total Losses
+        description: Includes total consumption of the inverter device itself as well AC/DC conversion losses
+        class: "energy"
+        state_class: "total_increasing"
+        ensure_increasing:
+        uom: "kWh"
+        rule: 3
+        digits: 1
+        scale: 0.1
+        uint: enforce
+        sensors:
+          - registers: [0x03FD, 0x03FC]
+          - registers: [0x0403, 0x0402]
+          - registers: [0x07DE, 0x07DD]
+          - operator: subtract
+            registers: [0x03FB, 0x03FA]
+          - operator: subtract
+            registers: [0x03FF, 0x03FE]
+          - operator: subtract
+            registers: [0x07DC, 0x07DB]
+        validation:
+          min: 1

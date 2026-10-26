@@ -1,0 +1,171 @@
+{% extends "base.html" %}
+
+{% block title %}⏱ Zeitsteuerung{% endblock %}
+
+{% block extra_head %}
+  <style>
+    .schedule-intro {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      background: linear-gradient(135deg, rgba(255, 152, 0, 0.16), rgba(0, 230, 118, 0.08));
+      border: 1px solid rgba(255, 152, 0, 0.25);
+      border-radius: 16px;
+      padding: 1rem 1.25rem;
+      margin-bottom: 1.25rem;
+    }
+    .schedule-intro-icon {
+      width: 46px;
+      height: 46px;
+      border-radius: 14px;
+      display: grid;
+      place-items: center;
+      background: rgba(255, 152, 0, 0.18);
+      font-size: 1.4rem;
+    }
+    .schedule-card {
+      border-left: 3px solid #ff9800;
+      background: linear-gradient(135deg, rgba(255, 152, 0, 0.08), rgba(255, 255, 255, 0.02));
+    }
+    .time-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      color: #ffcc80;
+      font-size: 0.8rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 0.75rem;
+    }
+  </style>
+{% endblock %}
+
+{% block content %}
+  <div class="page-header">
+    <h2>⏱ Zeitsteuerung</h2>
+    <p>Miner, Home-Assistant-Geräte und Gibbo-Pins zu festen Uhrzeiten schalten</p>
+  </div>
+
+  <form method="post" action="/save_zeitsteuerung">
+    <div class="panel">
+      <div class="schedule-intro">
+        <div class="schedule-intro-icon">⏱</div>
+        <div>
+          <strong style="color: #fff;">Zeitplan für Pause / Resume</strong>
+          <p style="color: var(--muted); margin: 0.25rem 0 0; font-size: 0.9rem;">
+            Uhrzeiten im Format <strong>HH:MM</strong> (24 Stunden, z.B. 08:30 oder 22:00).
+          </p>
+        </div>
+      </div>
+
+      {% for miner in miners %}
+      <div class="miner-block schedule-card">
+        <div class="miner-block-title">
+          {{ miner.ip }} — {{ miner.model or 'Unbekanntes Modell' }}
+        </div>
+
+        <div class="time-chip">🌙 Pause / ☀️ Resume</div>
+        <div class="mb-3">
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" name="time_pause_{{ miner.ip }}" id="time_pause_{{ miner.ip }}"
+              {% if miner.time_pause %}checked{% endif %}>
+            <label class="form-check-label" for="time_pause_{{ miner.ip }}">Zeitgesteuertes Pause / Resume</label>
+          </div>
+        </div>
+        <div class="field-grid mb-3">
+          <div>
+            <label class="form-label" for="pause_time_{{ miner.ip }}">Pause um</label>
+            <input type="text" class="form-control" id="pause_time_{{ miner.ip }}" name="pause_time_{{ miner.ip }}"
+              value="{{ miner.pause_time or '' }}" placeholder="22:00">
+          </div>
+          <div>
+            <label class="form-label" for="resume_time_{{ miner.ip }}">Resume um</label>
+            <input type="text" class="form-control" id="resume_time_{{ miner.ip }}" name="resume_time_{{ miner.ip }}"
+              value="{{ miner.resume_time or '' }}" placeholder="06:00">
+          </div>
+        </div>
+      </div>
+      {% else %}
+      <p style="color: var(--muted);">Noch keine Miner vorhanden. <a href="/add_miner" style="color: var(--accent);">Miner hinzufügen</a></p>
+      {% endfor %}
+
+      {% if ha_devices %}
+      <p class="section-label" style="margin-top: 1.5rem; color: #64b5f6;">🔌 Home-Assistant-Geräte</p>
+      {% for dev in ha_devices %}
+      <div class="miner-block schedule-card" style="border-left-color: #64b5f6;">
+        <div class="miner-block-title">
+          {{ dev.label or dev.entity_id }}
+          <span style="color: var(--muted); font-weight: 400; font-size: 0.85rem;">({{ dev.entity_id }})</span>
+        </div>
+
+        <div class="time-chip">🌙 Aus / ☀️ Ein</div>
+        <div class="mb-3">
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" name="time_pause_{{ dev.entity_id }}" id="time_pause_{{ dev.entity_id }}"
+              {% if dev.time_pause %}checked{% endif %}>
+            <label class="form-check-label" for="time_pause_{{ dev.entity_id }}">Zeitgesteuertes Aus / Ein</label>
+          </div>
+        </div>
+        <div class="field-grid mb-3">
+          <div>
+            <label class="form-label" for="pause_time_{{ dev.entity_id }}">Aus um</label>
+            <input type="text" class="form-control" id="pause_time_{{ dev.entity_id }}" name="pause_time_{{ dev.entity_id }}"
+              value="{{ dev.pause_time or '' }}" placeholder="22:00">
+          </div>
+          <div>
+            <label class="form-label" for="resume_time_{{ dev.entity_id }}">Ein um</label>
+            <input type="text" class="form-control" id="resume_time_{{ dev.entity_id }}" name="resume_time_{{ dev.entity_id }}"
+              value="{{ dev.resume_time or '' }}" placeholder="06:00">
+          </div>
+        </div>
+      </div>
+      {% endfor %}
+      {% endif %}
+
+      {% if gpio_pins %}
+      <p class="section-label" style="margin-top: 1.5rem; color: #ffb74d;">🧷 Schaltbare Gibbo-Pins</p>
+      {% for pin in gpio_pins %}
+      {% set gid = pin.id or ('gpio:' ~ pin.pin) %}
+      <div class="miner-block schedule-card" style="border-left-color: #ffb74d;">
+        <div class="miner-block-title">
+          {{ pin.label or gid }}
+          <span style="color: var(--muted); font-weight: 400; font-size: 0.85rem;">(Board {{ pin.pin }})</span>
+        </div>
+
+        <div class="time-chip">🌙 Aus / ☀️ Ein</div>
+        <div class="mb-3">
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" name="time_pause_{{ gid }}" id="time_pause_{{ gid }}"
+              {% if pin.time_pause %}checked{% endif %}>
+            <label class="form-check-label" for="time_pause_{{ gid }}">Zeitgesteuertes Aus / Ein</label>
+          </div>
+        </div>
+        <div class="field-grid mb-3">
+          <div>
+            <label class="form-label" for="pause_time_{{ gid }}">Aus um</label>
+            <input type="text" class="form-control" id="pause_time_{{ gid }}" name="pause_time_{{ gid }}"
+              value="{{ pin.pause_time or '' }}" placeholder="22:00">
+          </div>
+          <div>
+            <label class="form-label" for="resume_time_{{ gid }}">Ein um</label>
+            <input type="text" class="form-control" id="resume_time_{{ gid }}" name="resume_time_{{ gid }}"
+              value="{{ pin.resume_time or '' }}" placeholder="06:00">
+          </div>
+        </div>
+        {% if pin.note %}
+        <small style="color: var(--muted);">{{ pin.note }}</small>
+        {% endif %}
+      </div>
+      {% endfor %}
+      {% endif %}
+
+      {% if miners or ha_devices or gpio_pins %}
+      <div class="action-row">
+        <button type="submit" class="btn-primary-custom">💾 Einstellungen speichern</button>
+        <a href="/" class="btn-secondary-custom">🔙 Zurück</a>
+      </div>
+      {% endif %}
+    </div>
+  </form>
+{% endblock %}

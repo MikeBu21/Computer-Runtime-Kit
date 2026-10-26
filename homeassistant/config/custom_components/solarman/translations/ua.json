@@ -1,0 +1,153 @@
+{
+  "config": {
+    "abort": {
+      "already_configured": "Пристрій вже сконфігуровано",
+      "already_configured_device": "Пристрій вже сконфігуровано",
+      "already_in_progress": "Конфігурація вже триває"
+    },
+    "error": {
+      "cannot_connect": "Не вдалося підключитися",
+      "invalid_host": "Не коректний хостнейм або IP-адреса",
+      "timeout_connect": "Час очікування встановлення з’єднання",
+      "unknown": "Неочікувана помилка"
+    },
+    "step": {
+      "user": {
+        "title": "Конфігурація інвертора",
+        "data": {
+          "name": "Назва пристрою",
+          "host": "Хост чи IP адреса",
+          "port": "Порт",
+          "transport": "Транспортний протокол",
+          "lookup_file": "Профіль"
+        },
+        "data_description": {
+          "name": "Це ім'я буде використане як префікс до всіх сенсорів (змінюйте на свій розсуд)",
+          "host": "Ім'я хоста або IP-адреса пристрою для підключення",
+          "port": "Порт (8899) пристрою для підключення",
+          "lookup_file": "yaml файл з визначеннями параметрів інвертора"
+        },
+        "sections": {
+          "additional_options": {
+            "name": "Додаткові опції",
+            "data": {
+              "mod": "Модифікатор",
+              "mppt": "Кількість МППТ",
+              "phase": "Кількість фаз",
+              "pack": "Кількість батарей",
+              "battery_nominal_voltage": "Номінальний вольтаж літієвої батареї",
+              "battery_life_cycle_rating": "Очікувана кількість циклів заряду/розряду літієвої батареї",
+              "mb_slave_id": "Modbus Slave ID (зазвичай 1)"
+            }
+          }
+        }
+      }
+    }
+  },
+  "options": {
+    "error": {
+      "cannot_connect": "Не вдалося підключитися",
+      "invalid_host": "Не коректний хостнейм або IP-адреса",
+      "timeout_connect": "Час очікування встановлення з’єднання",
+      "unknown": "Неочікувана помилка"
+    },
+    "step": {
+      "init": {
+        "title": "Конфігурація інвертора",
+        "data": {
+          "host": "Хост чи IP адреса",
+          "port": "Порт",
+          "transport": "Транспортний протокол",
+          "lookup_file": "Профіль"
+        },
+        "data_description": {
+          "host": "Ім'я хоста або IP-адреса пристрою для підключення",
+          "port": "Порт (8899) пристрою для підключення",
+          "lookup_file": "yaml файл з визначеннями параметрів інвертора"
+        },
+        "sections": {
+          "additional_options": {
+            "name": "Додаткові опції",
+            "data": {
+              "mod": "Модифікатор",
+              "mppt": "Кількість МППТ",
+              "phase": "Кількість фаз",
+              "pack": "Кількість батарей",
+              "battery_nominal_voltage": "Номінальний вольтаж літієвої батареї",
+              "battery_life_cycle_rating": "Очікувана кількість циклів заряду/розряду літієвої батареї",
+              "mb_slave_id": "Modbus Slave ID (зазвичай 1)"
+            }
+          }
+        }
+      }
+    }
+  },
+  "selector": {
+    "transport": {
+      "options": {
+        "tcp": "TCP",
+        "udp": "UDP",
+        "modbus_rtu": "Modbus RTU",
+        "modbus_tcp": "Modbus TCP"
+      } 
+    }
+  },
+  "entity": {
+    "sensor": {
+      "today_battery_charge": {
+        "name": "Сьогоднішній заряд акумулятора"
+      },
+      "today_battery_discharge": {
+        "name": "Сьогоднішня розрядка батареї"
+      },
+      "today_battery_life_cycles": {
+        "name": "Сьогоднішні цикли батареї"
+      },
+      "today_energy_export": {
+        "name": "Сьогоднішній експорт енергії"
+      },
+      "today_energy_import": {
+        "name": "Сьогоднішній імпорт енергії"
+      },
+      "today_generation": {
+        "name": "Сьогоднішня генерація"
+      },
+      "today_load_consumption": {
+        "name": "Сьогоднішнє споживання навантаження"
+      },
+      "today_losses": {
+        "name": "Сьогоднішні втрати"
+      },
+      "today_production": {
+        "name": "Сьогоднішнє виробництво"
+      },
+      "total_battery_charge": {
+        "name": "Загальний заряд акумулятора"
+      },
+      "total_battery_discharge": {
+        "name": "Повний розряд акумулятора"
+      },
+      "total_battery_life_cycles": {
+        "name": "Загальна кількість циклів батареї"
+      },
+      "total_energy_export": {
+        "name": "Загальний експорт енергоносіїв"
+      },
+      "total_energy_import": {
+        "name": "Загальний імпорт енергоносіїв"
+      },
+      "total_generation": {
+        "name": "Загальна генерація"
+      },
+      "total_load_consumption": {
+        "name": "Загальне споживання навантаження"
+      },
+      "total_losses": {
+        "name": "Загальні втрати"
+      },
+      "total_production": {
+        "name": "Загальний обсяг виробництва"
+      }
+    }
+  }
+}

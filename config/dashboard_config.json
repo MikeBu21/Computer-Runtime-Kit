@@ -1,0 +1,103 @@
+{
+  "updated_at": null,
+  "flow_hidden_builtins": [],
+  "custom_flow_fields": [],
+  "pie_generation": [
+    {
+      "id": "gen_pv",
+      "label": "PV-Platten",
+      "source": "field.pv",
+      "color": "#ffc107",
+      "enabled": true
+    },
+    {
+      "id": "gen_hydro",
+      "label": "Wasserkraft",
+      "source": "field.wasserkraft",
+      "color": "#42a5f5",
+      "enabled": true
+    },
+    {
+      "id": "gen_ladung",
+      "label": "Ladung Batterie",
+      "source": "computed.battery_ladung",
+      "color": "#66bb6a",
+      "enabled": true
+    },
+    {
+      "id": "gen_entladung",
+      "label": "Entladung",
+      "source": "computed.battery_entladung",
+      "color": "#ff7043",
+      "enabled": true
+    }
+  ],
+  "pie_consumption": [
+    {
+      "id": "con_betrieb",
+      "label": "Betrieb",
+      "source": "flow.betrieb_anzeige",
+      "color": "#ef5350",
+      "enabled": true
+    },
+    {
+      "id": "con_haus",
+      "label": "Wohnhaus",
+      "source": "field.wohnhaus",
+      "color": "#9ccc65",
+      "enabled": true
+    },
+    {
+      "id": "con_netz",
+      "label": "Netz",
+      "source": "computed.grid_bezug",
+      "color": "#8b9cb3",
+      "enabled": true
+    },
+    {
+      "id": "con_verkauf",
+      "label": "Verkauf",
+      "source": "computed.grid_verkauf",
+      "color": "#26c6da",
+      "enabled": true
+    }
+  ],
+  "line_series": [
+    {
+      "id": "line_erzeugung",
+      "label": "Erzeugung",
+      "source": "computed.erzeugung",
+      "color": "#00ff41",
+      "fill": true,
+      "y_axis": "kw",
+      "enabled": true
+    },
+    {
+      "id": "line_verbrauch",
+      "label": "Aktueller Verbrauch",
+      "source": "flow.verbrauch_gesamt",
+      "color": "#ffea00",
+      "fill": false,
+      "y_axis": "kw",
+      "enabled": true
+    },
+    {
+      "id": "line_netz",
+      "label": "Netz",
+      "source": "field.kelag",
+      "color": "#ce93d8",
+      "fill": true,
+      "y_axis": "kw",
+      "enabled": true
+    },
+    {
+      "id": "line_soc",
+      "label": "Batterie %",
+      "source": "flow.battery_soc",
+      "color": "#42a5f5",
+      "fill": false,
+      "y_axis": "percent",
+      "enabled": true
+    }
+  ]
+}

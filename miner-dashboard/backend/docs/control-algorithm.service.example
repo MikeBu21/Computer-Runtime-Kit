@@ -1,0 +1,25 @@
+# systemd-Unit für den Steuerungsalgorithmus-Daemon
+# Installation (Beispiel):
+#   sudo cp docs/control-algorithm.service.example /etc/systemd/system/control-algorithm.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now control-algorithm.service
+#
+# Hinweis: Automatikmodus (auto_control) bleibt separat. Für Miner, die der
+# Steuerungsalgorithmus steuert, auto/auto_battery in miners.json deaktivieren.
+
+[Unit]
+Description=Miner Dashboard – Steuerungsalgorithmus
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=piMiner
+WorkingDirectory=/home/piMiner/miner-dashboard/backend
+ExecStart=/home/piMiner/miner-dashboard/backend/venv/bin/python /home/piMiner/miner-dashboard/backend/control_algorithm_daemon.py
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

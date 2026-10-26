@@ -1,0 +1,66 @@
+{
+  "source": "home_assistant",
+  "updated_at": null,
+  "fields": {
+    "kelag": {
+      "enabled": true,
+      "entity_id": "",
+      "sensors": []
+    },
+    "pv": {
+      "enabled": true,
+      "entity_id": "",
+      "sensors": []
+    },
+    "wasserkraft": {
+      "enabled": false,
+      "entity_id": "",
+      "sensors": []
+    },
+    "wohnhaus": {
+      "enabled": false,
+      "entity_id": "",
+      "sensors": []
+    },
+    "betrieb": {
+      "enabled": true,
+      "entity_id": "",
+      "sensors": []
+    },
+    "bezug": {
+      "enabled": false,
+      "entity_id": "",
+      "sensors": []
+    },
+    "lieferung": {
+      "enabled": false,
+      "entity_id": "",
+      "sensors": []
+    },
+    "erzeugung_gesamt": {
+      "enabled": false,
+      "entity_id": "",
+      "sensors": []
+    },
+    "eigenverbrauch": {
+      "enabled": false,
+      "entity_id": "",
+      "sensors": []
+    },
+    "betriebsverbrauch": {
+      "enabled": false,
+      "entity_id": "",
+      "sensors": []
+    },
+    "battery_soc": {
+      "enabled": false,
+      "entity_id": "",
+      "sensors": []
+    },
+    "battery_power": {
+      "enabled": false,
+      "entity_id": "",
+      "sensors": []
+    }
+  }
+}

@@ -1,0 +1,2337 @@
+#
+# Deye | Hybrid Inverter
+#
+# Reference: https://github.com/user-attachments/files/16597960/Deye.Modbus.protocol.V118.pdf
+#
+# Tested
+#
+
+info:
+  manufacturer: Deye
+  model: SG0*LP1
+
+default:
+  update_interval: 5
+  digits: 6
+
+parameters:
+  - group: Info
+    update_interval: 3600
+    items:
+      - name: "Device"
+        class: "enum"
+        rule: 1
+        registers: [0x0000]
+        icon: "mdi:information"
+        lookup:
+          - key: 0x0000
+            value: "Unknown"
+          - key: [0x0002, 0x0200]
+            value: "String Inverter"
+          - key: [0x0003, 0x0300]
+            value: "Single-Phase Hybrid Inverter"
+          - key: [0x0004, 0x0400]
+            value: "Microinverter"
+          - key: [0x0005, 0x0500]
+            value: "LV 3-Phase Hybrid Inverter"
+          - key: 0x0006
+            value: "HV 3-Phase Hybrid Inverter"
+          - key: [0x0007, 0x0600]
+            value: "HV 3-Phase Inverter 6-15kw"
+          - key: [0x0008, 0x0601]
+            value: "HV 3-Phase Inverter 20-50kw"
+        attributes:
+          [
+            "Device Modbus Address",
+            "Device Protocol Version",
+            "Device Serial Number",
+            "Device Rated Phase",
+            "Device Chip Type",
+            "Device Control Board Firmware Version",
+            "Device Communication Board Firmware Version",
+            "Device Rated Power",
+            "Device MPPTs",
+            "Device Phases",
+          ]
+
+      - name: "Device Modbus Address"
+        attribute:
+        rule: 1
+        registers: [0x0001]
+
+      - name: "Device Protocol Version"
+        attribute:
+        rule: 7
+        remove: "0."
+        registers: [0x0002]
+
+      - name: "Device Serial Number"
+        attribute:
+        rule: 5
+        registers: [0x0003, 0x0004, 0x0005, 0x0006, 0x0007]
+
+      - name: "Device Rated Phase"
+        attribute:
+        class: "enum"
+        rule: 1
+        registers: [0x0008]
+        lookup:
+          - key: [0, 1, 2]
+            value: "Single-Phase"
+          - key: 3
+            value: "Three-Phase"
+          - key: 8
+            value: "Single-Phase Storage"
+
+      - name: "Device Chip Type"
+        attribute:
+        class: "enum"
+        rule: 1
+        registers: [0x0009]
+        lookup:
+          - key: 0x0000
+            value: "AT32F403A"
+          - key: 0x0001
+            value: "SXX32F103"
+          - key: 0x0002
+            value: "GD32F103"
+          - key: 0x0003
+            value: "GD32F303"
+
+      - name: "Device Control Board Firmware Version"
+        attribute:
+        rule: 7
+        delimiter: ""
+        registers: [0x000D, 0x000C, 0x000B]
+
+      - name: "Device Communication Board Firmware Version"
+        attribute:
+        rule: 7
+        hex:
+        delimiter: ""
+        registers: [0x000E, 0x000A]
+
+      - name: "Device Rated Power"
+        attribute:
+        class: "power"
+        state_class: "measurement"
+        uom: "W"
+        scale: 0.1
+        rule: 4
+        registers: [0x0010, 0x0011]
+        validation:
+          min: 0
+          max: 24000
+
+      - name: "Device MPPTs"
+        attribute:
+        rule: 1
+        mask: 0x0F00
+        divide: 256
+        registers: [0x0012]
+        range:
+          min: 257
+        validation:
+          max: 12
+          default: 2
+
+      - name: "Device Phases"
+        attribute:
+        rule: 1
+        mask: 0x000F
+        registers: [0x0012]
+        range:
+          min: 257
+        validation:
+          max: 3
+          default: 3
+
+  - group: Control
+    update_interval: 5
+    items:
+      - name: "Self-check time"
+        platform: number
+        update_interval: 300
+        uom: "s"
+        rule: 1
+        registers: [0x0015]
+        range:
+          min: 0
+          max: 1000
+          default: 0
+
+      - name: "Date & Time"
+        platform: datetime
+        update_interval: 60
+        rule: 8
+        registers: [0x0016, 0x0017, 0x0018]
+
+      - name: "" # On/Off Switch (Empty name so the sensor has same name as the device, looks good! Can be used once per platform though)
+        platform: switch
+        update_interval: 30
+        rule: 1
+        registers: [0x002B]
+        value:
+          on: 0x0001
+          off: 0x0002
+
+      - name: "Device State"
+        class: "enum"
+        update_interval: 10
+        rule: 1
+        registers: [0x003B]
+        icon: "mdi:state-machine"
+        range:
+          min: 0
+          max: 5
+        lookup:
+          - key: 0x0000
+            value: "Standby"
+          - key: 0x0001
+            value: "Self-test"
+          - key: 0x0002
+            value: "Normal"
+          - key: 0x0003
+            value: "Alarm"
+          - key: 0x0004
+            value: "Fault"
+
+      - name: "Device Alarm"
+        class: "enum"
+        rule: 3
+        registers: [0x0065, 0x0066]
+        icon: "mdi:alert-outline"
+        lookup:
+          - key: 0
+            value: "OK"
+          - bit: 1
+            value: "Fan failure"
+          - bit: 2
+            value: "Grid phase failure"
+          - bit: 3
+            value: "Meter communication failure"
+          - bit: 30
+            value: "Battery loss"
+          - bit: 31
+            value: "Parallel communication quality"
+          - key: default
+            value: Problem
+
+      - name: "Device Fault"
+        class: "enum"
+        rule: 3
+        registers: [0x0067, 0x0068, 0x0069, 0x006A]
+        icon: "mdi:message-alert-outline"
+        lookup:
+          - key: 0
+            value: "OK"
+          - bit: 6
+            value: "DC/DC Soft Start failure"
+          - bit: 9
+            value: "Auxiliary power supply failure"
+          - bit: 12
+            value: "Working mode changed"
+          - bit: 17
+            value: "AC Over-current failure"
+          - bit: 18
+            value: "Tz_Integ_Fault failure"
+          - bit: 19
+            value: "DC Over-current failure"
+          - bit: 22
+            value: "AC current leakage failure"
+          - bit: 63
+            value: "Temperature is too high"
+          - key: default
+            value: Problem
+
+  - group: PV
+    update_interval: 5
+    items:
+      - name: "PV Power"
+        alt: DC Power
+        mppt: 1
+        description: Combined power of all inputs
+        class: "power"
+        state_class: "measurement"
+        uom: "W"
+        rule: 1
+        digits: 0
+        sensors:
+          - registers: [0x00BA]
+          - registers: [0x00BB]
+          - registers: [0x00BC]
+          - registers: [0x00BD]
+        validation:
+          min: 0
+          max: 24000
+          invalidate_all:
+        icon: "mdi:solar-power-variant"
+
+      - name: "PV1 Voltage"
+        alt: DC1 Voltage
+        mppt: 1
+        class: "voltage"
+        state_class: "measurement"
+        uom: "V"
+        scale: 0.1
+        rule: 1
+        registers: [0x006D]
+        icon: "mdi:solar-power-variant"
+
+      - name: "PV1 Current"
+        alt: DC1 Current
+        mppt: 1
+        class: "current"
+        uom: "A"
+        scale: 0.1
+        rule: 1
+        registers: [0x006E]
+        icon: "mdi:solar-power-variant"
+
+      - name: "PV2 Voltage"
+        alt: DC2 Voltage
+        mppt: 2
+        class: "voltage"
+        state_class: "measurement"
+        uom: "V"
+        scale: 0.1
+        rule: 1
+        registers: [0x006F]
+        icon: "mdi:solar-power-variant"
+
+      - name: "PV2 Current"
+        alt: DC2 Current
+        mppt: 2
+        class: "current"
+        state_class: "measurement"
+        uom: "A"
+        scale: 0.1
+        rule: 1
+        registers: [0x0070]
+        icon: "mdi:solar-power-variant"
+
+      - name: "PV3 Voltage"
+        alt: DC3 Voltage
+        mppt: 3
+        class: "voltage"
+        state_class: "measurement"
+        uom: "V"
+        scale: 0.1
+        rule: 1
+        registers: [0x0071]
+        icon: "mdi:solar-power-variant"
+
+      - name: "PV3 Current"
+        alt: DC3 Current
+        mppt: 3
+        class: "current"
+        state_class: "measurement"
+        uom: "A"
+        scale: 0.1
+        rule: 1
+        registers: [0x0072]
+        icon: "mdi:solar-power-variant"
+
+      - name: "PV4 Voltage"
+        alt: DC4 Voltage
+        mppt: 4
+        class: "voltage"
+        state_class: "measurement"
+        uom: "V"
+        scale: 0.1
+        rule: 1
+        registers: [0x0073]
+        icon: "mdi:solar-power-variant"
+
+      - name: "PV4 Current"
+        alt: "DC4 Current"
+        mppt: 4
+        class: "current"
+        state_class: "measurement"
+        uom: "A"
+        scale: 0.1
+        rule: 1
+        registers: [0x0074]
+        icon: "mdi:solar-power-variant"
+
+      - name: "PV1 Power"
+        alt: DC1 Power
+        mppt: 1
+        class: "power"
+        state_class: "measurement"
+        uom: "W"
+        rule: 1
+        registers: [0x00BA]
+        icon: "mdi:solar-power-variant"
+
+      - name: "PV2 Power"
+        alt: DC2 Power
+        mppt: 2
+        class: "power"
+        state_class: "measurement"
+        uom: "W"
+        rule: 1
+        registers: [0x00BB]
+        icon: "mdi:solar-power-variant"
+
+      - name: "PV3 Power"
+        alt: DC3 Power
+        mppt: 3
+        class: "power"
+        state_class: "measurement"
+        uom: "W"
+        rule: 1
+        registers: [0x00BC]
+        icon: "mdi:solar-power-variant"
+
+      - name: "PV4 Power"
+        alt: DC4 Power
+        mppt: 4
+        class: "power"
+        state_class: "measurement"
+        uom: "W"
+        rule: 1
+        registers: [0x00BD]
+        icon: "mdi:solar-power-variant"
+
+  - group: Meter
+    update_interval: 30
+    items:
+      - name: "Today Energy"
+        alt: Daily Energy
+        friendly_name: Today's Energy
+        class: "energy"
+        state_class: "total_increasing"
+        uom: "kWh"
+        scale: 0.1
+        rule: 2
+        registers: [0x003C]
+
+      - name: "Total Energy"
+        class: "energy"
+        state_class: "total_increasing"
+        uom: "kWh"
+        scale: 0.1
+        rule: 4
+        registers: [0x003F, 0x0040]
+        validation:
+          min: 0.1
+
+      - name: "Today Battery Charge"
+        friendly_name: Today's Battery Charge
+        class: "energy"
+        state_class: "total_increasing"
+        uom: "kWh"
+        scale: 0.1
+        rule: 1
+        registers: [0x0046]
+        icon: "mdi:battery-plus"
+
+      - name: "Today Battery Discharge"
+        friendly_name: Today's Battery Discharge
+        class: "energy"
+        state_class: "total_increasing"
+        uom: "kWh"
+        scale: 0.1
+        rule: 1
+        registers: [0x0047]
+        icon: "mdi:battery-minus"
+
+      - name: "Total Battery Charge"
+        class: "energy"
+        state_class: "total_increasing"
+        uom: "kWh"
+        scale: 0.1
+        rule: 3
+        registers: [0x0048, 0x0049]
+        icon: "mdi:battery-plus"
+        validation:
+          min: 0.1
+
+      - name: "Total Battery Discharge"
+        class: "energy"
+        state_class: "total_increasing"
+        uom: "kWh"
+        scale: 0.1
+        rule: 3
+        registers: [0x004A, 0x004B]
+        icon: "mdi:battery-minus"
+        validation:
+          min: 0.1
+
+      - name: Today Energy Import
+        alt: Today Energy Bought
+        friendly_name: Today's Energy Import
+        class: "energy"
+        state_class: "total_increasing"
+        uom: "kWh"
+        scale: 0.1
+        rule: 1
+        registers: [0x004C]
+        icon: "mdi:transmission-tower-export"
+
+      - name: Today Energy Export
+        alt: Today Energy Sold
+        friendly_name: Today's Energy Export
+        class: "energy"
+        state_class: "total_increasing"
+        uom: "kWh"
+        scale: 0.1
+        rule: 1
+        registers: [0x004D]
+        icon: "mdi:transmission-tower-import"
+
+      - name: Total Energy Import
+        alt: Total Energy Bought
+        class: "energy"
+        state_class: "total_increasing"
+        uom: "kWh"
+        scale: 0.1
+        rule: 1
+        registers: [0x004E, 0x0050]
+        icon: "mdi:transmission-tower-export"
+        validation:
+          min: 0.1
+
+      - name: Total Energy Export
+        alt: Total Energy Sold
+        class: "energy"
+        state_class: "total_increasing"
+        uom: "kWh"
+        scale: 0.1
+        rule: 3
+        registers: [0x0051, 0x0052]
+        icon: "mdi:transmission-tower-import"
+        validation:
+          min: 0.1
+
+      - name: "Today Load Consumption"
+        friendly_name: Today's Load Consumption
+        class: "energy"
+        state_class: "total_increasing"
+        uom: "kWh"
+        scale: 0.1
+        rule: 1
+        registers: [0x0054]
+
+      - name: "Total Load Consumption"
+        class: "energy"
+        state_class: "total_increasing"
+        uom: "kWh"
+        scale: 0.1
+        rule: 3
+        registers: [0x0055, 0x0056]
+        validation:
+          min: 0.1
+
+      - name: Generator Energy - today
+        name_lookup: "io_mode_select"
+        class: "energy"
+        state_class: "total_increasing"
+        uom: "kWh"
+        scale: 0.1
+        rule: 1
+        registers: [0x003E]
+
+      - name: Generator Energy
+        name_lookup: "io_mode_select"
+        class: "energy"
+        state_class: "total_increasing"
+        uom: "kWh"
+        scale: 0.1
+        rule: 3
+        registers: [0x005C, 0x005F]
+        validation:
+          min: 0.1
+
+      - name: "Today Production"
+        friendly_name: Today's Production
+        class: "energy"
+        state_class: "total_increasing"
+        uom: "kWh"
+        scale: 0.1
+        rule: 1
+        registers: [0x006C]
+        icon: "mdi:solar-power"
+        validation:
+          dev: 100
+          invalidate_all:
+
+      - name: "Total Production"
+        class: "energy"
+        state_class: "total_increasing"
+        uom: "kWh"
+        scale: 0.1
+        rule: 3
+        registers: [0x0060, 0x0061]
+        icon: "mdi:solar-power"
+        validation:
+          min: 0.1
+          dev: 100
+          invalidate_all: 2
+
+      - name: Today Losses
+        alt: Daily Losses
+        friendly_name: Today's Losses
+        description: Includes today's consumption of the inverter device itself as well AC/DC conversion losses
+        class: "energy"
+        state_class: "total_increasing"
+        ensure_increasing:
+        uom: "kWh"
+        rule: 1
+        digits: 1
+        scale: 0.1
+        uint: enforce
+        sensors:
+          - registers: [0x004C]
+          - registers: [0x006C]
+          - registers: [0x003E]
+            enabled_lookup:
+              io_mode_select: [Generator, Microinverter]
+          - registers: [0x0047]
+          - operator: subtract
+            registers: [0x004D]
+          - operator: subtract
+            registers: [0x0046]
+          - operator: subtract
+            registers: [0x0054]
+
+      - name: Total Losses
+        description: Includes total consumption of the inverter device itself as well AC/DC conversion losses
+        class: "energy"
+        state_class: "total_increasing"
+        ensure_increasing:
+        uom: "kWh"
+        rule: 3
+        digits: 1
+        scale: 0.1
+        uint: enforce
+        sensors:
+          - registers: [0x004E, 0x0050]
+          - registers: [0x0060, 0x0061]
+          - registers: [0x005C, 0x005F]
+            enabled_lookup:
+              io_mode_select: [Generator, Microinverter]
+          - registers: [0x004A, 0x004B]
+          - operator: subtract
+            registers: [0x0051, 0x0052]
+          - operator: subtract
+            registers: [0x0048, 0x0049]
+          - operator: subtract
+            registers: [0x0055, 0x0056]
+        validation:
+          min: 1
+
+  - group: Battery
+    items:
+      - name: "Battery Temperature"
+        class: "temperature"
+        state_class: "measurement"
+        uom: "°C"
+        scale: 0.1
+        rule: 1
+        offset: 1000
+        registers: [0x00B6]
+
+      - name: "Battery Voltage"
+        class: "voltage"
+        state_class: "measurement"
+        uom: "V"
+        scale: 0.01
+        rule: 1
+        registers: [0x00B7]
+
+      - name: "Battery"
+        class: "battery"
+        state_class: "measurement"
+        uom: "%"
+        rule: 1
+        registers: [0x00B8]
+
+      - name: "Battery State"
+        description: Determines battery state from battery power by +-50 W
+        class: "enum"
+        rule: 0
+        #rule: 1 # Not working???
+        #registers: [0x00BD]
+        #lookup: - key: 0 value: "charging" - key: 1 value: "idle" - key: 2 value: "discharging"
+        options: ["charging", "idle", "discharging"]
+        icon: "mdi:battery"
+
+      - name: "Battery Power"
+        class: "power"
+        state_class: "measurement"
+        uom: "W"
+        rule: 2
+        registers: [0x00BE]
+        attributes: [inverse]
+
+      - name: "Battery Current"
+        class: "current"
+        state_class: "measurement"
+        uom: "A"
+        scale: 0.01
+        rule: 2
+        registers: [0x00BF]
+        icon: "mdi:current-dc"
+
+      - name: "Battery Capacity"
+        description: Estimates capacity of the battery during (dis)charging
+        class: energy_storage
+        state_class: measurement
+        uom: "kWh"
+        rule: 0
+        digits: 1
+        icon: "mdi:battery-check"
+
+  - group: Grid
+    items:
+      - name: "Grid Frequency"
+        l: 1
+        class: "frequency"
+        state_class: "measurement"
+        uom: "Hz"
+        scale: 0.01
+        rule: 1
+        registers: [0x004F]
+
+      - name: "Grid L1 Voltage"
+        l: 1
+        class: "voltage"
+        state_class: "measurement"
+        uom: "V"
+        scale: 0.1
+        rule: 1
+        registers: [0x0096]
+        icon: "mdi:transmission-tower"
+
+      - name: "Grid L2 Voltage"
+        l: 2
+        class: "voltage"
+        state_class: "measurement"
+        uom: "V"
+        scale: 0.1
+        rule: 1
+        registers: [0x0097]
+        icon: "mdi:transmission-tower"
+
+      - name: "Grid Voltage"
+        l: 2
+        class: "voltage"
+        state_class: "measurement"
+        uom: "V"
+        scale: 0.1
+        rule: 1
+        registers: [0x0098]
+        icon: "mdi:transmission-tower"
+
+      - name: "Grid L1 Current"
+        l: 1
+        class: "current"
+        state_class: "measurement"
+        uom: "A"
+        scale: 0.01
+        rule: 2
+        registers: [0x00A0]
+        icon: "mdi:transmission-tower"
+
+      - name: "Grid L2 Current"
+        l: 2
+        class: "current"
+        state_class: "measurement"
+        uom: "A"
+        scale: 0.01
+        rule: 2
+        registers: [0x00A1]
+        icon: "mdi:transmission-tower"
+
+      - name: "Grid L1 Power"
+        l: 1
+        class: "power"
+        state_class: "measurement"
+        uom: "W"
+        rule: 2
+        scale: [1, 10] # out of date docs
+        registers: [0x00A7]
+        icon: "mdi:transmission-tower"
+
+      - name: "Grid L2 Power"
+        l: 2
+        class: "power"
+        state_class: "measurement"
+        uom: "W"
+        rule: 2
+        scale: [1, 10] # out of date docs
+        registers: [0x00A8]
+        icon: "mdi:transmission-tower"
+
+      - name: "Grid Power"
+        l: 1
+        class: "power"
+        state_class: "measurement"
+        uom: "W"
+        rule: 2
+        scale: [1, 10] # out of date docs
+        registers: [0x00A9]
+        icon: "mdi:transmission-tower"
+        attributes: [inverse]
+
+      - name: "External CT1 Current"
+        l: 1
+        class: "current"
+        state_class: "measurement"
+        uom: "A"
+        scale: 0.01
+        rule: 2
+        registers: [0x00A2]
+        icon: "mdi:transmission-tower"
+
+      - name: "External CT2 Current"
+        l: 2
+        class: "current"
+        state_class: "measurement"
+        uom: "A"
+        scale: 0.01
+        rule: 2
+        registers: [0x00A3]
+        icon: "mdi:transmission-tower"
+
+      - name: "External CT1 Power"
+        l: 1
+        class: "power"
+        state_class: "measurement"
+        uom: "W"
+        rule: 2
+        scale: [1, 10] # out of date docs
+        registers: [0x00AA]
+        icon: "mdi:transmission-tower"
+
+      - name: "External CT2 Power"
+        l: 2
+        class: "power"
+        state_class: "measurement"
+        uom: "W"
+        rule: 2
+        scale: [1, 10] # out of date docs
+        registers: [0x00AB]
+        icon: "mdi:transmission-tower"
+
+      - name: "External Power"
+        l: 1
+        class: "power"
+        state_class: "measurement"
+        uom: "W"
+        rule: 2
+        scale: [1, 10] # out of date docs
+        registers: [0x00AC]
+        icon: "mdi:transmission-tower"
+
+  - group: Load
+    items:
+      - name: "Load L1 Voltage"
+        l: 1
+        class: "voltage"
+        state_class: "measurement"
+        uom: "V"
+        scale: 0.1
+        rule: 1
+        registers: [0x009D]
+
+      - name: "Load L2 Voltage"
+        l: 2
+        class: "voltage"
+        state_class: "measurement"
+        uom: "V"
+        scale: 0.1
+        rule: 1
+        registers: [0x009E]
+
+      - name: "Load L1 Power"
+        l: 1
+        class: "power"
+        state_class: "measurement"
+        uom: "W"
+        rule: 2
+        scale: [1, 10] # out of date docs
+        registers: [0x00B0]
+
+      - name: "Load L2 Power"
+        l: 2
+        class: "power"
+        state_class: "measurement"
+        uom: "W"
+        rule: 2
+        scale: [1, 10] # out of date docs
+        registers: [0x00B1]
+
+      - name: "Load Power"
+        l: 1
+        class: "power"
+        state_class: "measurement"
+        uom: "W"
+        rule: 2
+        scale: [1, 10] # out of date docs
+        registers: [0x00B2]
+
+      - name: "Load L1 Current"
+        l: 1
+        class: "current"
+        state_class: "measurement"
+        uom: "A"
+        scale: 0.01
+        rule: 2
+        registers: [0x00B3]
+
+      - name: "Load L2 Current"
+        l: 2
+        class: "current"
+        state_class: "measurement"
+        uom: "A"
+        scale: 0.01
+        rule: 2
+        registers: [0x00B4]
+
+      - name: "Load Frequency"
+        l: 1
+        state_class: "measurement"
+        uom: "Hz"
+        scale: 0.01
+        rule: 1
+        registers: [0x00C0]
+
+      - name: "Generator"
+        name_lookup: "io_mode_select"
+        update_interval: 30
+        platform: "binary_sensor"
+        device_class: power
+        rule: 1
+        registers: [0x00C3]
+        bit: 0
+
+      - name: "Output Frequency"
+        l: 1
+        state_class: "measurement"
+        uom: "Hz"
+        scale: 0.01
+        rule: 1
+        registers: [0x00C1]
+
+      - name: "Output L1 Voltage"
+        l: 1
+        class: "voltage"
+        state_class: "measurement"
+        uom: "V"
+        scale: 0.1
+        rule: 1
+        registers: [0x009A]
+        icon: "mdi:transmission-tower"
+
+      - name: "Output L2 Voltage"
+        l: 2
+        class: "voltage"
+        state_class: "measurement"
+        uom: "V"
+        scale: 0.1
+        rule: 1
+        registers: [0x009B]
+        icon: "mdi:transmission-tower"
+
+      - name: "Output Voltage"
+        l: 2
+        class: "voltage"
+        state_class: "measurement"
+        uom: "V"
+        scale: 0.1
+        rule: 1
+        registers: [0x009C]
+        icon: "mdi:transmission-tower"
+
+      - name: "Output L1 Current"
+        l: 1
+        class: "current"
+        state_class: "measurement"
+        uom: "A"
+        scale: 0.01
+        rule: 2
+        registers: [0x00A4]
+
+      - name: "Output L2 Current"
+        l: 2
+        class: "current"
+        uom: "A"
+        scale: 0.01
+        rule: 2
+        registers: [0x00A5]
+
+      - name: "Output L1 Power"
+        l: 1
+        class: "power"
+        state_class: "measurement"
+        uom: "W"
+        rule: 2
+        registers: [0x00AD]
+
+      - name: "Output L2 Power"
+        l: 2
+        class: "power"
+        state_class: "measurement"
+        uom: "W"
+        rule: 2
+        registers: [0x00AE]
+
+      - name: "Power"
+        class: "power"
+        state_class: "measurement"
+        uom: "W"
+        rule: 2
+        registers: [0x00AF]
+
+      - name: "Power losses"
+        description: Includes consumption of the inverter device itself as well AC/DC conversion losses
+        class: "power"
+        state_class: "measurement"
+        uom: "W"
+        rule: 1
+        digits: 0
+        uint: enforce
+        sensors:
+          - registers: [0x00BA]
+          - registers: [0x00BB]
+          - signed:
+            registers: [0x00BE]
+          - operator: subtract
+            signed:
+            registers: [0x00AF]
+
+      - name: "DC Temperature"
+        class: "temperature"
+        state_class: "measurement"
+        uom: "°C"
+        scale: 0.1
+        rule: 2
+        offset: 1000
+        registers: [0x005A]
+
+      - name: "Temperature"
+        class: "temperature"
+        state_class: "measurement"
+        uom: "°C"
+        scale: 0.1
+        rule: 2
+        offset: 1000
+        registers: [0x005B]
+
+      - name: "Grid"
+        update_interval: 30
+        platform: "binary_sensor"
+        device_class: power
+        rule: 1
+        registers: [0x00C2]
+        icon: "mdi:transmission-tower"
+
+      - name: "Generator Power"
+        name_lookup: "io_mode_select"
+        class: "power"
+        state_class: "measurement"
+        uom: "W"
+        rule: 1
+        registers: [0x00A6]
+
+      - name: "Generator Voltage"
+        name_lookup: "io_mode_select"
+        class: "voltage"
+        state_class: "measurement"
+        uom: "V"
+        scale: 0.1
+        rule: 1
+        registers: [0x00B5]
+
+      - name: "Generator Frequency"
+        name_lookup: "io_mode_select"
+        state_class: "measurement"
+        uom: "Hz"
+        scale: 0.01
+        rule: 1
+        registers: [0x00C4]
+
+  - group: Settings
+    update_interval: 300
+    items:
+      - name: "Battery Control Mode"
+        platform: "select"
+        rule: 1
+        registers: [0x00C8]
+        icon: "mdi:battery"
+        lookup:
+          - key: 0x0000
+            value: "Lead-Battery, four-stage charging method"
+          - key: 0x0001
+            value: "Lithium"
+
+      - name: "Battery Equalization"
+        platform: number
+        class: "voltage"
+        state_class: "measurement"
+        uom: "V"
+        scale: 0.01
+        rule: 1
+        registers: [0x00C9]
+        configurable:
+          min: 38
+          max: 61
+          step: 0.1
+          mode: box
+        icon: "mdi:battery"
+        range:
+          min: 3800
+          max: 6100
+
+      - name: "Battery Absorption"
+        platform: number
+        class: "voltage"
+        state_class: "measurement"
+        uom: "V"
+        scale: 0.01
+        rule: 1
+        registers: [0x00CA]
+        configurable:
+          min: 38
+          max: 61
+          step: 0.1
+          mode: box
+        icon: "mdi:battery"
+        range:
+          min: 3800
+          max: 6100
+
+      - name: "Battery Float"
+        platform: number
+        class: "voltage"
+        state_class: "measurement"
+        uom: "V"
+        scale: 0.01
+        rule: 1
+        registers: [0x00CB]
+        configurable:
+          min: 38
+          max: 61
+          step: 0.1
+          mode: box
+        icon: "mdi:battery"
+        range:
+          min: 3800
+          max: 6100
+
+      - name: "Battery Capacity"
+        platform: number
+        state_class: "measurement"
+        uom: "Ah"
+        rule: 1
+        registers: [0x00CC]
+        icon: "mdi:battery"
+        configurable:
+          mode: box
+        range:
+          min: 0
+          max: 2000
+
+      - name: "Battery Empty"
+        platform: number
+        class: "voltage"
+        state_class: "measurement"
+        uom: "V"
+        scale: 0.01
+        rule: 1
+        registers: [0x00CD]
+        configurable:
+          min: 38
+          max: 61
+          step: 0.1
+          mode: box
+        icon: "mdi:battery"
+
+      - name: "Zero Export power"
+        platform: number
+        class: "power"
+        state_class: "measurement"
+        uom: "W"
+        rule: 1
+        registers: [0x00CE]
+        range:
+          min: 0
+          max: 65535
+        configurable:
+          min: -20
+          max: 500
+        icon: "mdi:transmission-tower"
+
+      - name: "Battery Equalization Cycle"
+        platform: number
+        class: "duration"
+        state_class: "measurement"
+        uom: "d"
+        rule: 1
+        registers: [0x00CF]
+        icon: "mdi:battery"
+        configurable:
+          mode: box
+        range:
+          min: 0
+          max: 90
+
+      - name: "Battery Equalization Time"
+        platform: number
+        class: "duration"
+        state_class: "measurement"
+        uom: "h"
+        scale: 0.5
+        rule: 1
+        registers: [0x00D0]
+        configurable:
+          min: 0
+          max: 10
+          mode: box
+        icon: "mdi:battery"
+        range:
+          min: 0
+          max: 20
+
+      - name: "Battery Temperature Compensation"
+        platform: number
+        state_class: "measurement"
+        uom: "mV/*C"
+        rule: 2
+        registers: [0x00D1]
+        configurable:
+          min: 0
+          max: 50
+          step: 0.1
+        icon: "mdi:battery"
+        range:
+          min: 0
+          max: 50
+
+      - name: "Battery Max Charging Current"
+        platform: number
+        class: "current"
+        state_class: "measurement"
+        uom: "A"
+        rule: 1
+        registers: [0x00D2]
+        icon: "mdi:current-dc"
+        configurable:
+          mode: box
+        range:
+          min: 0
+          max: 240
+
+      - name: "Battery Max Discharging Current"
+        platform: number
+        class: "current"
+        state_class: "measurement"
+        uom: "A"
+        rule: 1
+        registers: [0x00D3]
+        icon: "mdi:current-dc"
+        configurable:
+          mode: box
+        range:
+          min: 0
+          max: 240
+
+      - name: "Battery Operation Mode"
+        platform: "select"
+        rule: 1
+        registers: [0x00D5]
+        icon: mdi:battery
+        lookup:
+          - key: 0x0000
+            value: Voltage
+          - key: 0x0001
+            value: Capacity
+          - key: 0x0002
+            value: No Battery
+
+      - name: "Battery Wake Up"
+        platform: "switch"
+        rule: 1
+        registers: [0x00D6]
+
+      - name: Battery Resistance
+        platform: number
+        state_class: measurement
+        uom: "mΩ"
+        rule: 1
+        registers: [0x00D7]
+        icon: mdi:battery
+        range:
+          min: 0
+          max: 6000
+
+      - name: Battery Charging efficiency
+        platform: number
+        state_class: measurement
+        uom: "%"
+        scale: 0.1
+        rule: 1
+        registers: [0x00D8]
+        icon: mdi:battery
+        configurable:
+          mode: box
+        range:
+          min: 0
+          max: 1000
+        validation:
+          min: 0
+          max: 100
+
+      - name: Battery Shutdown SOC
+        platform: number
+        state_class: measurement
+        uom: "%"
+        rule: 1
+        registers: [0x00D9]
+        icon: mdi:battery
+        configurable:
+          mode: box
+        range:
+          min: 0
+          max: 100
+
+      - name: Battery Restart SOC
+        platform: number
+        state_class: measurement
+        uom: "%"
+        rule: 1
+        registers: [0x00DA]
+        icon: mdi:battery
+        configurable:
+          mode: box
+        range:
+          min: 0
+          max: 100
+
+      - name: Battery Low SOC
+        platform: number
+        state_class: measurement
+        uom: "%"
+        rule: 1
+        registers: [0x00DB]
+        icon: mdi:battery
+        configurable:
+          mode: box
+        range:
+          min: 0
+          max: 100
+
+      - name: Battery Shutdown Voltage
+        platform: number
+        class: "voltage"
+        state_class: measurement
+        uom: "V"
+        scale: 0.01
+        rule: 1
+        registers: [0x00DC]
+        icon: mdi:battery
+        configurable:
+          min: 38
+          max: 61
+          step: 0.1
+          mode: box
+        range:
+          min: 3800
+          max: 6100
+
+      - name: Battery Restart Voltage
+        platform: number
+        class: "voltage"
+        state_class: measurement
+        uom: "V"
+        scale: 0.01
+        rule: 1
+        registers: [0x00DD]
+        icon: mdi:battery
+        configurable:
+          min: 38
+          max: 61
+          step: 0.1
+          mode: box
+        range:
+          min: 3800
+          max: 6100
+
+      - name: Battery Low Voltage
+        platform: number
+        class: "voltage"
+        state_class: measurement
+        uom: "V"
+        scale: 0.01
+        rule: 1
+        registers: [0x00DE]
+        icon: mdi:battery
+        configurable:
+          min: 38
+          max: 61
+          step: 0.1
+          mode: box
+        range:
+          min: 3800
+          max: 6100
+
+      - name: "Generator Operating Time"
+        platform: number
+        class: "duration"
+        state_class: "measurement"
+        uom: "h"
+        scale: 0.1
+        rule: 1
+        registers: [0x00DF]
+        icon: "mdi:generator-stationary"
+        configurable:
+          min: 0
+          max: 24
+          mode: box
+        range:
+          min: 0
+          max: 240
+
+      - name: "Generator Cooling Time"
+        platform: number
+        class: "duration"
+        state_class: "measurement"
+        uom: "h"
+        scale: 0.1
+        rule: 1
+        registers: [0x00E0]
+        icon: "mdi:generator-stationary"
+        configurable:
+          min: 0
+          max: 24
+          mode: box
+        range:
+          min: 0
+          max: 240
+
+      - name: Battery Generator Charging Start Voltage
+        platform: number
+        class: "voltage"
+        state_class: measurement
+        uom: "V"
+        scale: 0.01
+        rule: 1
+        registers: [0x00E1]
+        icon: mdi:battery
+        configurable:
+          min: 00
+          max: 63
+          step: 0.1
+        range:
+          min: 0000
+          max: 6300
+
+      - name: Battery Generator Charging Start
+        platform: number
+        state_class: measurement
+        uom: "%"
+        rule: 1
+        registers: [0x00E2]
+        icon: mdi:battery
+        configurable:
+          mode: box
+        range:
+          min: 0
+          max: 100
+
+      - name: "Battery Generator Charging Current"
+        platform: number
+        class: "current"
+        state_class: "measurement"
+        uom: "A"
+        rule: 1
+        registers: [0x00E3]
+        icon: "mdi:current-dc"
+        configurable:
+          mode: box
+        range:
+          min: 0
+          max: 240
+
+      - name: "Battery Grid Charging Start Voltage"
+        platform: number
+        class: "voltage"
+        state_class: measurement
+        uom: "V"
+        scale: 0.01
+        rule: 1
+        registers: [0x00E4]
+        icon: "mdi:battery"
+        configurable:
+          min: 00
+          max: 63
+          step: 0.1
+        range:
+          min: 0000
+          max: 6300
+
+      - name: "Battery Grid Charging Start"
+        platform: number
+        state_class: measurement
+        uom: "%"
+        rule: 1
+        registers: [0x00E5]
+        icon: "mdi:battery"
+        configurable:
+          mode: box
+        range:
+          min: 0
+          max: 100
+
+      - name: "Battery Grid Charging Current"
+        platform: number
+        class: "current"
+        state_class: "measurement"
+        uom: "A"
+        rule: 1
+        registers: [0x00E6]
+        icon: "mdi:current-dc"
+        configurable:
+          mode: box
+        range:
+          min: 0
+          max: 240
+
+      - name: "Battery Generator Charging"
+        platform: "switch"
+        rule: 1
+        registers: [0x00E7]
+        icon: "mdi:battery"
+
+      - name: "Battery Grid Charging"
+        platform: "switch"
+        rule: 1
+        registers: [0x00E8]
+        icon: "mdi:battery"
+
+      - name: "Generator"
+        name_lookup: "io_mode_select"
+        platform: "switch"
+        rule: 1
+        registers: [0x00EA]
+
+      - name: "IO Mode"
+        alt: Generator input mode
+        description: The Generator/SmartLoad/Microinverter input-output mode
+        platform: "select"
+        rule: 1
+        registers: [0x00EB]
+        icon: "mdi:lightning-bolt-circle"
+        lookup:
+          - key: 0x0000
+            value: "Generator"
+          - key: 0x0001
+            value: "SmartLoad"
+          - key: 0x0002
+            value: "Microinverter"
+
+      - name: "SmartLoad Off Voltage"
+        platform: number
+        class: "voltage"
+        state_class: measurement
+        uom: "V"
+        scale: 0.01
+        rule: 1
+        registers: [0x00EC]
+        icon: "mdi:battery"
+        configurable:
+          min: 38
+          max: 63
+          step: 0.1
+          mode: box
+        range:
+          min: 3800
+          max: 6300
+
+      - name: "SmartLoad Off"
+        platform: number
+        state_class: "measurement"
+        uom: "%"
+        rule: 1
+        registers: [0x00ED]
+        icon: "mdi:lightning-bolt-circle"
+        configurable:
+          mode: box
+        range:
+          min: 0
+          max: 100
+
+      - name: "SmartLoad On Voltage"
+        platform: number
+        class: "voltage"
+        state_class: measurement
+        uom: "V"
+        scale: 0.01
+        rule: 1
+        registers: [0x00EE]
+        icon: "mdi:battery"
+        configurable:
+          min: 38
+          max: 63
+          step: 0.1
+          mode: box
+        range:
+          min: 3800
+          max: 6300
+
+      - name: "SmartLoad On"
+        platform: number
+        state_class: "measurement"
+        uom: "%"
+        rule: 1
+        registers: [0x00EF]
+        icon: "mdi:lightning-bolt-circle"
+        configurable:
+          mode: box
+        range:
+          min: 0
+          max: 100
+
+  - group: Parameters
+    update_interval: 300
+    items:
+      - name: "Generator Min PV Power"
+        name_lookup: "io_mode_select"
+        enabled_lookup:
+          io_mode_select: [Generator, SmartLoad]
+        platform: number
+        class: "power"
+        state_class: "measurement"
+        uom: "W"
+        rule: 1
+        registers: [0x00F1]
+        icon: "mdi:solar-power"
+        range:
+          min: 0000
+          max: 8000
+
+      - name: Charging Signal
+        platform: "select"
+        rule: 1
+        registers: [0x00F2]
+        lookup:
+          - key: 0x0000
+            value: "Normal"
+          - key: 0x0001
+            value: "Grid"
+          - key: 0x0002
+            value: "Generator"
+          - key: 0x0003
+            value: "Both"
+
+  - group: Work Mode
+    update_interval: 300
+    items:
+      - name: Energy Pattern
+        platform: "select"
+        rule: 1
+        registers: [0x00F3]
+        lookup:
+          - key: 0x0000
+            value: "Battery First"
+          - key: 0x0001
+            value: "Load First"
+
+      - name: "Work Mode"
+        platform: "select"
+        rule: 1
+        registers: [0x00F4]
+        lookup:
+          - key: 0x0000
+            value: "Export First"
+          - key: 0x0001
+            value: "Zero Export To Load"
+          - key: 0x0002
+            value: "Zero Export To CT"
+
+      - name: Export Surplus Power
+        alt: Max Sell Power
+        platform: number
+        class: "power"
+        state_class: "measurement"
+        uom: "W"
+        rule: 1
+        registers: [0x00F5]
+        range:
+          min: 0
+          max: 12000
+
+      - name: Export Surplus
+        alt: Solar Sell
+        platform: "switch"
+        rule: 1
+        registers: [0x00F7]
+
+      - name: PV Power
+        description: Max PV power limiter
+        alt: Max Solar Power
+        platform: number
+        class: "power"
+        state_class: "measurement"
+        uom: "W"
+        rule: 1
+        registers: [0x0035]
+        icon: "mdi:solar-power-variant"
+        range:
+          min: 0
+          max: 13000
+
+      - name: Time of Use
+        platform: select
+        rule: 1
+        registers: [0x00F8]
+        lookup:
+          - key: 0x0000
+            value: "Disabled"
+          - key: 0x0003
+            value: "Monday"
+          - key: 0x0005
+            value: "Tuesday"
+          - key: 0x0009
+            value: "Wednesday"
+          - key: 0x0011
+            value: "Thursday"
+          - key: 0x0021
+            value: "Friday"
+          - key: 0x0041
+            value: "Saturday"
+          - key: 0x0081
+            value: "Sunday"
+          - key: 0x003F
+            value: "Weekdays"
+          - key: 0x00C1
+            value: "Weekend"
+          - key: 0x00FD
+            value: "Week -Monday"
+          - key: 0x00FB
+            value: "Week -Tuesday"
+          - key: 0x00F7
+            value: "Week -Wednesday"
+          - key: 0x00EF
+            value: "Week -Thursday"
+          - key: 0x00DF
+            value: "Week -Friday"
+          - key: 0x00BF
+            value: "Week -Saturday"
+          - key: 0x007F
+            value: "Week -Sunday"
+          - key: 0x00FF
+            value: "Week"
+          - bit: 0
+            mode: "|"
+            value: "Enabled"
+
+      - name: "Program 1 Time"
+        platform: "time"
+        state_class: measurement
+        rule: 9
+        registers: [0x00FA]
+        range:
+          min: 0000
+          max: 2359
+        icon: mdi:sun-clock
+
+      - name: "Program 2 Time"
+        platform: "time"
+        state_class: measurement
+        rule: 9
+        registers: [0x00FB]
+        range:
+          min: 0000
+          max: 2359
+        icon: mdi:sun-clock
+
+      - name: "Program 3 Time"
+        platform: "time"
+        state_class: measurement
+        rule: 9
+        registers: [0x00FC]
+        range:
+          min: 0000
+          max: 2359
+        icon: mdi:sun-clock
+
+      - name: "Program 4 Time"
+        platform: "time"
+        state_class: measurement
+        rule: 9
+        registers: [0x00FD]
+        range:
+          min: 0000
+          max: 2359
+        icon: mdi:sun-clock
+
+      - name: "Program 5 Time"
+        platform: "time"
+        state_class: measurement
+        rule: 9
+        registers: [0x00FE]
+        range:
+          min: 0000
+          max: 2359
+        icon: mdi:sun-clock
+
+      - name: "Program 6 Time"
+        platform: "time"
+        state_class: measurement
+        rule: 9
+        registers: [0x00FF]
+        range:
+          min: 0000
+          max: 2359
+        icon: mdi:sun-clock
+
+      - name: "Program 1 Power"
+        platform: number
+        class: "power"
+        state_class: measurement
+        uom: "W"
+        rule: 1
+        registers: [0x0100]
+        range:
+          min: 0000
+          max: 12000
+        icon: mdi:sun-clock
+
+      - name: "Program 2 Power"
+        platform: number
+        class: "power"
+        state_class: measurement
+        uom: "W"
+        rule: 1
+        registers: [0x0101]
+        range:
+          min: 0000
+          max: 12000
+        icon: mdi:sun-clock
+
+      - name: "Program 3 Power"
+        platform: number
+        class: "power"
+        state_class: measurement
+        uom: "W"
+        rule: 1
+        registers: [0x0102]
+        range:
+          min: 0000
+          max: 12000
+        icon: mdi:sun-clock
+
+      - name: "Program 4 Power"
+        platform: number
+        class: "power"
+        state_class: measurement
+        uom: "W"
+        rule: 1
+        registers: [0x0103]
+        range:
+          min: 0000
+          max: 12000
+        icon: mdi:sun-clock
+
+      - name: "Program 5 Power"
+        platform: number
+        class: "power"
+        state_class: measurement
+        uom: "W"
+        rule: 1
+        registers: [0x0104]
+        range:
+          min: 0000
+          max: 12000
+        icon: mdi:sun-clock
+
+      - name: "Program 6 Power"
+        platform: number
+        class: "power"
+        state_class: measurement
+        uom: "W"
+        rule: 1
+        registers: [0x0105]
+        range:
+          min: 0000
+          max: 12000
+        icon: mdi:sun-clock
+
+      - name: Program 1 Voltage
+        platform: number
+        class: "voltage"
+        state_class: measurement
+        uom: "V"
+        scale: 0.01
+        rule: 1
+        registers: [0x0106]
+        configurable:
+          min: 00
+          max: 61
+          step: 0.1
+          mode: box
+        range:
+          min: 0000
+          max: 6100
+        icon: mdi:sun-clock
+
+      - name: Program 2 Voltage
+        platform: number
+        class: "voltage"
+        state_class: measurement
+        uom: "V"
+        scale: 0.01
+        rule: 1
+        registers: [0x0107]
+        configurable:
+          min: 00
+          max: 61
+          step: 0.1
+          mode: box
+        range:
+          min: 0000
+          max: 6100
+        icon: mdi:sun-clock
+
+      - name: Program 3 Voltage
+        platform: number
+        class: "voltage"
+        state_class: measurement
+        uom: "V"
+        scale: 0.01
+        rule: 1
+        registers: [0x0108]
+        configurable:
+          min: 00
+          max: 61
+          step: 0.1
+          mode: box
+        range:
+          min: 0000
+          max: 6100
+        icon: mdi:sun-clock
+
+      - name: Program 4 Voltage
+        platform: number
+        class: "voltage"
+        state_class: measurement
+        uom: "V"
+        scale: 0.01
+        rule: 1
+        registers: [0x0109]
+        configurable:
+          min: 00
+          max: 61
+          step: 0.1
+          mode: box
+        range:
+          min: 0000
+          max: 6100
+        icon: mdi:sun-clock
+
+      - name: Program 5 Voltage
+        platform: number
+        class: "voltage"
+        state_class: measurement
+        uom: "V"
+        scale: 0.01
+        rule: 1
+        registers: [0x010A]
+        configurable:
+          min: 00
+          max: 61
+          step: 0.1
+          mode: box
+        range:
+          min: 0000
+          max: 6100
+        icon: mdi:sun-clock
+
+      - name: Program 6 Voltage
+        platform: number
+        class: "voltage"
+        state_class: measurement
+        uom: "V"
+        scale: 0.01
+        rule: 1
+        registers: [0x010B]
+        configurable:
+          min: 00
+          max: 61
+          step: 0.1
+          mode: box
+        range:
+          min: 0000
+          max: 6100
+        icon: mdi:sun-clock
+
+      - name: "Program 1 SOC"
+        platform: number
+        state_class: measurement
+        uom: "%"
+        rule: 1
+        registers: [0x010C]
+        configurable:
+          mode: box
+        range:
+          min: 0
+          max: 100
+        icon: mdi:sun-clock
+
+      - name: "Program 2 SOC"
+        platform: number
+        state_class: measurement
+        uom: "%"
+        rule: 1
+        registers: [0x010D]
+        configurable:
+          mode: box
+        range:
+          min: 0
+          max: 100
+        icon: mdi:sun-clock
+
+      - name: "Program 3 SOC"
+        platform: number
+        state_class: measurement
+        uom: "%"
+        rule: 1
+        registers: [0x010E]
+        configurable:
+          mode: box
+        range:
+          min: 0
+          max: 100
+        icon: mdi:sun-clock
+
+      - name: "Program 4 SOC"
+        platform: number
+        state_class: measurement
+        uom: "%"
+        rule: 1
+        registers: [0x010F]
+        configurable:
+          mode: box
+        range:
+          min: 0
+          max: 100
+        icon: mdi:sun-clock
+
+      - name: "Program 5 SOC"
+        platform: number
+        state_class: measurement
+        uom: "%"
+        rule: 1
+        registers: [0x0110]
+        configurable:
+          mode: box
+        range:
+          min: 0
+          max: 100
+        icon: mdi:sun-clock
+
+      - name: "Program 6 SOC"
+        platform: number
+        state_class: measurement
+        uom: "%"
+        rule: 1
+        registers: [0x0111]
+        configurable:
+          mode: box
+        range:
+          min: 0
+          max: 100
+        icon: mdi:sun-clock
+
+      - name: Program 1 Charging
+        platform: select
+        rule: 1
+        registers: [0x0112]
+        display:
+          mask: 0x3
+        icon: mdi:sun-clock
+        lookup:
+          - key: 0x0000
+            value: "Disabled"
+          - key: 0x0001
+            value: "Grid"
+          - key: 0x0002
+            value: "Generator"
+          - key: 0x0003
+            value: "Both"
+
+      - name: Program 2 Charging
+        platform: select
+        rule: 1
+        registers: [0x0113]
+        display:
+          mask: 0x3
+        icon: mdi:sun-clock
+        lookup:
+          - key: 0x0000
+            value: "Disabled"
+          - key: 0x0001
+            value: "Grid"
+          - key: 0x0002
+            value: "Generator"
+          - key: 0x0003
+            value: "Both"
+
+      - name: Program 3 Charging
+        platform: select
+        rule: 1
+        registers: [0x0114]
+        display:
+          mask: 0x3
+        icon: mdi:sun-clock
+        lookup:
+          - key: 0x0000
+            value: "Disabled"
+          - key: 0x0001
+            value: "Grid"
+          - key: 0x0002
+            value: "Generator"
+          - key: 0x0003
+            value: "Both"
+
+      - name: Program 4 Charging
+        platform: select
+        rule: 1
+        registers: [0x0115]
+        display:
+          mask: 0x3
+        icon: mdi:sun-clock
+        lookup:
+          - key: 0x0000
+            value: "Disabled"
+          - key: 0x0001
+            value: "Grid"
+          - key: 0x0002
+            value: "Generator"
+          - key: 0x0003
+            value: "Both"
+
+      - name: Program 5 Charging
+        platform: select
+        rule: 1
+        registers: [0x0116]
+        display:
+          mask: 0x3
+        icon: mdi:sun-clock
+        lookup:
+          - key: 0x0000
+            value: "Disabled"
+          - key: 0x0001
+            value: "Grid"
+          - key: 0x0002
+            value: "Generator"
+          - key: 0x0003
+            value: "Both"
+
+      - name: Program 6 Charging
+        platform: select
+        rule: 1
+        registers: [0x0117]
+        display:
+          mask: 0x3
+        icon: mdi:sun-clock
+        lookup:
+          - key: 0x0000
+            value: "Disabled"
+          - key: 0x0001
+            value: "Grid"
+          - key: 0x0002
+            value: "Generator"
+          - key: 0x0003
+            value: "Both"
+
+      - name: Microinverter Export cut-off
+        platform: "switch"
+        rule: 1
+        registers: [0x0118]
+        value:
+          bit: 0
+
+      - name: Generator Peak shaving
+        platform: "switch"
+        rule: 1
+        registers: [0x0118]
+        value:
+          bit: 4
+
+      - name: Grid Peak shaving
+        platform: "switch"
+        rule: 1
+        registers: [0x0118]
+        value:
+          bit: 8
+
+      - name: Generator On-Grid
+        description: On Grid always on
+        name_lookup: io_mode_select
+        enabled_lookup:
+          io_mode_select: [Generator, SmartLoad]
+        platform: "switch"
+        rule: 1
+        registers: [0x0118]
+        value:
+          bit: 12
+
+      - name: Off Grid
+        platform: switch
+        rule: 1
+        range:
+          min: 0
+          max: 1
+        registers: [0x0119]
+
+      - name: Grid Frequency
+        platform: "select"
+        rule: 1
+        registers: [0x011D]
+        lookup:
+          - key: 0x0
+            value: 50 Hz
+          - key: 0x1
+            value: 60 Hz
+
+      - name: "Grid voltage protection - high"
+        platform: number
+        class: "voltage"
+        uom: "V"
+        scale: 0.1
+        rule: 1
+        registers: [0x011F]
+        configurable:
+          mode: box
+        range:
+          min: 1000
+          max: 2900
+
+      - name: "Grid voltage protection - low"
+        platform: number
+        class: "voltage"
+        uom: "V"
+        scale: 0.1
+        rule: 1
+        registers: [0x0120]
+        configurable:
+          mode: box
+        range:
+          min: 1000
+          max: 2900
+
+      - name: "Grid frequency protection - high"
+        platform: number
+        class: "frequency"
+        uom: "Hz"
+        scale: 0.01
+        rule: 1
+        registers: [0x0121]
+        configurable:
+          mode: box
+        range:
+          min: 4500
+          max: 6500
+
+      - name: "Grid frequency protection - low"
+        platform: number
+        class: "frequency"
+        uom: "Hz"
+        scale: 0.01
+        rule: 1
+        registers: [0x0122]
+        configurable:
+          mode: box
+        range:
+          min: 4500
+          max: 6500
+
+      - name: Generator Grid side
+        description: The generator is connected to the grid input
+        platform: "switch"
+        rule: 1
+        registers: [0x0123]
+
+      - name: "Generator Peak shaving"
+        platform: number
+        class: "power"
+        uom: "W"
+        rule: 1
+        registers: [0x0124]
+        icon: "mdi:generator-stationary"
+        range:
+          min: 0
+          max: 22000
+
+      - name: "Grid Peak shaving"
+        platform: number
+        class: "power"
+        uom: "W"
+        rule: 1
+        registers: [0x0125]
+        icon: "mdi:transmission-tower"
+        range:
+          min: 0
+          max: 22000
+
+      - name: Battery BMS Type
+        platform: select
+        rule: 1
+        registers: [0x0145]
+        icon: "mdi:battery"
+        lookup:
+          - key: 0x0000
+            value: "PYLON"
+          - key: 0x0001
+            value: "Tianbangda"
+          - key: 0x0002
+            value: "KOK"
+          - key: 0x0003
+            value: "Keith"
+          - key: 0x0004
+            value: "Toppai"
+          - key: 0x0005
+            value: "Peneng 485"
+          - key: 0x0006
+            value: "Jeris 485"
+          - key: 0x0007
+            value: "Sunwoda 485"
+          - key: 0x0008
+            value: "Xinrui 485"
+          - key: 0x0009
+            value: "Tianbangda 485"
+          - key: 0x000A
+            value: "Shenggao Electric CAN"
+
+      - name: "Meter"
+        platform: select
+        rule: 1
+        registers: [0x0146]
+        lookup:
+          - key: 0
+            value: Disabled
+          - bit: 0
+            value: Enabled
+          - bit: [0, 13]
+            value: Generator
+
+      - name: AC Coupling
+        description: Couple inverters and batteries using AC lines
+        platform: "select"
+        rule: 1
+        registers: [0x0146]
+        lookup:
+          - bit: 0
+            mode: "|"
+            value: Disabled
+          - bit: 6
+            mode: "|"
+            value: Grid
+          - bit: 7
+            mode: "|"
+            value: Load

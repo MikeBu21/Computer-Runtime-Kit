@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily retry error-log Telegram send (06:30)
+
+[Timer]
+OnCalendar=*-*-* 06:30:00
+Persistent=true
+Unit=error-log-send.service
+
+[Install]
+WantedBy=timers.target

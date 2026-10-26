@@ -1,0 +1,19 @@
+[
+  {
+    "entity_id": "switch.beispiel_geraet",
+    "label": "Beispielgerät",
+    "note": "Beispiel",
+    "auto": false,
+    "auto_battery": false,
+    "pause_kw": "",
+    "resume_kw": "",
+    "lower_kw": "",
+    "raise_kw": "",
+    "time_pause": false,
+    "pause_time": "",
+    "resume_time": "",
+    "control_source": "field.pv",
+    "battery_control_source": "flow.battery_soc",
+    "automation_rules": []
+  }
+]
