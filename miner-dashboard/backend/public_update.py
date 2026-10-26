@@ -380,23 +380,73 @@ def standard_overlay() -> Dict[str, str]:
         "client_id": "http://127.0.0.1:8123/",
         "ha_url": "http://127.0.0.1:8123",
     }
-    readme = """# minersteuerung (Standard)
+    readme = f"""# Computer-Runtime-Kit
 
-Öffentliche Standardversion der Miner-Steuerung.
+Öffentliche Standardversion der Programmoberfläche und des Laufzeitcodes.
 
-Enthalten sind der Programmstand und Beispielwerte: ein Beispiel-Miner,
-ein Beispielgerät, leere Zugänge und die Standardeinstellungen des Programms
-(Speicher aus, Speichergröße 0 kWh, SoC-Grenzen 35 % / 95 %).
+Enthalten sind der aktuelle Programmstand und Beispielwerte
+(Beispielgeräte, leere Zugänge, Standardeinstellungen).
 
-Nicht enthalten sind Bot-Tokens, Passwörter, echte Geräte, Standortdaten
-und persönliche Verläufe.
+Nicht enthalten sind persönliche Daten: Tokens, Passwörter, echte Geräte,
+Standorte und Verläufe.
+
+## Ersteinrichtung
 
 ```bash
-git clone https://github.com/MikeBu21/Computer-Runtime-Kit.git ~/minersteuerung
+git clone https://github.com/{OWNER}/{REPO_NAME}.git ~/minersteuerung
+cd ~/minersteuerung
 ```
 
-Anmeldung am Dashboard der Standardversion: Benutzer `admin`, ohne Passwort.
-Echte Zugangsdaten danach lokal eintragen. Dieses Repo bleibt öffentlich.
+Danach die lokale Einrichtung wie gewohnt ausführen. Dashboard-Anmeldung der
+Standardversion: Benutzer `admin`, ohne Passwort. Echte Zugangsdaten nur lokal
+eintragen.
+
+## Update auf einem anderen Gerät
+
+1. Programm und Dashboard starten.
+2. Im Dashboard unter **Öffentliches Update** auf **Update herunterladen** tippen.
+3. Es wird nur Programmcode aktualisiert. Persönliche Einstellungen, Geräte,
+   Passwörter, Lernstände und Historie bleiben unverändert.
+4. Der Fortschrittsbalken zeigt den Stand, bis das Update fertig ist.
+
+Details auch in `UPDATE.md`.
+
+Dieses Repo ist öffentlich. Hochladen neuer Versionen ist nur auf dem
+Veröffentlichungsgerät möglich, nicht über den Download-Button.
+"""
+    update_guide = f"""# Update-Anleitung
+
+So holst du die neueste Version von `{OWNER}/{REPO_NAME}` auf ein Gerät,
+auf dem die Software bereits läuft.
+
+## Kurz
+
+1. Dashboard öffnen.
+2. Bereich **Öffentliches Update**.
+3. **Update herunterladen** tippen.
+4. Warten, bis der Fortschrittsbalken bei 100 % ist.
+
+## Was wird aktualisiert?
+
+Nur Programmcode (zum Beispiel `.py`, `.html`, `.css`, `.js`, `.sh`).
+
+## Was bleibt erhalten?
+
+- Persönliche Einstellungen
+- Geräte und Zuordnungen
+- Passwörter und Tokens
+- Chat-IDs
+- Lernstände / Neuronen
+- Historie und Trainingsdaten
+
+## Erster Start ohne vorhandene Installation
+
+```bash
+git clone https://github.com/{OWNER}/{REPO_NAME}.git ~/minersteuerung
+```
+
+Danach lokal einrichten. Der Button **Update herunterladen** ist in dieser
+Version bereits enthalten und holt künftige Updates aus demselben Repo.
 """
     files = {
         "miner-dashboard/backend/miners.json": json.dumps([example_miner], indent=2, ensure_ascii=False) + "\n",
@@ -416,6 +466,7 @@ Echte Zugangsdaten danach lokal eintragen. Dieses Repo bleibt öffentlich.
         "homeassistant/config/automations.yaml": "[]\n",
         "homeassistant/ha-bridge/credentials.json": json.dumps(credentials, indent=2) + "\n",
         "README.md": readme,
+        "UPDATE.md": update_guide,
     }
     return files
 
@@ -747,7 +798,7 @@ def ensure_public_repo() -> None:
         {
             "name": REPO_NAME,
             "private": False,
-            "description": "Öffentliche Standardversion der Miner-Steuerung ohne persönliche Daten.",
+            "description": "Shared runtime helpers and default templates.",
             "auto_init": False,
         },
     )
@@ -847,7 +898,7 @@ def start_upload() -> Tuple[bool, str]:
 
 
 # Nur diese Endungen können Programmcode sein. Alles andere wird nie installiert.
-CODE_SUFFIXES = {".py", ".html", ".css", ".js", ".mjs", ".sh"}
+CODE_SUFFIXES = {".py", ".html", ".css", ".js", ".mjs", ".sh", ".md"}
 
 # Ordner, die persönliche, historische oder zwischengespeicherte Daten halten.
 PERSONAL_DIR_NAMES = {
