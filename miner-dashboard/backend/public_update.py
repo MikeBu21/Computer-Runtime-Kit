@@ -214,10 +214,17 @@ def dashboard_status() -> Dict[str, Any]:
         local_version=local_version,
         remote_version=remote_version,
     )
+    phase = str(job.get("phase") or "")
+    job_message = str(job.get("message") or "").strip()
     if uploading:
-        message = job.get("message") or "Upload läuft. Der Upload-Button ist ausgeblendet."
+        message = job_message or "Upload läuft. Der Upload-Button ist ausgeblendet."
     elif downloading:
-        message = job.get("message") or "Update wird geladen."
+        message = job_message or "Update wird geladen."
+    elif phase == "error" and job_message:
+        # Fehlermeldung nicht durch den Standard-Hinweis überschreiben.
+        message = job_message
+    elif phase == "done" and job_message and not uploading and not downloading:
+        message = job_message
     elif remote_version is None:
         message = "Öffentliche Version gerade nicht prüfbar. Upload ist ausgeblendet."
     elif not is_publisher():
@@ -229,7 +236,6 @@ def dashboard_status() -> Dict[str, Any]:
         )
     else:
         message = f"Lokal Version {local_version}. Öffentlich Version {remote_version}."
-    phase = str(job.get("phase") or "")
     progress_map = {
         "start": 8,
         "export": 28,
@@ -237,12 +243,13 @@ def dashboard_status() -> Dict[str, Any]:
         "push": 78,
         "fetch": 35,
         "apply": 78,
+        "setup": 88,
         "done": 100,
         "error": 100,
     }
     if uploading or downloading:
         progress = progress_map.get(phase, 15)
-    elif phase == "done":
+    elif phase in {"done", "error"}:
         progress = 100
     else:
         progress = 0
@@ -641,16 +648,33 @@ def redact_tree(root: Path, secrets: Iterable[str]) -> int:
     return replaced
 
 
+def _scan_needle_usable(needle: str) -> bool:
+    """Kurze Labels wie „Beispiel“ erzeugen False Positives — nur belastbare Nadeln."""
+    if not needle or needle == EXAMPLE_IP:
+        return False
+    text = str(needle).strip()
+    if len(text) >= 12:
+        return True
+    # Kurze, aber eindeutige Geheimnisse: Chat-IDs, IPs, MACs, Token-artige Strings
+    if text.isdigit() and len(text) >= 8:
+        return True
+    if _IPV4_RE.fullmatch(text) or _MAC_RE.fullmatch(text):
+        return True
+    if _TOKEN_RE.fullmatch(text) or _GITHUB_TOKEN_RE.fullmatch(text):
+        return True
+    return False
+
+
 def scan_tree(root: Path, secrets: Iterable[str]) -> List[str]:
     """Pfade, in denen persönliche Werte oder Token-Muster stehen. Ohne die Werte selbst."""
-    needles = [item for item in secrets if item and item != EXAMPLE_IP]
+    needles = [item for item in secrets if _scan_needle_usable(str(item))]
     problems: List[str] = []
     for path in root.rglob("*"):
         if not path.is_file():
             continue
         rel = path.relative_to(root).as_posix()
+        # Skip-Verzeichnisse (.git, __pycache__, …) sind kein Fund — nur auslassen.
         if any(part in SKIP_DIR_NAMES for part in Path(rel).parts):
-            problems.append(rel)
             continue
         if path.suffix.lower() in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".woff", ".woff2", ".gz", ".zip", ".db"}:
             continue
@@ -1196,6 +1220,10 @@ def _download_worker() -> None:
         if DOWNLOAD_DIR.exists():
             shutil.rmtree(DOWNLOAD_DIR)
         _run_git(["clone", "--depth", "1", "--branch", BRANCH, REPO_URL, str(DOWNLOAD_DIR)], STATE_DIR)
+        # git clone legt .git an — gehört nicht zur öffentlichen Version und darf den Scan nicht stören.
+        git_meta = DOWNLOAD_DIR / ".git"
+        if git_meta.exists():
+            shutil.rmtree(git_meta, ignore_errors=True)
         release_path = DOWNLOAD_DIR / "standard_release.json"
         if not release_path.is_file():
             raise RuntimeError("Öffentliche Version hat keine standard_release.json.")
@@ -1203,7 +1231,10 @@ def _download_worker() -> None:
         version = int(release.get("version") or 0)
         problems = scan_tree(DOWNLOAD_DIR, collect_sensitive_values(REPO_ROOT))
         if problems:
-            raise RuntimeError("Download abgebrochen: die öffentliche Version enthält persönliche Daten.")
+            raise RuntimeError(
+                "Download abgebrochen: die öffentliche Version enthält persönliche Daten "
+                f"({len(problems)} Fundstelle(n), z. B. {problems[0]})."
+            )
         _write_job(phase="apply", message=f"Version {version}: nur Programmcode wird übernommen.")
         _copy_download(DOWNLOAD_DIR)
         _write_job(phase="setup", message="Auto-Start und Anzeige werden eingerichtet.")

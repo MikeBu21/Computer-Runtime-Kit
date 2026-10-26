@@ -71,20 +71,29 @@
       }
 
       function applyStatus(data) {
-        if (messageEl && data.message) messageEl.textContent = data.message;
+        const phase = String(data.phase || "");
+        // Bei Fehler die Job-Meldung behalten (nicht durch Status-Hinweis ersetzen).
+        if (messageEl && data.message) {
+          if (phase === "error" || data.uploading || data.downloading || phase === "done" || !messageEl.dataset.lockedError) {
+            messageEl.textContent = data.message;
+          }
+          if (phase === "error") messageEl.dataset.lockedError = "1";
+          if (phase !== "error") delete messageEl.dataset.lockedError;
+        }
         ensureUploadButton(Boolean(data.upload_allowed));
         const busy = Boolean(data.uploading || data.downloading);
         if (downloadBtn) downloadBtn.disabled = busy;
         const uploadBtn = document.getElementById("public_upload_btn");
         if (uploadBtn) uploadBtn.disabled = busy;
         if (busy) {
-          const phase = String(data.phase || "start");
           const pct = (data.progress != null) ? Number(data.progress) : (PHASE_PCT[phase] != null ? PHASE_PCT[phase] : 20);
+          if (progressBar) progressBar.style.background = "linear-gradient(90deg, #00e676, #00c853)";
           setProgress(true, pct, data.message || (data.uploading ? "Upload läuft…" : "Download läuft…"));
-        } else if (data.phase === "done") {
+        } else if (phase === "done") {
+          if (progressBar) progressBar.style.background = "linear-gradient(90deg, #00e676, #00c853)";
           setProgress(true, 100, data.message || "Fertig.");
           setTimeout(function () { setProgress(false, 0, ""); }, 3500);
-        } else if (data.phase === "error") {
+        } else if (phase === "error") {
           setProgress(true, 100, data.message || "Fehler.");
           if (progressBar) progressBar.style.background = "linear-gradient(90deg, #ef5350, #e53935)";
         } else {
