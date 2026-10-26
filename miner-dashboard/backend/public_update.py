@@ -953,6 +953,23 @@ PERSONAL_NAME_MARKERS = (
 )
 
 
+def is_setup_asset(rel: str) -> bool:
+    """Mitgelieferte Setup-Dateien (Icons, Desktop, systemd), kein persönlicher Code."""
+    rel = rel.replace("\\", "/").lstrip("./")
+    if not rel or ".." in rel.split("/"):
+        return False
+    suffix = Path(rel).suffix.lower()
+    if rel.startswith("miner-dashboard/docs/icons/") and suffix == ".png":
+        return True
+    if rel.startswith("miner-dashboard/docs/autostart/") and suffix == ".desktop":
+        return True
+    if rel.startswith("miner-dashboard/docs/systemd-user/") and suffix in {".service", ".timer"}:
+        return True
+    if rel.startswith("Desktop/") and suffix == ".desktop":
+        return True
+    return False
+
+
 def is_installable_code(rel: str) -> bool:
     """True nur für vom Entwickler gelieferten Programmcode."""
     rel = rel.replace("\\", "/").lstrip("./")
@@ -1000,10 +1017,10 @@ def _copy_download(snapshot: Path, dest_root: Optional[Path] = None) -> int:
         if not path.is_file():
             continue
         rel = path.relative_to(snapshot).as_posix()
-        if not is_installable_code(rel):
+        if not (is_installable_code(rel) or is_setup_asset(rel)):
             continue
         target = dest_root / rel
-        if _local_code_is_personal(target, secrets):
+        if is_installable_code(rel) and _local_code_is_personal(target, secrets):
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, target)
@@ -1079,6 +1096,45 @@ def apply_runtime_setup(dest_root: Optional[Path] = None) -> List[str]:
     )
     (autostart_dir / "piminer-boot.desktop").write_text(desktop_body, encoding="utf-8")
     notes.append("Autostart-Desktop aktualisiert")
+
+    # Ein Desktop-Start-Button mit einheitlichem Logo (keine Doppel-Icons)
+    icon_src = md / "docs" / "icons" / "start-all.png"
+    icon_dest_dir = home / ".local" / "share" / "icons"
+    icon_dest_dir.mkdir(parents=True, exist_ok=True)
+    icon_path = icon_dest_dir / "piminer-start-all.png"
+    if icon_src.is_file():
+        shutil.copy2(icon_src, icon_path)
+    desktop_dir = home / "Desktop"
+    desktop_dir.mkdir(parents=True, exist_ok=True)
+    alt_dir = desktop_dir / "Alt"
+    alt_dir.mkdir(parents=True, exist_ok=True)
+    for old in desktop_dir.glob("*.desktop"):
+        name = old.name
+        if name in {"Alles starten.desktop", "piminer-start-all.desktop"}:
+            continue
+        try:
+            shutil.move(str(old), str(alt_dir / name))
+        except Exception:
+            pass
+    start_desktop = (
+        "[Desktop Entry]\n"
+        "Version=1.0\n"
+        "Type=Application\n"
+        "Name=Alles starten\n"
+        "Comment=Startet alle Programme in Reihenfolge (ein Button, ein Logo)\n"
+        f"Exec={md / 'start-all-services.sh'} desktop\n"
+        f"Icon={icon_path if icon_path.is_file() else icon_src}\n"
+        "Terminal=false\n"
+        "Categories=Network;Settings;\n"
+        "StartupNotify=true\n"
+    )
+    start_path = desktop_dir / "Alles starten.desktop"
+    start_path.write_text(start_desktop, encoding="utf-8")
+    try:
+        start_path.chmod(start_path.stat().st_mode | 0o111)
+    except Exception:
+        pass
+    notes.append("einheitlicher Desktop-Start-Button")
 
     unit_src = md / "docs" / "systemd-user"
     unit_dest = home / ".config" / "systemd" / "user"

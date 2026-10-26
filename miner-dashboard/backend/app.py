@@ -171,7 +171,6 @@ def index():
         energy_visibility=energy_visibility,
         recovery_pending=recovery_pending,
         message=request.args.get('message'),
-        public_update=public_update_status(),
     )
 
 @app.route('/login', methods=['GET', 'POST'])
@@ -193,6 +192,48 @@ def settings():
         save_settings(settings)
         return redirect('/')
     return render_template('settings.html')
+
+
+@app.route('/updates')
+def updates_page():
+    return render_template('updates.html', public_update=public_update_status())
+
+
+def _network_info() -> dict:
+    hostname = socket.gethostname()
+    ipv4 = "n/a"
+    iface = "n/a"
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("10.255.255.255", 1))
+        ipv4 = s.getsockname()[0]
+        s.close()
+    except Exception:
+        pass
+    try:
+        out = subprocess.check_output(
+            ["ip", "-4", "-o", "addr", "show", "scope", "global"],
+            text=True,
+            timeout=3,
+        )
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) < 4:
+                continue
+            addr = parts[3].split("/", 1)[0]
+            if addr == ipv4 or iface == "n/a":
+                iface = parts[1]
+                if addr == ipv4:
+                    break
+    except Exception:
+        pass
+    status = "Verbunden" if ipv4 not in ("n/a", "127.0.0.1") else "Lokal / unbekannt"
+    return {"hostname": hostname, "ipv4": ipv4, "iface": iface, "status": status}
+
+
+@app.route('/netzwerk')
+def netzwerk_page():
+    return render_template('netzwerk.html', network=_network_info())
 
 @app.route('/smartmeter', methods=['GET', 'POST'])
 def smartmeter():

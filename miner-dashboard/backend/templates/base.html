@@ -119,10 +119,21 @@
     }
 
     .sidebar-nav .nav-link-sub {
-      margin-left: 0.75rem;
-      padding-left: 1.1rem;
+      margin-left: 0.55rem;
+      padding: 0.55rem 0.85rem 0.55rem 1rem;
       font-size: 0.86rem;
       border-left: 2px solid rgba(255, 255, 255, 0.08);
+    }
+
+    .sidebar-section-label {
+      margin: 0.85rem 0.35rem 0.35rem;
+      padding: 0.35rem 0.55rem;
+      color: #fff;
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      opacity: 0.72;
     }
 
     .main-content {
@@ -394,20 +405,24 @@
         <span>Mining Dashboard</span>
       </a>
       <div class="sidebar-nav navbar-nav">
-        <a class="nav-link{% if request.path == '/' %} active{% endif %}" href="/">📊 Dashboard</a>
-        <a class="nav-link{% if request.path == '/add_miner' %} active{% endif %}" href="/add_miner">➕ Miner hinzufügen</a>
-        <a class="nav-link{% if request.path == '/add_device' %} active{% endif %}" href="/add_device">🔌 Geräte hinzufügen</a>
-        <a class="nav-link{% if request.path == '/smartmeter' %} active{% endif %}" href="/smartmeter">⚡ Smartmeter</a>
-        <a class="nav-link{% if request.path == '/settings' %} active{% endif %}" href="/settings">⚙️ Einstellungen</a>
-        <a class="nav-link{% if request.path == '/dienste' %} active{% endif %}" href="/dienste">🚀 Dienste</a>
-        <a class="nav-link{% if request.path == '/reboot' %} active{% endif %}" href="/reboot">🔁 Neustart</a>
-        <a class="nav-link{% if request.path == '/automatikmodus' %} active{% endif %}" href="/automatikmodus">🤖 Automatikmodus</a>
-        <a class="nav-link{% if request.path == '/zeitsteuerung' %} active{% endif %}" href="/zeitsteuerung">⏱ Zeitsteuerung</a>
-        <a class="nav-link{% if request.path == '/telegrambot' %} active{% endif %}" href="/telegrambot">💬 Telegram Bot</a>
-        <a class="nav-link{% if request.path == '/steuerungsalgorithmus' %} active{% endif %}" href="/steuerungsalgorithmus">🧠 Steuerungsalgorythmus</a>
-        <a class="nav-link{% if request.path == '/grundverbrauchsrechner' %} active{% endif %}" href="/grundverbrauchsrechner">🧮 Grundverbrauchsrechner</a>
-        <a class="nav-link nav-link-sub{% if request.path == '/statistik-konfigurieren' %} active{% endif %}" href="/statistik-konfigurieren">📈 Statistik konfigurieren</a>
-        <a class="nav-link{% if request.path == '/fehlerberichte' %} active{% endif %}" href="/fehlerberichte">📋 Fehlerberichte</a>
+        <a class="nav-link{% if request.path == '/' %} active{% endif %}" href="/">Dashboard</a>
+        <a class="nav-link{% if request.path == '/add_miner' %} active{% endif %}" href="/add_miner">Miner hinzufügen</a>
+        <a class="nav-link{% if request.path == '/add_device' %} active{% endif %}" href="/add_device">Geräte hinzufügen</a>
+        <a class="nav-link{% if request.path == '/smartmeter' %} active{% endif %}" href="/smartmeter">Smartmeter</a>
+
+        <div class="sidebar-section-label">Einstellungen</div>
+        <a class="nav-link nav-link-sub{% if request.path == '/dienste' %} active{% endif %}" href="/dienste">Dienste</a>
+        <a class="nav-link nav-link-sub{% if request.path == '/reboot' %} active{% endif %}" href="/reboot">Neustart</a>
+        <a class="nav-link nav-link-sub{% if request.path == '/updates' %} active{% endif %}" href="/updates">Updates</a>
+        <a class="nav-link nav-link-sub{% if request.path == '/netzwerk' %} active{% endif %}" href="/netzwerk">Netzwerkeinstellungen</a>
+        <a class="nav-link nav-link-sub{% if request.path == '/settings' %} active{% endif %}" href="/settings">Zugang</a>
+        <a class="nav-link nav-link-sub{% if request.path == '/automatikmodus' %} active{% endif %}" href="/automatikmodus">Automatikmodus</a>
+        <a class="nav-link nav-link-sub{% if request.path == '/zeitsteuerung' %} active{% endif %}" href="/zeitsteuerung">Zeitsteuerung</a>
+        <a class="nav-link nav-link-sub{% if request.path == '/telegrambot' %} active{% endif %}" href="/telegrambot">Telegram Bot</a>
+        <a class="nav-link nav-link-sub{% if request.path == '/steuerungsalgorithmus' %} active{% endif %}" href="/steuerungsalgorithmus">Steuerungsalgorithmus</a>
+        <a class="nav-link nav-link-sub{% if request.path == '/grundverbrauchsrechner' %} active{% endif %}" href="/grundverbrauchsrechner">Grundverbrauchsrechner</a>
+        <a class="nav-link nav-link-sub{% if request.path == '/statistik-konfigurieren' %} active{% endif %}" href="/statistik-konfigurieren">Statistik konfigurieren</a>
+        <a class="nav-link nav-link-sub{% if request.path == '/fehlerberichte' %} active{% endif %}" href="/fehlerberichte">Fehlerberichte</a>
       </div>
     </nav>
 

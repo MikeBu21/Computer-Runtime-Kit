@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Alles starten
+Comment=Startet alle Programme in Reihenfolge (ein Button, ein Logo)
+Exec=/home/piminer/minersteuerung/miner-dashboard/start-all-services.sh desktop
+Icon=/home/piminer/minersteuerung/miner-dashboard/docs/icons/start-all.png
+Terminal=false
+Categories=Network;Settings;
+StartupNotify=true
