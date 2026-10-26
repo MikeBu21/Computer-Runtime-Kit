@@ -407,7 +407,9 @@ eintragen.
 2. Im Dashboard unter **Öffentliches Update** auf **Update herunterladen** tippen.
 3. Es wird nur Programmcode aktualisiert. Persönliche Einstellungen, Geräte,
    Passwörter, Lernstände und Historie bleiben unverändert.
-4. Der Fortschrittsbalken zeigt den Stand, bis das Update fertig ist.
+4. Auto-Start und die skalierbare Anzeige werden mit eingerichtet.
+5. Die Software-Dienste starten danach neu (kein Computer-Reboot).
+6. Der Fortschrittsbalken zeigt den Stand, bis das Update fertig ist.
 
 Details auch in `UPDATE.md`.
 
@@ -429,6 +431,11 @@ auf dem die Software bereits läuft.
 ## Was wird aktualisiert?
 
 Nur Programmcode (zum Beispiel `.py`, `.html`, `.css`, `.js`, `.sh`).
+
+Zusätzlich richtet der Download die Auto-Start-Struktur ein (Desktop-Eintrag,
+Startreihenfolge, Statusfenster) und startet die Software-Dienste neu
+(Scheduler, Batterie-Scraper, Flask-Backend, Energiemonitor,
+Steuerungsalgorithmus, Telegram-Bot). Der Computer wird **nicht** neu gebootet.
 
 ## Was bleibt erhalten?
 
@@ -1004,6 +1011,129 @@ def _copy_download(snapshot: Path, dest_root: Optional[Path] = None) -> int:
     return copied
 
 
+def _clear_chromium_fixed_zoom() -> None:
+    """Feste Chromium-Host-Zooms entfernen, damit die UI-Skalierung greift."""
+    prefs = Path.home() / ".config" / "chromium" / "Default" / "Preferences"
+    if not prefs.is_file():
+        return
+    try:
+        data = json.loads(prefs.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    partition = data.setdefault("partition", {})
+    zoom = partition.get("per_host_zoom_levels")
+    if not isinstance(zoom, dict):
+        return
+    # Leere Host-Overrides → Browser nutzt 100 %, Skalierung macht die Website.
+    partition["per_host_zoom_levels"] = {"x": {}}
+    try:
+        prefs.write_text(json.dumps(data, separators=(",", ":"), ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def apply_runtime_setup(dest_root: Optional[Path] = None) -> List[str]:
+    """Richtet Auto-Start und Hilfsskripte auf dem Ziel-Pi ein (kein Reboot)."""
+    dest_root = dest_root or REPO_ROOT
+    home = Path.home()
+    md = dest_root / "miner-dashboard"
+    notes: List[str] = []
+
+    scripts = (
+        "start-all-services.sh",
+        "open_service_status_terminal.sh",
+        "restart_control_services.sh",
+        "pi5-boot.sh",
+        "start_all.sh",
+        "start_all_desktop.sh",
+    )
+    for name in scripts:
+        path = md / name
+        if path.is_file():
+            try:
+                path.chmod(path.stat().st_mode | 0o111)
+            except Exception:
+                pass
+
+    bin_dir = home / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    src_start = md / "start-all-services.sh"
+    if src_start.is_file():
+        dest = bin_dir / "start-all-services.sh"
+        shutil.copy2(src_start, dest)
+        dest.chmod(dest.stat().st_mode | 0o111)
+        notes.append("start-all-services.sh → ~/bin")
+
+    autostart_dir = home / ".config" / "autostart"
+    autostart_dir.mkdir(parents=True, exist_ok=True)
+    boot = md / "pi5-boot.sh"
+    desktop_body = (
+        "[Desktop Entry]\n"
+        "Type=Application\n"
+        "Name=Alles starten (Autostart)\n"
+        "Comment=Startet Dienste in Reihenfolge und öffnet das Statusfenster\n"
+        f"Exec={boot}\n"
+        "Terminal=false\n"
+        "X-GNOME-Autostart-enabled=true\n"
+        "X-GNOME-Autostart-Delay=8\n"
+    )
+    (autostart_dir / "piminer-boot.desktop").write_text(desktop_body, encoding="utf-8")
+    notes.append("Autostart-Desktop aktualisiert")
+
+    unit_src = md / "docs" / "systemd-user"
+    unit_dest = home / ".config" / "systemd" / "user"
+    if unit_src.is_dir():
+        unit_dest.mkdir(parents=True, exist_ok=True)
+        for pattern in ("*.service", "*.timer"):
+            for path in unit_src.glob(pattern):
+                shutil.copy2(path, unit_dest / path.name)
+        subprocess.run(["systemctl", "--user", "daemon-reload"], check=False, capture_output=True)
+        notes.append("systemd-User-Units synchronisiert")
+
+    _clear_chromium_fixed_zoom()
+    notes.append("feste Browser-Zooms zurückgesetzt")
+    return notes
+
+
+def restart_control_services_soon() -> None:
+    """Startet nur die Software-Dienste neu – kein System-Reboot."""
+
+    def _restart() -> None:
+        script = REPO_ROOT / "miner-dashboard" / "restart_control_services.sh"
+        log_dir = Path(os.environ.get("MINER_LOG_DIR", "/dev/shm/minersteuerung/logs"))
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / "restart_control_services.log"
+        try:
+            log_file = open(log_path, "a", encoding="utf-8")
+        except Exception:
+            log_file = subprocess.DEVNULL
+        if script.is_file():
+            try:
+                script.chmod(script.stat().st_mode | 0o111)
+            except Exception:
+                pass
+            subprocess.Popen(
+                ["bash", str(script)],
+                cwd=str(REPO_ROOT / "miner-dashboard"),
+                env={
+                    **os.environ,
+                    "MINER_RAM_CACHE": "1",
+                    "MINER_RAM_ROOT": "/dev/shm/minersteuerung",
+                    "MINER_RAM_FLUSH_SEC": "3600",
+                    "MINER_LOG_DIR": str(log_dir),
+                    "MINER_ROOT": str(REPO_ROOT),
+                },
+                stdout=log_file,
+                stderr=log_file,
+                start_new_session=True,
+            )
+            return
+        # Fallback: nur Flask, falls Hilfsskript fehlt
+        _restart_flask_soon()
+
+    threading.Timer(2.0, _restart).start()
+
+
 def _download_worker() -> None:
     try:
         _write_job(downloading=True, phase="fetch", message="Öffentliche Version wird geladen.")
@@ -1020,18 +1150,22 @@ def _download_worker() -> None:
             raise RuntimeError("Download abgebrochen: die öffentliche Version enthält persönliche Daten.")
         _write_job(phase="apply", message=f"Version {version}: nur Programmcode wird übernommen.")
         _copy_download(DOWNLOAD_DIR)
+        _write_job(phase="setup", message="Auto-Start und Anzeige werden eingerichtet.")
+        setup_notes = apply_runtime_setup(REPO_ROOT)
         state = load_state()
         state["local_version"] = version
         save_state(state)
+        note = (", ".join(setup_notes) if setup_notes else "Setup ok")
         _write_job(
             downloading=False,
             phase="done",
             message=(
-                f"Version {version} geladen. Nur Entwickler-Code wurde aktualisiert. "
-                "Einstellungen, Lernstände, Historie, Profile, Backups, Chats und Passwörter sind unverändert."
+                f"Version {version} geladen. Code aktualisiert, Auto-Start eingerichtet ({note}). "
+                "Software-Dienste werden neu gestartet (kein Reboot). "
+                "Persönliche Daten unverändert."
             ),
         )
-        _restart_flask_soon()
+        restart_control_services_soon()
     except Exception as exc:
         _write_job(downloading=False, phase="error", message=str(exc) or "Download fehlgeschlagen.")
 

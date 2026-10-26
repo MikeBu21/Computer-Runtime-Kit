@@ -1,42 +1,42 @@
 [
     {
         "pin": 3,
-        "status": "paused",
-        "timestamp": "2026-10-26T14:35:36.579309"
+        "status": "running",
+        "timestamp": "2026-10-26T15:00:41.582455"
     },
     {
         "pin": 5,
-        "status": "paused",
-        "timestamp": "2026-10-26T14:35:36.579309"
+        "status": "running",
+        "timestamp": "2026-10-26T15:00:41.582455"
     },
     {
         "pin": 7,
         "status": "paused",
-        "timestamp": "2026-10-26T14:35:36.579309"
+        "timestamp": "2026-10-26T15:00:41.582455"
     },
     {
         "pin": 11,
         "status": "paused",
-        "timestamp": "2026-10-26T14:35:36.579309"
+        "timestamp": "2026-10-26T15:00:41.582455"
     },
     {
         "pin": 13,
         "status": "paused",
-        "timestamp": "2026-10-26T14:35:36.579309"
+        "timestamp": "2026-10-26T15:00:41.582455"
     },
     {
         "pin": 15,
         "status": "paused",
-        "timestamp": "2026-10-26T14:35:36.579309"
+        "timestamp": "2026-10-26T15:00:41.582455"
     },
     {
         "pin": 19,
         "status": "paused",
-        "timestamp": "2026-10-26T14:35:36.579309"
+        "timestamp": "2026-10-26T15:00:41.582455"
     },
     {
         "pin": 21,
         "status": "paused",
-        "timestamp": "2026-10-26T14:35:36.579309"
+        "timestamp": "2026-10-26T15:00:41.582455"
     }
 ]

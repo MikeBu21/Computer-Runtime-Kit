@@ -13,4 +13,8 @@ for _ in $(seq 1 30); do
 done
 
 sleep 8
+# Bevorzugt Repo-Skript (Update), sonst Kopie unter ~/bin
+if [ -x /home/piminer/minersteuerung/miner-dashboard/start-all-services.sh ]; then
+  exec /home/piminer/minersteuerung/miner-dashboard/start-all-services.sh autostart
+fi
 exec /home/piminer/bin/start-all-services.sh autostart

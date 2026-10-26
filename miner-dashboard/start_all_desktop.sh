@@ -122,8 +122,17 @@ if [ "$HEADLESS_RUNNING" != "1" ]; then
 fi
 
 if [ "$HEADLESS_RUNNING" = "1" ]; then
-  echo "=== Kern-Dienste laufen (headless) — öffne schwarze Log-Fenster ==="
   systemctl --user start miner-maintenance.service 2>/dev/null || true
+  # Standard: ein Statusfenster (ohne Überwachungsbot). Alte Einzel-Logfenster nur auf Wunsch.
+  if [ "${SERVICE_STATUS_TERMINAL:-1}" = "1" ]; then
+    echo "=== Kern-Dienste laufen — öffne Statusfenster ==="
+    if [ -x "$BASE/open_service_status_terminal.sh" ]; then
+      "$BASE/open_service_status_terminal.sh" || true
+    fi
+    echo "=== Statusfenster gestartet ==="
+    exit 0
+  fi
+  echo "=== Kern-Dienste laufen (headless) — öffne schwarze Log-Fenster ==="
   open_log_terminal "Flask Backend" "$LOG_DIR/Flask_Backend.log"
   open_log_terminal "Scheduler" "$LOG_DIR/Scheduler.log"
   open_log_terminal "Steuerungsalgorithmus" "$LOG_DIR/Steuerungsalgorithmus.log"
@@ -134,7 +143,6 @@ if [ "$HEADLESS_RUNNING" = "1" ]; then
       open_log_terminal "Telegram Bot" "$LOG_DIR/Telegram_Bot.log"
     fi
   fi
-  open_log_terminal "Miner Status" "$LOG_DIR/Miner_Status.log"
   echo "=== Log-Terminals gestartet ==="
   exit 0
 fi

@@ -25,7 +25,9 @@ eintragen.
 2. Im Dashboard unter **Öffentliches Update** auf **Update herunterladen** tippen.
 3. Es wird nur Programmcode aktualisiert. Persönliche Einstellungen, Geräte,
    Passwörter, Lernstände und Historie bleiben unverändert.
-4. Der Fortschrittsbalken zeigt den Stand, bis das Update fertig ist.
+4. Auto-Start und die skalierbare Anzeige werden mit eingerichtet.
+5. Die Software-Dienste starten danach neu (kein Computer-Reboot).
+6. Der Fortschrittsbalken zeigt den Stand, bis das Update fertig ist.
 
 Details auch in `UPDATE.md`.
 

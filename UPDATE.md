@@ -14,6 +14,11 @@ auf dem die Software bereits läuft.
 
 Nur Programmcode (zum Beispiel `.py`, `.html`, `.css`, `.js`, `.sh`).
 
+Zusätzlich richtet der Download die Auto-Start-Struktur ein (Desktop-Eintrag,
+Startreihenfolge, Statusfenster) und startet die Software-Dienste neu
+(Scheduler, Batterie-Scraper, Flask-Backend, Energiemonitor,
+Steuerungsalgorithmus, Telegram-Bot). Der Computer wird **nicht** neu gebootet.
+
 ## Was bleibt erhalten?
 
 - Persönliche Einstellungen
