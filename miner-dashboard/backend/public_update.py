@@ -282,55 +282,11 @@ def dashboard_status() -> Dict[str, Any]:
         "local_version": local_version,
         "remote_version": remote_version,
         "pending_updates": pending_updates,
-        "news_count": news_badge_count(state),
         "phase": phase,
         "progress": progress,
         "message": message,
         "repo_url": f"https://github.com/{OWNER}/{REPO_NAME}",
     }
-
-
-def news_badge_count(state: Optional[Dict[str, Any]] = None) -> int:
-    """1 = ungesehene Neuigkeiten nach einer Installation, sonst 0."""
-    state = state if state is not None else load_state()
-    return 1 if bool(state.get("news_pending")) else 0
-
-
-def mark_news_seen() -> Dict[str, Any]:
-    state = load_state()
-    state["news_pending"] = False
-    state["news_seen_version"] = int(state.get("local_version") or 0)
-    save_state(state)
-    return state
-
-
-def news_payload() -> Dict[str, Any]:
-    state = load_state()
-    return {
-        "news_count": news_badge_count(state),
-        "news_pending": bool(state.get("news_pending")),
-        "local_version": int(state.get("local_version") or 0),
-        "last_installed_version": int(state.get("last_installed_version") or state.get("local_version") or 0),
-        "last_release_notes": str(state.get("last_release_notes") or ""),
-        "items": _default_news_items(state),
-    }
-
-
-def _default_news_items(state: Dict[str, Any]) -> List[Dict[str, str]]:
-    version = int(state.get("last_installed_version") or state.get("local_version") or 0)
-    notes = str(state.get("last_release_notes") or "").strip()
-    items = [
-        {
-            "title": f"Version {version} installiert" if version else "Willkommen",
-            "body": notes
-            or "Die Programmoberfläche wurde aktualisiert. Neue Funktionen findest du unter Einstellungen.",
-        },
-        {
-            "title": "Update-Hinweis",
-            "body": "Wenn ein neues Update bereitsteht, erscheint ein grüner Zähler bei Updates.",
-        },
-    ]
-    return items
 
 
 def standard_overlay() -> Dict[str, str]:
@@ -807,8 +763,9 @@ def export_snapshot(dest: Path, version: int, repo: Optional[Path] = None) -> No
         "version": int(version),
         "channel": "standard",
         "notes": (
-            "Update-Badge mit Zähler, Neuigkeiten-Badge nach Installation, "
-            "Tesla-ähnliche Seitenleiste. Standardwerte ohne persönliche Daten."
+            "Seitenleiste wieder im klassischen Stil mit Icons; "
+            "Update-Zähler nur am Updates-Button; Neuigkeiten-Menü entfernt; "
+            "Netzwerkstatus bleibt. Standardwerte ohne persönliche Daten."
         ),
     }
     (dest / "standard_release.json").write_text(
@@ -1330,7 +1287,7 @@ def _download_worker() -> None:
         state["local_version"] = version
         state["last_installed_version"] = version
         state["last_release_notes"] = str(release.get("notes") or "")
-        state["news_pending"] = True
+        state["news_pending"] = False
         save_state(state)
         note = (", ".join(setup_notes) if setup_notes else "Setup ok")
         _write_job(

@@ -1,5 +1,5 @@
 {
-  "version": 8,
+  "version": 9,
   "channel": "standard",
-  "notes": "Update-Badge mit Zähler, Neuigkeiten-Badge nach Installation, Tesla-ähnliche Seitenleiste. Standardwerte ohne persönliche Daten."
+  "notes": "Seitenleiste wieder im klassischen Stil mit Icons; Update-Zähler nur am Updates-Button; Neuigkeiten-Menü entfernt; Netzwerkstatus bleibt. Standardwerte ohne persönliche Daten."
 }
