@@ -139,17 +139,11 @@ def normalize_field_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _default_fields() -> Dict[str, Dict[str, Any]]:
+    # Keine produktiven HA-Entity-IDs als Code-Default — echte Zuordnung nur in
+    # config/ha_entity_mapping.json (pro Pi, geschützt vor öffentlichem Update).
     defaults = {
-        "kelag": {
-            "enabled": True,
-            "entity_id": "sensor.smart_meter_50ka_3_wirkleistung",
-            "sensors": [],
-        },
-        "pv": {
-            "enabled": True,
-            "entity_id": "sensor.solarnet_pv_leistung",
-            "sensors": [],
-        },
+        "kelag": {"enabled": True, "entity_id": "", "sensors": []},
+        "pv": {"enabled": True, "entity_id": "", "sensors": []},
         "wasserkraft": {"enabled": False, "entity_id": "", "sensors": []},
         "wohnhaus": {"enabled": False, "entity_id": "", "sensors": []},
         "betrieb": {"enabled": True, "entity_id": "", "sensors": []},

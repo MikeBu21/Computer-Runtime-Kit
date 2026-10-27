@@ -47,6 +47,16 @@ _TOKEN_RE = re.compile(r"\b\d{6,12}:[A-Za-z0-9_-]{20,}\b")
 _GITHUB_TOKEN_RE = re.compile(r"\b(?:ghp_|github_pat_|gho_|ghu_|ghs_)[A-Za-z0-9_]{20,}\b")
 _IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 _MAC_RE = re.compile(r"\b(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}\b")
+# Home-Assistant-Entity-IDs sind Geräte-Zuordnung, keine Secrets für den Download-Scan.
+_HA_ENTITY_ID_RE = re.compile(
+    r"^(?:sensor|switch|light|binary_sensor|number|input_boolean|input_number|"
+    r"input_text|input_select|climate|cover|fan|lock|media_player|person|"
+    r"device_tracker|button|select|update|vacuum|water_heater|weather|"
+    r"automation|script|scene|group|zone|sun|camera|alarm_control_panel|"
+    r"remote|siren|todo|event|image|notify|text|date|time|datetime|"
+    r"conversation|stt|tts|assist_satellite)\.[A-Za-z0-9_]+$"
+)
+_PLACEHOLDER_SECRET_RE = re.compile(r"^(?:DEIN_|YOUR_|EXAMPLE_|BEISPIEL_|TODO_|FIXME_)", re.I)
 
 # Laufzeit und persönliche Historie: nicht veröffentlichen.
 SKIP_DIR_NAMES = {".storage", "__pycache__", ".git"}
@@ -649,18 +659,33 @@ def redact_tree(root: Path, secrets: Iterable[str]) -> int:
 
 
 def _scan_needle_usable(needle: str) -> bool:
-    """Kurze Labels wie „Beispiel“ erzeugen False Positives — nur belastbare Nadeln."""
+    """Nur hochvertrauenswürdige Secrets für Download-/Code-Scan (keine HA-Entity-IDs)."""
     if not needle or needle == EXAMPLE_IP:
         return False
     text = str(needle).strip()
-    if len(text) >= 12:
+    if not text:
+        return False
+    # Geräte-Zuordnung / Platzhalter ≠ Leak-Nadel gegen Kit-Code.
+    if _HA_ENTITY_ID_RE.fullmatch(text):
+        return False
+    if _PLACEHOLDER_SECRET_RE.match(text) or text.upper() in {"Beispiel", "YOUR_PASSWORD", "CHANGEME"}:
+        return False
+    # Tokens (Telegram / GitHub)
+    if _TOKEN_RE.fullmatch(text) or _GITHUB_TOKEN_RE.fullmatch(text):
         return True
-    # Kurze, aber eindeutige Geheimnisse: Chat-IDs, IPs, MACs, Token-artige Strings
+    if _TOKEN_RE.search(text) or _GITHUB_TOKEN_RE.search(text):
+        return True
+    # Chat-IDs (lange Ziffernfolgen)
     if text.isdigit() and len(text) >= 8:
         return True
-    if _IPV4_RE.fullmatch(text) or _MAC_RE.fullmatch(text):
+    # MAC / echte LAN-IPs (Dokumentations-IP 192.0.2.* ausgenommen)
+    if _MAC_RE.fullmatch(text):
         return True
-    if _TOKEN_RE.fullmatch(text) or _GITHUB_TOKEN_RE.fullmatch(text):
+    if _IPV4_RE.fullmatch(text) and not text.startswith("192.0.2."):
+        if text not in {"127.0.0.1", "0.0.0.0"}:
+            return True
+    # Lange Einwort-Secrets/Passwörter (Labels mit Leerzeichen und HA-IDs sind raus).
+    if len(text) >= 12 and " " not in text:
         return True
     return False
 
@@ -1027,7 +1052,9 @@ def _local_code_is_personal(path: Path, secrets: Iterable[str]) -> bool:
     if _TOKEN_RE.search(text) or _GITHUB_TOKEN_RE.search(text):
         return True
     for needle in secrets:
-        if needle and needle in text:
+        if not needle or not _scan_needle_usable(str(needle)):
+            continue
+        if needle in text:
             return True
     return False
 

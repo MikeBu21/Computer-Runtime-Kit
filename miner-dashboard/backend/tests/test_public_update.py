@@ -99,16 +99,17 @@ def test_download_installs_only_program_code(tmp_path: Path):
 
     copied = pu._copy_download(snapshot, dest)
 
-    assert copied == 3
+    # Code + Setup-Assets (z. B. systemd-User-Unit), keine persönlichen JSON/Logs.
+    assert copied == 4
     assert (dest / "miner-dashboard/backend/app.py").read_text(encoding="utf-8") == "print('neu')\n"
     assert "neu" in (dest / "miner-dashboard/backend/templates/dashboard.html").read_text(encoding="utf-8")
     assert (dest / "scripts/example.sh").read_text(encoding="utf-8") == "echo neu\n"
+    assert (dest / "miner-dashboard/docs/systemd-user/miner-dashboard.service").is_file()
     for rel, content in personal.items():
         if rel.endswith(".py"):
             continue
         assert (dest / rel).read_text(encoding="utf-8") == content
     assert not (dest / "README.md").exists()
-    assert not (dest / "miner-dashboard/docs/systemd-user/miner-dashboard.service").exists()
     assert pu.is_installable_code("miner-dashboard/backend/app.py")
     assert pu.is_installable_code("miner-dashboard/backend/control_algorithm/config.py")
     assert pu.is_installable_code("miner-dashboard/backend/miners.json") is False
@@ -152,3 +153,40 @@ def test_example_tree_passes_scan(tmp_path: Path):
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
     assert pu.scan_tree(tmp_path, ["192.0.2.10", "geheimes-passwort"]) == []
+
+
+def test_ha_entity_id_is_not_a_scan_needle():
+    assert pu._scan_needle_usable("sensor.solarnet_pv_leistung") is False
+    assert pu._scan_needle_usable("switch.beispiel_geraet") is False
+    assert pu._scan_needle_usable("Beispiel") is False
+    assert pu._scan_needle_usable("192.0.2.10") is True
+    assert pu._scan_needle_usable("0") is True
+    secret = "123456789:AA" + "b" * 30
+    assert pu._scan_needle_usable(secret) is True
+
+
+def test_scan_ignores_matching_ha_entity_default(tmp_path: Path):
+    """Lokale Config-Entity-ID darf Kit-Code mit leerem Default nicht blockieren."""
+    entity = "sensor.solarnet_pv_leistung"
+    kit = tmp_path / "kit"
+    (kit / "miner-dashboard/backend").mkdir(parents=True)
+    (kit / "miner-dashboard/backend/ha_entity_mapping.py").write_text(
+        'def _default_fields():\n'
+        '    return {"pv": {"enabled": True, "entity_id": "", "sensors": []}}\n',
+        encoding="utf-8",
+    )
+    secrets = {entity, "192.0.2.10"}
+    assert pu.scan_tree(kit, secrets) == []
+
+
+def test_scan_still_rejects_real_token_in_kit(tmp_path: Path):
+    secret = "123456789:AA" + "b" * 30
+    (tmp_path / "leak.py").write_text(f'TOKEN = "{secret}"\n', encoding="utf-8")
+    assert pu.scan_tree(tmp_path, []) == ["leak.py"]
+
+
+def test_default_fields_have_empty_entity_ids():
+    from ha_entity_mapping import _default_fields
+
+    for name, field in _default_fields().items():
+        assert field.get("entity_id") == "", name
