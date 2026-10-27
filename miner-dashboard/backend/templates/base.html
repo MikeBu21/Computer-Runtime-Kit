@@ -52,35 +52,42 @@
     .app-layout { display: flex; min-height: 100vh; }
 
     .sidebar {
+      --sidebar-bg: #0a0a0a;
+      --sidebar-item: #8e8e93;
+      --sidebar-item-active: #ffffff;
+      --sidebar-pill: #1c1c1e;
       width: var(--sidebar-width);
       min-height: 100vh;
-      background: linear-gradient(180deg, #101820 0%, #0d1218 100%);
-      border-right: 1px solid var(--border);
+      background: var(--sidebar-bg);
+      border-right: 1px solid rgba(255, 255, 255, 0.06);
       display: flex;
       flex-direction: column;
       flex-shrink: 0;
       position: sticky;
       top: 0;
       height: 100vh;
+      overflow-y: auto;
     }
 
     .sidebar-brand {
       display: flex;
       align-items: center;
-      gap: 0.65rem;
-      padding: 1.35rem 1.25rem 1.1rem;
-      font-size: 1.05rem;
-      font-weight: 700;
+      gap: 0.75rem;
+      padding: 1.5rem 1.15rem 1.25rem;
+      font-size: 1.02rem;
+      font-weight: 600;
+      letter-spacing: -0.01em;
       color: #fff;
       text-decoration: none;
-      border-bottom: 1px solid var(--border);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
     }
 
     .sidebar-brand-icon {
-      width: 34px;
-      height: 34px;
-      border-radius: 10px;
-      background: var(--accent-soft);
+      width: 36px;
+      height: 36px;
+      border-radius: 11px;
+      background: #1c1c1e;
+      border: 1px solid rgba(255, 255, 255, 0.08);
       display: grid;
       place-items: center;
       font-size: 1rem;
@@ -89,51 +96,75 @@
     .sidebar-nav {
       display: flex;
       flex-direction: column;
-      gap: 0.25rem;
-      padding: 1rem 0.75rem;
+      gap: 0.2rem;
+      padding: 0.9rem 0.7rem 1.5rem;
     }
 
     .sidebar-nav .nav-link {
       display: flex;
       align-items: center;
-      gap: 0.65rem;
-      color: var(--muted) !important;
-      padding: 0.72rem 0.9rem;
+      gap: 0.7rem;
+      color: var(--sidebar-item) !important;
+      padding: 0.78rem 0.95rem;
       margin: 0 !important;
-      border-radius: 10px;
+      border-radius: 14px;
+      border: 1px solid transparent;
       font-weight: 500;
-      font-size: 0.92rem;
-      transition: background 0.18s ease, color 0.18s ease, transform 0.18s ease;
+      font-size: 0.94rem;
+      letter-spacing: -0.01em;
+      text-decoration: none;
+      transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease;
     }
 
     .sidebar-nav .nav-link:hover {
-      color: #fff !important;
-      background: rgba(255, 255, 255, 0.06);
-      transform: translateX(2px);
+      color: #f5f5f7 !important;
+      background: rgba(255, 255, 255, 0.045);
     }
 
     .sidebar-nav .nav-link.active {
-      color: #fff !important;
-      background: var(--accent-soft);
-      border: 1px solid rgba(0, 230, 118, 0.25);
+      color: var(--sidebar-item-active) !important;
+      background: var(--sidebar-pill);
+      border-color: rgba(255, 255, 255, 0.06);
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03);
     }
 
     .sidebar-nav .nav-link-sub {
-      margin-left: 0.55rem;
-      padding: 0.55rem 0.85rem 0.55rem 1rem;
-      font-size: 0.86rem;
-      border-left: 2px solid rgba(255, 255, 255, 0.08);
+      margin-left: 0.15rem;
+      padding: 0.62rem 0.9rem;
+      font-size: 0.88rem;
+      border-radius: 12px;
     }
 
     .sidebar-section-label {
-      margin: 0.85rem 0.35rem 0.35rem;
-      padding: 0.35rem 0.55rem;
-      color: #fff;
-      font-size: 0.78rem;
-      font-weight: 700;
-      letter-spacing: 0.04em;
+      margin: 1rem 0.45rem 0.4rem;
+      padding: 0.2rem 0.45rem;
+      color: #636366;
+      font-size: 0.7rem;
+      font-weight: 600;
+      letter-spacing: 0.08em;
       text-transform: uppercase;
-      opacity: 0.72;
+    }
+
+    .nav-badge {
+      margin-left: auto;
+      min-width: 1.35rem;
+      height: 1.35rem;
+      padding: 0 0.4rem;
+      border-radius: 999px;
+      background: #30d158;
+      color: #04140a;
+      font-size: 0.72rem;
+      font-weight: 700;
+      line-height: 1;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 0 0 2px rgba(48, 209, 88, 0.18);
+    }
+
+    .nav-link .nav-label {
+      flex: 1;
+      min-width: 0;
     }
 
     .main-content {
@@ -405,24 +436,35 @@
         <span>Mining Dashboard</span>
       </a>
       <div class="sidebar-nav navbar-nav">
-        <a class="nav-link{% if request.path == '/' %} active{% endif %}" href="/">Dashboard</a>
-        <a class="nav-link{% if request.path == '/add_miner' %} active{% endif %}" href="/add_miner">Miner hinzufügen</a>
-        <a class="nav-link{% if request.path == '/add_device' %} active{% endif %}" href="/add_device">Geräte hinzufügen</a>
-        <a class="nav-link{% if request.path == '/smartmeter' %} active{% endif %}" href="/smartmeter">Smartmeter</a>
+        <a class="nav-link{% if request.path == '/' %} active{% endif %}" href="/"><span class="nav-label">Dashboard</span></a>
+        <a class="nav-link{% if request.path == '/add_miner' %} active{% endif %}" href="/add_miner"><span class="nav-label">Miner hinzufügen</span></a>
+        <a class="nav-link{% if request.path == '/add_device' %} active{% endif %}" href="/add_device"><span class="nav-label">Geräte hinzufügen</span></a>
+        <a class="nav-link{% if request.path == '/smartmeter' %} active{% endif %}" href="/smartmeter"><span class="nav-label">Smartmeter</span></a>
 
         <div class="sidebar-section-label">Einstellungen</div>
-        <a class="nav-link nav-link-sub{% if request.path == '/dienste' %} active{% endif %}" href="/dienste">Dienste</a>
-        <a class="nav-link nav-link-sub{% if request.path == '/reboot' %} active{% endif %}" href="/reboot">Neustart</a>
-        <a class="nav-link nav-link-sub{% if request.path == '/updates' %} active{% endif %}" href="/updates">Updates</a>
-        <a class="nav-link nav-link-sub{% if request.path == '/netzwerk' %} active{% endif %}" href="/netzwerk">Netzwerkeinstellungen</a>
-        <a class="nav-link nav-link-sub{% if request.path == '/settings' %} active{% endif %}" href="/settings">Zugang</a>
-        <a class="nav-link nav-link-sub{% if request.path == '/automatikmodus' %} active{% endif %}" href="/automatikmodus">Automatikmodus</a>
-        <a class="nav-link nav-link-sub{% if request.path == '/zeitsteuerung' %} active{% endif %}" href="/zeitsteuerung">Zeitsteuerung</a>
-        <a class="nav-link nav-link-sub{% if request.path == '/telegrambot' %} active{% endif %}" href="/telegrambot">Telegram Bot</a>
-        <a class="nav-link nav-link-sub{% if request.path == '/steuerungsalgorithmus' %} active{% endif %}" href="/steuerungsalgorithmus">Steuerungsalgorithmus</a>
-        <a class="nav-link nav-link-sub{% if request.path == '/grundverbrauchsrechner' %} active{% endif %}" href="/grundverbrauchsrechner">Grundverbrauchsrechner</a>
-        <a class="nav-link nav-link-sub{% if request.path == '/statistik-konfigurieren' %} active{% endif %}" href="/statistik-konfigurieren">Statistik konfigurieren</a>
-        <a class="nav-link nav-link-sub{% if request.path == '/fehlerberichte' %} active{% endif %}" href="/fehlerberichte">Fehlerberichte</a>
+        <a class="nav-link nav-link-sub{% if request.path == '/dienste' %} active{% endif %}" href="/dienste"><span class="nav-label">Dienste</span></a>
+        <a class="nav-link nav-link-sub{% if request.path == '/reboot' %} active{% endif %}" href="/reboot"><span class="nav-label">Neustart</span></a>
+        <a class="nav-link nav-link-sub{% if request.path == '/updates' %} active{% endif %}" href="/updates">
+          <span class="nav-label">Updates</span>
+          {% if nav_update_count and nav_update_count > 0 %}
+          <span class="nav-badge" id="nav_update_badge" title="Verfügbare Updates">{{ nav_update_count }}</span>
+          {% endif %}
+        </a>
+        <a class="nav-link nav-link-sub{% if request.path == '/neuigkeiten' %} active{% endif %}" href="/neuigkeiten">
+          <span class="nav-label">Neuigkeiten</span>
+          {% if nav_news_count and nav_news_count > 0 %}
+          <span class="nav-badge" id="nav_news_badge" title="Ungesehene Neuigkeiten">{{ nav_news_count }}</span>
+          {% endif %}
+        </a>
+        <a class="nav-link nav-link-sub{% if request.path == '/netzwerk' %} active{% endif %}" href="/netzwerk"><span class="nav-label">Netzwerkeinstellungen</span></a>
+        <a class="nav-link nav-link-sub{% if request.path == '/settings' %} active{% endif %}" href="/settings"><span class="nav-label">Zugang</span></a>
+        <a class="nav-link nav-link-sub{% if request.path == '/automatikmodus' %} active{% endif %}" href="/automatikmodus"><span class="nav-label">Automatikmodus</span></a>
+        <a class="nav-link nav-link-sub{% if request.path == '/zeitsteuerung' %} active{% endif %}" href="/zeitsteuerung"><span class="nav-label">Zeitsteuerung</span></a>
+        <a class="nav-link nav-link-sub{% if request.path == '/telegrambot' %} active{% endif %}" href="/telegrambot"><span class="nav-label">Telegram Bot</span></a>
+        <a class="nav-link nav-link-sub{% if request.path == '/steuerungsalgorithmus' %} active{% endif %}" href="/steuerungsalgorithmus"><span class="nav-label">Steuerungsalgorithmus</span></a>
+        <a class="nav-link nav-link-sub{% if request.path == '/grundverbrauchsrechner' %} active{% endif %}" href="/grundverbrauchsrechner"><span class="nav-label">Grundverbrauchsrechner</span></a>
+        <a class="nav-link nav-link-sub{% if request.path == '/statistik-konfigurieren' %} active{% endif %}" href="/statistik-konfigurieren"><span class="nav-label">Statistik konfigurieren</span></a>
+        <a class="nav-link nav-link-sub{% if request.path == '/fehlerberichte' %} active{% endif %}" href="/fehlerberichte"><span class="nav-label">Fehlerberichte</span></a>
       </div>
     </nav>
 

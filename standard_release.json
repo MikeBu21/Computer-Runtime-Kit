@@ -1,5 +1,5 @@
 {
-  "version": 7,
+  "version": 8,
   "channel": "standard",
-  "notes": "Standardgeräte und Standardeinstellungen, ohne persönliche Daten."
+  "notes": "Update-Badge mit Zähler, Neuigkeiten-Badge nach Installation, Tesla-ähnliche Seitenleiste. Standardwerte ohne persönliche Daten."
 }

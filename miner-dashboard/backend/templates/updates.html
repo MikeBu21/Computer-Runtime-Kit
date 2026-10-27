@@ -20,8 +20,13 @@
         <div id="public_update_progress_bar" style="height: 100%; width: 0%; background: linear-gradient(90deg, #00e676, #00c853); transition: width 0.35s ease;"></div>
       </div>
     </div>
-    <div style="display: flex; flex-wrap: wrap; gap: 0.75rem;">
-      <button type="button" class="btn-secondary-custom" id="public_download_btn">Update herunterladen</button>
+    <div style="display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center;">
+      <button type="button" class="btn-secondary-custom" id="public_download_btn" style="position: relative;">
+        Update herunterladen
+        {% if public_update.pending_updates and public_update.pending_updates > 0 %}
+        <span class="nav-badge" id="update_btn_badge" style="position: absolute; top: -0.45rem; right: -0.45rem;">{{ public_update.pending_updates }}</span>
+        {% endif %}
+      </button>
       {% if public_update.upload_allowed %}
       <button type="button" class="btn-primary-custom" id="public_upload_btn">Update hochladen</button>
       {% endif %}

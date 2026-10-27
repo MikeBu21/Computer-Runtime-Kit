@@ -194,9 +194,39 @@ def settings():
     return render_template('settings.html')
 
 
+@app.context_processor
+def inject_nav_badges():
+    try:
+        from public_update import dashboard_status
+
+        status = dashboard_status()
+        return {
+            "nav_update_count": int(status.get("pending_updates") or 0),
+            "nav_news_count": int(status.get("news_count") or 0),
+            "nav_public_update": status,
+        }
+    except Exception:
+        return {"nav_update_count": 0, "nav_news_count": 0, "nav_public_update": {}}
+
+
 @app.route('/updates')
 def updates_page():
     return render_template('updates.html', public_update=public_update_status())
+
+
+@app.route('/neuigkeiten')
+def neuigkeiten_page():
+    from public_update import news_payload
+
+    return render_template('neuigkeiten.html', news=news_payload())
+
+
+@app.route('/api/neuigkeiten/seen', methods=['POST'])
+def api_neuigkeiten_seen():
+    from public_update import mark_news_seen, news_payload
+
+    mark_news_seen()
+    return jsonify({"ok": True, **news_payload()})
 
 
 def _network_info() -> dict:
