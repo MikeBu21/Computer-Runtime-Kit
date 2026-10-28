@@ -1,5 +1,5 @@
 {
-  "version": 11,
+  "version": 12,
   "channel": "standard",
-  "notes": "Börsenhandel: breiteres Chart, Jahresverlauf Sommer/Winter, mehr Börsen wie in der go-e ChaCha-App. Standardwerte ohne persönliche Daten."
+  "notes": "Börsenhandel: EAG-Anbieter Österreich, Jahresverlauf mit Cache, drei verschiebbare Schwellwertlinien. Standardwerte ohne persönliche Daten."
 }

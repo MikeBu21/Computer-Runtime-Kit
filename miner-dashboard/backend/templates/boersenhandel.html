@@ -13,9 +13,16 @@
       <div>
         <label class="form-label" for="exchange">Börse</label>
         <select class="form-select" id="exchange">
+          {% set ns = namespace(last='') %}
           {% for item in exchanges %}
+          {% if item.group != ns.last %}
+          {% if ns.last %}</optgroup>{% endif %}
+          <optgroup label="{{ item.group }}">
+          {% set ns.last = item.group %}
+          {% endif %}
           <option value="{{ item.id }}" {% if item.id == settings.exchange %}selected{% endif %}>{{ item.label }}</option>
           {% endfor %}
+          {% if exchanges %}</optgroup>{% endif %}
         </select>
       </div>
       <div>
@@ -45,14 +52,19 @@
 
     <form id="threshold_form" class="field-grid">
       <div>
-        <label class="form-label" for="lower_ct">Unterer Schwellwert (ct/kWh)</label>
-        <input class="form-control" id="lower_ct" name="lower_ct_kwh" type="number" step="0.1" value="{{ settings.lower_ct_kwh }}" required>
-        <div style="color: var(--muted); font-size: 0.78rem; margin-top: 0.3rem;">Darunter beginnt der Wechselrichter, die Batterie zu laden.</div>
+        <label class="form-label" for="buy_ct">Kaufen unter (ct/kWh)</label>
+        <input class="form-control" id="buy_ct" name="buy_ct_kwh" type="number" step="0.1" value="{{ settings.buy_ct_kwh }}" required>
+        <div style="color: var(--muted); font-size: 0.78rem; margin-top: 0.3rem;">Grüne Linie. Darunter wird gekauft.</div>
       </div>
       <div>
-        <label class="form-label" for="upper_ct">Oberer Schwellwert (ct/kWh)</label>
-        <input class="form-control" id="upper_ct" name="upper_ct_kwh" type="number" step="0.1" value="{{ settings.upper_ct_kwh }}" required>
-        <div style="color: var(--muted); font-size: 0.78rem; margin-top: 0.3rem;">Darüber stoppt das Laden wieder.</div>
+        <label class="form-label" for="stop_ct">Nicht mehr kaufen über (ct/kWh)</label>
+        <input class="form-control" id="stop_ct" name="stop_ct_kwh" type="number" step="0.1" value="{{ settings.stop_ct_kwh }}" required>
+        <div style="color: var(--muted); font-size: 0.78rem; margin-top: 0.3rem;">Gelbe Linie. Darüber wird nicht mehr gekauft.</div>
+      </div>
+      <div>
+        <label class="form-label" for="sell_ct">Verkaufen über (ct/kWh)</label>
+        <input class="form-control" id="sell_ct" name="sell_ct_kwh" type="number" step="0.1" value="{{ settings.sell_ct_kwh }}" required>
+        <div style="color: var(--muted); font-size: 0.78rem; margin-top: 0.3rem;">Rote Linie. Darüber wird verkauft. Linien im Chart ziehen.</div>
       </div>
     </form>
     <div class="action-row">
@@ -81,45 +93,81 @@
   const actionEl = document.getElementById("action_label");
   const hintEl = document.getElementById("save_hint");
   const form = document.getElementById("threshold_form");
-  const ACTION = { laden: "Batterie laden", stopp: "Laden stoppen", halten: "Halten", unbekannt: "Preis unbekannt" };
+  const ACTION = {
+    kaufen: "Kaufen",
+    nicht_kaufen: "Nicht mehr kaufen",
+    verkaufen: "Verkaufen",
+    halten: "Halten",
+    laden: "Kaufen",
+    stopp: "Nicht mehr kaufen",
+    unbekannt: "Preis unbekannt"
+  };
   let chart = null;
   let yearChart = null;
+  let dragging = null;
+
+  function thresholds() {
+    return {
+      buy: Number(document.getElementById("buy_ct").value),
+      stop: Number(document.getElementById("stop_ct").value),
+      sell: Number(document.getElementById("sell_ct").value)
+    };
+  }
+
+  function setThreshold(key, value) {
+    const lines = thresholds();
+    lines[key] = Math.round(value * 10) / 10;
+    if (lines.stop < lines.buy) lines.stop = lines.buy;
+    if (lines.sell < lines.stop) lines.sell = lines.stop;
+    if (key === "stop" && lines.buy > lines.stop) lines.buy = lines.stop;
+    if (key === "sell") {
+      if (lines.stop > lines.sell) lines.stop = lines.sell;
+      if (lines.buy > lines.stop) lines.buy = lines.stop;
+    }
+    document.getElementById("buy_ct").value = lines.buy.toFixed(1);
+    document.getElementById("stop_ct").value = lines.stop.toFixed(1);
+    document.getElementById("sell_ct").value = lines.sell.toFixed(1);
+    return lines;
+  }
 
   const zonePlugin = {
     id: "priceZones",
     beforeDatasetsDraw: function (c) {
       const area = c.chartArea;
       const y = c.scales.y;
-      if (!area || !y) return;
-      const lower = c.$lower;
-      const upper = c.$upper;
-      if (lower == null || upper == null) return;
+      const lines = c.$lines;
+      if (!area || !y || !lines) return;
+      const yBuy = y.getPixelForValue(lines.buy);
+      const yStop = y.getPixelForValue(lines.stop);
+      const ySell = y.getPixelForValue(lines.sell);
       const ctx = c.ctx;
-      const yLower = y.getPixelForValue(lower);
-      const yUpper = y.getPixelForValue(upper);
       ctx.save();
       ctx.fillStyle = "rgba(239, 83, 80, 0.16)";
-      ctx.fillRect(area.left, area.top, area.right - area.left, Math.max(0, yUpper - area.top));
+      ctx.fillRect(area.left, area.top, area.right - area.left, Math.max(0, ySell - area.top));
+      ctx.fillStyle = "rgba(255, 179, 0, 0.10)";
+      ctx.fillRect(area.left, ySell, area.right - area.left, Math.max(0, yStop - ySell));
       ctx.fillStyle = "rgba(255, 255, 255, 0.03)";
-      ctx.fillRect(area.left, yUpper, area.right - area.left, Math.max(0, yLower - yUpper));
+      ctx.fillRect(area.left, yStop, area.right - area.left, Math.max(0, yBuy - yStop));
       ctx.fillStyle = "rgba(0, 230, 118, 0.16)";
-      ctx.fillRect(area.left, yLower, area.right - area.left, Math.max(0, area.bottom - yLower));
+      ctx.fillRect(area.left, yBuy, area.right - area.left, Math.max(0, area.bottom - yBuy));
       ctx.restore();
     }
   };
 
-  function pointColor(value, lower, upper) {
-    if (value < lower) return "#00e676";
-    if (value > upper) return "#ef5350";
+  function pointColor(value, lines) {
+    if (value >= lines.sell) return "#ef5350";
+    if (value > lines.stop) return "#ffb300";
+    if (value <= lines.buy) return "#00e676";
     return "#c5d0de";
   }
 
-  function draw(points, lower, upper) {
+  function draw(points, lines) {
     const labels = points.map(function (p) {
       return rangeEl.value === "day" ? p.hour : (p.day.slice(5) + " " + p.hour);
     });
     const values = points.map(function (p) { return p.ct_kwh; });
-    const colors = values.map(function (v) { return pointColor(v, lower, upper); });
+    const colors = values.map(function (v) { return pointColor(v, lines); });
+    const flat = function (value) { return values.map(function () { return value; }); };
     if (!chart) {
       chart = new Chart(document.getElementById("price_chart"), {
         type: "line",
@@ -138,13 +186,15 @@
               pointRadius: 3,
               fill: false
             },
-            { label: "Laden unter", data: values.map(function () { return lower; }), borderColor: "#00e676", borderDash: [6, 4], pointRadius: 0, fill: false },
-            { label: "Stopp über", data: values.map(function () { return upper; }), borderColor: "#ef5350", borderDash: [6, 4], pointRadius: 0, fill: false }
+            { label: "Kaufen", data: flat(lines.buy), borderColor: "#00e676", borderDash: [6, 4], pointRadius: 0, fill: false },
+            { label: "Nicht mehr kaufen", data: flat(lines.stop), borderColor: "#ffb300", borderDash: [6, 4], pointRadius: 0, fill: false },
+            { label: "Verkaufen", data: flat(lines.sell), borderColor: "#ef5350", borderDash: [6, 4], pointRadius: 0, fill: false }
           ]
         },
         options: {
           responsive: true,
           maintainAspectRatio: false,
+          animation: false,
           plugins: { legend: { labels: { color: "#8b9cb3" } } },
           scales: {
             x: { ticks: { color: "#8b9cb3", maxRotation: 0, autoSkip: true, maxTicksLimit: 12 }, grid: { color: "rgba(255,255,255,0.06)" } },
@@ -152,17 +202,64 @@
           }
         }
       });
+      bindDrag();
     } else {
       chart.data.labels = labels;
       chart.data.datasets[0].data = values;
       chart.data.datasets[0].pointBackgroundColor = colors;
       chart.data.datasets[0].pointBorderColor = colors;
-      chart.data.datasets[1].data = values.map(function () { return lower; });
-      chart.data.datasets[2].data = values.map(function () { return upper; });
+      chart.data.datasets[1].data = flat(lines.buy);
+      chart.data.datasets[2].data = flat(lines.stop);
+      chart.data.datasets[3].data = flat(lines.sell);
     }
-    chart.$lower = lower;
-    chart.$upper = upper;
+    chart.$lines = lines;
     chart.update();
+  }
+
+  function bindDrag() {
+    const canvas = document.getElementById("price_chart");
+    const keys = ["buy", "stop", "sell"];
+    function nearest(event) {
+      if (!chart || !chart.scales.y) return null;
+      const y = chart.scales.y;
+      const lines = chart.$lines || thresholds();
+      let best = null;
+      let bestDist = 14;
+      keys.forEach(function (key) {
+        const dist = Math.abs(event.offsetY - y.getPixelForValue(lines[key]));
+        if (dist < bestDist) {
+          best = key;
+          bestDist = dist;
+        }
+      });
+      return best;
+    }
+    canvas.addEventListener("pointerdown", function (event) {
+      const key = nearest(event);
+      if (!key) return;
+      dragging = key;
+      canvas.setPointerCapture(event.pointerId);
+    });
+    canvas.addEventListener("pointermove", function (event) {
+      canvas.style.cursor = (nearest(event) || dragging) ? "ns-resize" : "default";
+      if (!dragging || !chart) return;
+      const value = chart.scales.y.getValueForPixel(event.offsetY);
+      if (!Number.isFinite(value)) return;
+      const lines = setThreshold(dragging, Math.min(80, Math.max(-5, value)));
+      chart.$lines = lines;
+      chart.data.datasets[1].data = chart.data.datasets[0].data.map(function () { return lines.buy; });
+      chart.data.datasets[2].data = chart.data.datasets[0].data.map(function () { return lines.stop; });
+      chart.data.datasets[3].data = chart.data.datasets[0].data.map(function () { return lines.sell; });
+      const colors = chart.data.datasets[0].data.map(function (v) { return pointColor(v, lines); });
+      chart.data.datasets[0].pointBackgroundColor = colors;
+      chart.data.datasets[0].pointBorderColor = colors;
+      chart.update();
+    });
+    canvas.addEventListener("pointerup", function () {
+      if (!dragging) return;
+      dragging = null;
+      saveThresholds(false);
+    });
   }
 
   async function refresh() {
@@ -176,7 +273,24 @@
     priceEl.textContent = data.current_ct_kwh == null ? "–" : (Number(data.current_ct_kwh).toFixed(2) + " ct/kWh");
     metaEl.textContent = data.exchange_label + (data.current_hour ? " · Stunde " + data.current_hour : "") + " · " + (data.updated_at || "");
     actionEl.textContent = ACTION[data.action] || data.action;
-    draw(data.points || [], data.lower_ct_kwh, data.upper_ct_kwh);
+    if (!dragging) {
+      if (data.buy_ct_kwh != null) document.getElementById("buy_ct").value = Number(data.buy_ct_kwh).toFixed(1);
+      if (data.stop_ct_kwh != null) document.getElementById("stop_ct").value = Number(data.stop_ct_kwh).toFixed(1);
+      if (data.sell_ct_kwh != null) document.getElementById("sell_ct").value = Number(data.sell_ct_kwh).toFixed(1);
+    }
+    draw(data.points || [], thresholds());
+  }
+
+  async function saveThresholds(showHint) {
+    const body = new FormData(form);
+    body.set("exchange", exchangeEl.value);
+    const response = await fetch("/api/boersenhandel/settings", { method: "POST", body: body, credentials: "same-origin" });
+    const data = await response.json();
+    if (showHint) {
+      hintEl.textContent = data.message || (data.ok ? "Gespeichert." : "Speichern fehlgeschlagen.");
+      hintEl.style.color = data.ok ? "var(--accent)" : "#f44336";
+    }
+    return data;
   }
 
   function drawYear(data) {
@@ -242,24 +356,20 @@
   }
 
   exchangeEl.addEventListener("change", async function () {
-    const body = new FormData();
-    body.set("exchange", exchangeEl.value);
-    body.set("lower_ct_kwh", document.getElementById("lower_ct").value);
-    body.set("upper_ct_kwh", document.getElementById("upper_ct").value);
-    await fetch("/api/boersenhandel/settings", { method: "POST", body: body, credentials: "same-origin" });
+    await saveThresholds(false);
     refresh();
     refreshYear();
   });
   rangeEl.addEventListener("change", refresh);
   form.addEventListener("submit", async function (event) {
     event.preventDefault();
-    const body = new FormData(form);
-    body.set("exchange", exchangeEl.value);
-    const response = await fetch("/api/boersenhandel/settings", { method: "POST", body: body, credentials: "same-origin" });
-    const data = await response.json();
-    hintEl.textContent = data.message || (data.ok ? "Gespeichert." : "Speichern fehlgeschlagen.");
-    hintEl.style.color = data.ok ? "var(--accent)" : "#f44336";
-    if (data.ok) refresh();
+    const data = await saveThresholds(true);
+    if (data.ok) {
+      if (data.buy_ct_kwh != null) document.getElementById("buy_ct").value = Number(data.buy_ct_kwh).toFixed(1);
+      if (data.stop_ct_kwh != null) document.getElementById("stop_ct").value = Number(data.stop_ct_kwh).toFixed(1);
+      if (data.sell_ct_kwh != null) document.getElementById("sell_ct").value = Number(data.sell_ct_kwh).toFixed(1);
+      refresh();
+    }
   });
 
   refresh();

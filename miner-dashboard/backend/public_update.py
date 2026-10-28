@@ -765,8 +765,8 @@ def export_snapshot(dest: Path, version: int, repo: Optional[Path] = None) -> No
         "version": int(version),
         "channel": "standard",
         "notes": (
-            "Börsenhandel: breiteres Chart, Jahresverlauf Sommer/Winter, "
-            "mehr Börsen wie in der go-e ChaCha-App. "
+            "Börsenhandel: EAG-Anbieter Österreich, Jahresverlauf mit Cache, "
+            "drei verschiebbare Schwellwertlinien. "
             "Standardwerte ohne persönliche Daten."
         ),
     }

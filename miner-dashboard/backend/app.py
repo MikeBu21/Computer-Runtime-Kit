@@ -255,7 +255,10 @@ def boersenhandel_page():
     from boersenhandel import EXCHANGES, load_settings
 
     settings = load_settings()
-    exchanges = [{"id": key, "label": spec["label"]} for key, spec in EXCHANGES.items()]
+    exchanges = [
+        {"id": key, "label": spec["label"], "group": spec.get("group") or "Börsen"}
+        for key, spec in EXCHANGES.items()
+    ]
     return render_template("boersenhandel.html", settings=settings, exchanges=exchanges)
 
 
@@ -303,8 +306,9 @@ def api_boersenhandel_settings():
     try:
         saved = save_settings(
             (request.form.get("exchange") or "").strip(),
-            request.form.get("lower_ct_kwh") or 0,
-            request.form.get("upper_ct_kwh") or 0,
+            request.form.get("buy_ct_kwh") or request.form.get("lower_ct_kwh") or 0,
+            request.form.get("stop_ct_kwh") or request.form.get("upper_ct_kwh") or 0,
+            request.form.get("sell_ct_kwh") or 25,
         )
     except ValueError as exc:
         return jsonify({"ok": False, "message": str(exc)}), 400
