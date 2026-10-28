@@ -34,23 +34,31 @@ COMMUNITIES: Dict[str, Dict[str, Any]] = {
 }
 
 
-def load_settings() -> Dict[str, str]:
+def load_settings() -> Dict[str, Any]:
     community = "eeg_regional"
+    enabled = False
     if SETTINGS_FILE.is_file():
         try:
             raw = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-            if isinstance(raw, dict) and raw.get("community") in COMMUNITIES:
-                community = raw["community"]
+            if isinstance(raw, dict):
+                if raw.get("community") in COMMUNITIES:
+                    community = raw["community"]
+                enabled = bool(raw.get("enabled"))
         except (OSError, json.JSONDecodeError):
             pass
-    return {"community": community}
+    return {"community": community, "enabled": enabled}
 
 
-def save_settings(community: str) -> Dict[str, str]:
+def save_settings(community: str, enabled: bool | None = None) -> Dict[str, Any]:
     if community not in COMMUNITIES:
         raise ValueError("Unbekannte Energiegemeinschaft.")
-    SETTINGS_FILE.write_text(json.dumps({"community": community}, indent=2) + "\n", encoding="utf-8")
-    return {"community": community}
+    current = load_settings()
+    payload = {
+        "community": community,
+        "enabled": current["enabled"] if enabled is None else bool(enabled),
+    }
+    SETTINGS_FILE.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return payload
 
 
 def comparison(exchange_points: List[Dict[str, Any]], community_id: str) -> Dict[str, Any]:

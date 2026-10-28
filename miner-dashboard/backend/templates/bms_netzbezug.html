@@ -1,0 +1,143 @@
+{% extends "base.html" %}
+
+{% block title %}BMS Netzbezug{% endblock %}
+
+{% block content %}
+  <div class="page-header">
+    <h2>🔋 BMS · Netzbezug</h2>
+    <p>Live aus Home Assistant (Solarman). Der Testmodus rechnet nur und sendet keine Befehle an den Deye.</p>
+  </div>
+
+  <div class="panel" style="max-width: none;">
+    <h5 class="panel-title">Live</h5>
+    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.75rem;">
+      <div class="stat-card" style="margin:0;">
+        <h5>Ladezustand</h5>
+        <p id="live_soc" style="margin:0; font-size: 1.6rem; font-weight: 700;">–</p>
+      </div>
+      <div class="stat-card" style="margin:0;">
+        <h5>Batterieleistung</h5>
+        <p id="live_battery" style="margin:0; font-size: 1.6rem; font-weight: 700;">–</p>
+      </div>
+      <div class="stat-card" style="margin:0;">
+        <h5>Netzbezug</h5>
+        <p id="live_grid" style="margin:0; font-size: 1.6rem; font-weight: 700;">–</p>
+      </div>
+    </div>
+    <p id="live_source" style="color: var(--muted); font-size: 0.82rem; margin: 0.75rem 0 0;"></p>
+    <div id="live_warnings" style="margin-top: 0.75rem;"></div>
+  </div>
+
+  <div class="panel" style="max-width: none;">
+    <form id="bms_form" class="field-grid">
+      <div>
+        <label class="form-label" style="display:flex; gap:0.6rem; align-items:center;">
+          <input id="test_mode" name="test_mode" type="checkbox" value="1" {% if settings.test_mode %}checked{% endif %}>
+          Test-Modus
+        </label>
+        <div style="color: var(--muted); font-size: 0.78rem; margin-top: 0.3rem;">Ein: Rechnung und Log. Aus: nur die Live-Anzeige. Niemals ein Schreibbefehl.</div>
+      </div>
+      <div>
+        <label class="form-label" for="target_grid_kw">Soll-Zukauf (kW)</label>
+        <input class="form-control" id="target_grid_kw" name="target_grid_kw" type="number" min="0" max="100" step="0.1" value="{{ settings.target_grid_kw }}" required>
+      </div>
+      <div>
+        <label class="form-label" for="peak_cap_kw">Spitzenkappung ab (kW)</label>
+        <input class="form-control" id="peak_cap_kw" name="peak_cap_kw" type="number" min="0" max="100" step="0.1" value="{{ settings.peak_cap_kw }}" required>
+      </div>
+    </form>
+    <div class="action-row">
+      <button type="submit" form="bms_form" class="btn-primary-custom">Übernehmen</button>
+    </div>
+    <p id="save_hint" style="color: var(--muted); min-height: 1.2rem;"></p>
+
+    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.75rem;">
+      <div class="stat-card" style="margin:0;">
+        <h5>Soll-Netzbezug</h5>
+        <p id="plan_target" style="margin:0; font-size: 1.4rem; font-weight: 700;">–</p>
+      </div>
+      <div class="stat-card" style="margin:0;">
+        <h5>Batterie-Sollleistung</h5>
+        <p id="plan_battery" style="margin:0; font-size: 1.4rem; font-weight: 700;">–</p>
+      </div>
+      <div class="stat-card" style="margin:0;">
+        <h5>Spitzenkappung</h5>
+        <p id="plan_peak" style="margin:0; font-size: 1.4rem; font-weight: 700;">–</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel" style="max-width: none;">
+    <h5 class="panel-title">Log der letzten Rechnungen</h5>
+    <p style="color: var(--muted); font-size: 0.85rem;">Nur was der Regler gerechnet hätte. Es wurde nichts an den Deye gesendet.</p>
+    <ol id="sim_log" style="margin: 0; padding-left: 1.2rem; color: var(--text);"></ol>
+  </div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+(function () {
+  const form = document.getElementById("bms_form");
+  const hint = document.getElementById("save_hint");
+
+  function kw(value, digits) {
+    if (value == null || Number.isNaN(Number(value))) return "–";
+    return Number(value).toFixed(digits == null ? 1 : digits) + " kW";
+  }
+
+  function paint(data) {
+    const live = data.live || {};
+    document.getElementById("live_soc").textContent = live.soc_percent == null ? "–" : (Number(live.soc_percent).toFixed(0) + " %");
+    const battery = live.battery_kw;
+    document.getElementById("live_battery").textContent = battery == null ? "–" : (Number(battery).toFixed(1) + " kW " + (battery > 0.05 ? "Laden" : battery < -0.05 ? "Entladen" : ""));
+    document.getElementById("live_grid").textContent = kw(live.grid_kw, 1);
+    document.getElementById("live_source").textContent = live.source || "";
+    const box = document.getElementById("live_warnings");
+    const warnings = (data.assessment && data.assessment.warnings) || [];
+    const blocked = data.assessment && (!data.assessment.can_buy || !data.assessment.can_shave);
+    box.innerHTML = warnings.map(function (text) {
+      return '<p style="margin:0.35rem 0; color:' + (blocked ? "#ffb300" : "var(--muted)") + ';">' + text + "</p>";
+    }).join("");
+    const plan = data.plan;
+    if (!data.settings || !data.settings.test_mode || !plan) {
+      document.getElementById("plan_target").textContent = "Test aus";
+      document.getElementById("plan_battery").textContent = "Test aus";
+      document.getElementById("plan_peak").textContent = "Test aus";
+    } else {
+      document.getElementById("plan_target").textContent = kw(plan.target_grid_kw, 1);
+      document.getElementById("plan_battery").textContent = plan.battery_setpoint_kw == null ? "–" : (Number(plan.battery_setpoint_kw).toFixed(1) + " kW");
+      document.getElementById("plan_peak").textContent = plan.peak_shave_kw == null ? "–" : (Number(plan.peak_shave_kw).toFixed(1) + " kW");
+    }
+    const log = document.getElementById("sim_log");
+    const rows = data.log || [];
+    log.innerHTML = rows.length ? rows.map(function (row) {
+      return "<li>" + (row.at || "").replace("T", " ") + " — " + (row.text || "") + "</li>";
+    }).join("") : "<li>Noch keine Rechnung.</li>";
+  }
+
+  async function refresh() {
+    const response = await fetch("/api/bms-netzbezug", { credentials: "same-origin" });
+    const data = await response.json();
+    if (data.ok) paint(data);
+  }
+
+  form.addEventListener("submit", async function (event) {
+    event.preventDefault();
+    const body = new FormData(form);
+    if (!document.getElementById("test_mode").checked) body.set("test_mode", "0");
+    const response = await fetch("/api/bms-netzbezug/settings", { method: "POST", body: body, credentials: "same-origin" });
+    const data = await response.json();
+    hint.textContent = data.message || (data.ok ? "Gespeichert." : "Speichern fehlgeschlagen.");
+    hint.style.color = data.ok ? "var(--accent)" : "#f44336";
+    if (data.ok) refresh();
+  });
+
+  document.getElementById("test_mode").addEventListener("change", function () {
+    form.requestSubmit();
+  });
+
+  refresh();
+  setInterval(refresh, 5000);
+})();
+</script>
+{% endblock %}

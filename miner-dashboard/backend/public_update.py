@@ -87,6 +87,9 @@ SKIP_FILE_NAMES = {
     "grundverbrauch_rechner.json",
     "boersenhandel_settings.json",
     "energiegemeinschaft_settings.json",
+    "bms_steuerung_settings.json",
+    "bms_test_settings.json",
+    "bms_test_log.json",
     "ip_recovery_notifications.json",
     "daten.json",
 }
@@ -765,8 +768,7 @@ def export_snapshot(dest: Path, version: int, repo: Optional[Path] = None) -> No
         "version": int(version),
         "channel": "standard",
         "notes": (
-            "Börsenhandel: EAG-Anbieter Österreich, Jahresverlauf mit Cache, "
-            "drei verschiebbare Schwellwertlinien. "
+            "BMS-Netzbezug: Live-Anzeige aus Home Assistant und Testmodus ohne Befehle an den Deye. "
             "Standardwerte ohne persönliche Daten."
         ),
     }

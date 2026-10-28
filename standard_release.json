@@ -1,5 +1,5 @@
 {
-  "version": 12,
+  "version": 13,
   "channel": "standard",
-  "notes": "Börsenhandel: EAG-Anbieter Österreich, Jahresverlauf mit Cache, drei verschiebbare Schwellwertlinien. Standardwerte ohne persönliche Daten."
+  "notes": "BMS-Netzbezug: Live-Anzeige aus Home Assistant und Testmodus ohne Befehle an den Deye. Standardwerte ohne persönliche Daten."
 }

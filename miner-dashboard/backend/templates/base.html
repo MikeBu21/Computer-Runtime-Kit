@@ -127,6 +127,13 @@
       border-left: 2px solid rgba(255, 255, 255, 0.08);
     }
 
+    .sidebar-nav .nav-link-child {
+      margin-left: 1.35rem;
+      padding: 0.42rem 0.75rem 0.42rem 0.85rem;
+      font-size: 0.8rem;
+      border-left: 2px solid rgba(0, 230, 118, 0.28);
+    }
+
     .sidebar-section-label {
       margin: 0.85rem 0.35rem 0.35rem;
       padding: 0.35rem 0.55rem;
@@ -454,7 +461,8 @@
         <a class="nav-link nav-link-sub{% if request.path == '/boersenhandel' %} active{% endif %}" href="/boersenhandel">📈 Börsenhandel<canvas id="nav_price_spark" class="nav-spark" width="52" height="16" aria-hidden="true"></canvas></a>
         <a class="nav-link nav-link-sub{% if request.path == '/energiegemeinschaft' %} active{% endif %}" href="/energiegemeinschaft">🤝 Energiegemeinschaft<canvas id="nav_community_wave" class="nav-spark" width="52" height="16" aria-hidden="true"></canvas></a>
         {# VORLÄUFIG TEMPORARY_BMS_TAKEOVER: Menüpunkt nach der Übernahme wieder entfernen. #}
-        <a class="nav-link nav-link-sub{% if request.path == '/wechselrichter-bms' %} active{% endif %}" href="/wechselrichter-bms">🔋 Wechselrichter BMS</a>
+        <a class="nav-link nav-link-sub{% if request.path.startswith('/wechselrichter-bms') %} active{% endif %}" href="/wechselrichter-bms">🔋 Wechselrichter BMS</a>
+        <a class="nav-link nav-link-sub nav-link-child{% if request.path == '/wechselrichter-bms/netzbezug' %} active{% endif %}" href="/wechselrichter-bms/netzbezug">Netzbezug</a>
         <a class="nav-link nav-link-sub{% if request.path == '/grundverbrauchsrechner' %} active{% endif %}" href="/grundverbrauchsrechner">🧮 Grundverbrauchsrechner</a>
         <a class="nav-link nav-link-sub{% if request.path == '/statistik-konfigurieren' %} active{% endif %}" href="/statistik-konfigurieren">📈 Statistik konfigurieren</a>
         <a class="nav-link nav-link-sub{% if request.path == '/fehlerberichte' %} active{% endif %}" href="/fehlerberichte">📋 Fehlerberichte</a>

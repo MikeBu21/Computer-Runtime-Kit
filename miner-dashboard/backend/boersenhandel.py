@@ -131,6 +131,7 @@ def default_settings() -> Dict[str, Any]:
         "sell_ct_kwh": 25.0,
         "lower_ct_kwh": 5.0,
         "upper_ct_kwh": 15.0,
+        "apply_bms": False,
     }
 
 
@@ -159,10 +160,17 @@ def load_settings() -> Dict[str, Any]:
     data["sell_ct_kwh"] = sell
     data["lower_ct_kwh"] = buy
     data["upper_ct_kwh"] = stop
+    data["apply_bms"] = bool(data.get("apply_bms"))
     return data
 
 
-def save_settings(exchange: str, buy_ct_kwh: float, stop_ct_kwh: float, sell_ct_kwh: float) -> Dict[str, Any]:
+def save_settings(
+    exchange: str,
+    buy_ct_kwh: float,
+    stop_ct_kwh: float,
+    sell_ct_kwh: float,
+    apply_bms: bool = False,
+) -> Dict[str, Any]:
     if exchange not in EXCHANGES:
         raise ValueError("Unbekannte Börse.")
     buy, stop, sell = _ordered_thresholds(buy_ct_kwh, stop_ct_kwh, sell_ct_kwh)
@@ -173,6 +181,7 @@ def save_settings(exchange: str, buy_ct_kwh: float, stop_ct_kwh: float, sell_ct_
         "sell_ct_kwh": sell,
         "lower_ct_kwh": buy,
         "upper_ct_kwh": stop,
+        "apply_bms": bool(apply_bms),
     }
     SETTINGS_FILE.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return payload

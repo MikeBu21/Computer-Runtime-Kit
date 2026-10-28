@@ -309,6 +309,7 @@ def api_boersenhandel_settings():
             request.form.get("buy_ct_kwh") or request.form.get("lower_ct_kwh") or 0,
             request.form.get("stop_ct_kwh") or request.form.get("upper_ct_kwh") or 0,
             request.form.get("sell_ct_kwh") or 25,
+            request.form.get("apply_bms") in ("1", "true", "on"),
         )
     except ValueError as exc:
         return jsonify({"ok": False, "message": str(exc)}), 400
@@ -349,7 +350,10 @@ def api_energiegemeinschaft_settings():
     from energiegemeinschaft import save_settings
 
     try:
-        saved = save_settings((request.form.get("community") or "").strip())
+        enabled = None
+        if "enabled" in request.form:
+            enabled = request.form.get("enabled") in ("1", "true", "on")
+        saved = save_settings((request.form.get("community") or "").strip(), enabled)
     except ValueError as exc:
         return jsonify({"ok": False, "message": str(exc)}), 400
     return jsonify({"ok": True, "message": "Energiegemeinschaft gespeichert.", **saved})
@@ -359,6 +363,32 @@ def api_energiegemeinschaft_settings():
 def wechselrichter_bms_page():
     # VORLÄUFIG TEMPORARY_BMS_TAKEOVER: Route und Seite nach der Übernahme entfernen.
     return render_template("wechselrichter_bms.html")
+
+
+@app.route('/wechselrichter-bms/netzbezug')
+def wechselrichter_bms_netzbezug():
+    from bms_seite import load_settings as load_bms_test
+
+    return render_template("bms_netzbezug.html", settings=load_bms_test())
+
+
+@app.route('/api/bms-netzbezug')
+def api_bms_netzbezug():
+    from bms_seite import status
+
+    return jsonify({"ok": True, **status(record=True)})
+
+
+@app.route('/api/bms-netzbezug/settings', methods=['POST'])
+def api_bms_netzbezug_settings():
+    from bms_seite import save_settings as save_bms_test
+
+    saved = save_bms_test(
+        request.form.get("test_mode") in ("1", "true", "on"),
+        request.form.get("target_grid_kw") or 0,
+        request.form.get("peak_cap_kw") or 0,
+    )
+    return jsonify({"ok": True, "message": "Test-Modus gespeichert. Es wurde kein Befehl gesendet.", **saved})
 
 @app.route('/smartmeter', methods=['GET', 'POST'])
 def smartmeter():
