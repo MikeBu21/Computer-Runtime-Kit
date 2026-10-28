@@ -273,6 +273,18 @@ def api_boersenhandel_prices():
     return jsonify({"ok": True, **payload})
 
 
+@app.route('/api/boersenhandel/year')
+def api_boersenhandel_year():
+    from boersenhandel import year_view
+
+    exchange = (request.args.get("exchange") or "").strip()
+    try:
+        payload = year_view(exchange)
+    except Exception as exc:
+        return jsonify({"ok": False, "message": str(exc) or "Jahresverlauf nicht erreichbar."}), 502
+    return jsonify({"ok": True, **payload})
+
+
 @app.route('/api/boersenhandel/sparkline')
 def api_boersenhandel_sparkline():
     from boersenhandel import sparkline

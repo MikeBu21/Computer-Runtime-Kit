@@ -5,10 +5,10 @@
 {% block content %}
   <div class="page-header">
     <h2>📈 Börsenhandel</h2>
-    <p>Börse wie beim go-e Controller wählen — aWATTar Österreich oder Deutschland, Preis live in ct/kWh</p>
+    <p>Börse wie in der go-e ChaCha-App wählen — Preis live in ct/kWh</p>
   </div>
 
-  <div class="panel" style="max-width: 860px;">
+  <div class="panel" style="max-width: none;">
     <div class="field-grid" style="margin-bottom: 1rem;">
       <div>
         <label class="form-label" for="exchange">Börse</label>
@@ -39,7 +39,7 @@
       </div>
     </div>
 
-    <div style="height: 280px; margin: 0.5rem 0 1.25rem;">
+    <div style="height: 420px; margin: 0.5rem 0 1.25rem;">
       <canvas id="price_chart"></canvas>
     </div>
 
@@ -60,6 +60,14 @@
     </div>
     <p id="save_hint" style="color: var(--muted); min-height: 1.2rem; margin: 0.75rem 0 0;"></p>
   </div>
+
+  <div class="panel" style="max-width: none;">
+    <h5 class="panel-title" style="margin-bottom: 0.35rem;">Jahresverlauf</h5>
+    <p id="year_note" style="color: var(--muted); margin-bottom: 0.75rem;">Monatsmittel werden geladen…</p>
+    <div style="height: 360px;">
+      <canvas id="year_chart"></canvas>
+    </div>
+  </div>
 {% endblock %}
 
 {% block extra_scripts %}
@@ -75,6 +83,7 @@
   const form = document.getElementById("threshold_form");
   const ACTION = { laden: "Batterie laden", stopp: "Laden stoppen", halten: "Halten", unbekannt: "Preis unbekannt" };
   let chart = null;
+  let yearChart = null;
 
   const zonePlugin = {
     id: "priceZones",
@@ -170,6 +179,68 @@
     draw(data.points || [], data.lower_ct_kwh, data.upper_ct_kwh);
   }
 
+  function drawYear(data) {
+    const labels = data.months || [];
+    const typical = data.typical_ct || [];
+    if (!yearChart) {
+      yearChart = new Chart(document.getElementById("year_chart"), {
+        type: "bar",
+        data: {
+          labels: labels,
+          datasets: [
+            {
+              type: "bar",
+              label: "Typisches Jahr 2023–2025",
+              data: typical,
+              backgroundColor: typical.map(function (_, index) {
+                const month = index + 1;
+                if (month >= 5 && month <= 8) return "rgba(0, 230, 118, 0.75)";
+                if (month === 11 || month === 12 || month <= 2) return "rgba(239, 83, 80, 0.75)";
+                return "rgba(139, 156, 179, 0.45)";
+              }),
+              borderRadius: 6
+            }
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { labels: { color: "#8b9cb3" } } },
+          scales: {
+            x: { ticks: { color: "#8b9cb3" }, grid: { display: false } },
+            y: { ticks: { color: "#8b9cb3" }, grid: { color: "rgba(255,255,255,0.06)" }, title: { display: true, text: "ct/kWh", color: "#8b9cb3" } }
+          }
+        }
+      });
+      return;
+    }
+    yearChart.data.datasets[0].data = typical;
+    yearChart.data.datasets[0].backgroundColor = typical.map(function (_, index) {
+      const month = index + 1;
+      if (month >= 5 && month <= 8) return "rgba(0, 230, 118, 0.75)";
+      if (month === 11 || month === 12 || month <= 2) return "rgba(239, 83, 80, 0.75)";
+      return "rgba(139, 156, 179, 0.45)";
+    });
+    yearChart.update();
+  }
+
+  async function refreshYear() {
+    const note = document.getElementById("year_note");
+    try {
+      const response = await fetch("/api/boersenhandel/year?exchange=" + encodeURIComponent(exchangeEl.value), { credentials: "same-origin" });
+      const data = await response.json();
+      if (!data.ok) {
+        note.textContent = data.message || "Jahresverlauf nicht ladbar.";
+        return;
+      }
+      note.textContent = data.note || "";
+      if (yearChart) yearChart.data.labels = data.months || [];
+      drawYear(data);
+    } catch (err) {
+      note.textContent = "Jahresverlauf nicht erreichbar.";
+    }
+  }
+
   exchangeEl.addEventListener("change", async function () {
     const body = new FormData();
     body.set("exchange", exchangeEl.value);
@@ -177,6 +248,7 @@
     body.set("upper_ct_kwh", document.getElementById("upper_ct").value);
     await fetch("/api/boersenhandel/settings", { method: "POST", body: body, credentials: "same-origin" });
     refresh();
+    refreshYear();
   });
   rangeEl.addEventListener("change", refresh);
   form.addEventListener("submit", async function (event) {
@@ -191,6 +263,7 @@
   });
 
   refresh();
+  refreshYear();
   setInterval(refresh, 60000);
 })();
 </script>

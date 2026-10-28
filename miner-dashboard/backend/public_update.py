@@ -765,8 +765,8 @@ def export_snapshot(dest: Path, version: int, repo: Optional[Path] = None) -> No
         "version": int(version),
         "channel": "standard",
         "notes": (
-            "Börsenhandel wie go-e Controller (aWATTar AT/DE, ct/kWh, Schwellwerte), "
-            "Energiegemeinschaft als Platzhalter, vorläufige Wechselrichter-BMS-Seite. "
+            "Börsenhandel: breiteres Chart, Jahresverlauf Sommer/Winter, "
+            "mehr Börsen wie in der go-e ChaCha-App. "
             "Standardwerte ohne persönliche Daten."
         ),
     }

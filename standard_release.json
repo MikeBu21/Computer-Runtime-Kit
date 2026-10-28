@@ -1,5 +1,5 @@
 {
-  "version": 10,
+  "version": 11,
   "channel": "standard",
-  "notes": "Börsenhandel wie go-e Controller (aWATTar AT/DE, ct/kWh, Schwellwerte), Energiegemeinschaft als Platzhalter, vorläufige Wechselrichter-BMS-Seite. Standardwerte ohne persönliche Daten."
+  "notes": "Börsenhandel: breiteres Chart, Jahresverlauf Sommer/Winter, mehr Börsen wie in der go-e ChaCha-App. Standardwerte ohne persönliche Daten."
 }

@@ -452,7 +452,7 @@
         <a class="nav-link nav-link-sub{% if request.path == '/telegrambot' %} active{% endif %}" href="/telegrambot">💬 Telegram Bot</a>
         <a class="nav-link nav-link-sub{% if request.path == '/steuerungsalgorithmus' %} active{% endif %}" href="/steuerungsalgorithmus">🧠 Steuerungsalgorithmus</a>
         <a class="nav-link nav-link-sub{% if request.path == '/boersenhandel' %} active{% endif %}" href="/boersenhandel">📈 Börsenhandel<canvas id="nav_price_spark" class="nav-spark" width="52" height="16" aria-hidden="true"></canvas></a>
-        <a class="nav-link nav-link-sub{% if request.path == '/energiegemeinschaft' %} active{% endif %}" href="/energiegemeinschaft">🤝 Energiegemeinschaft</a>
+        <a class="nav-link nav-link-sub{% if request.path == '/energiegemeinschaft' %} active{% endif %}" href="/energiegemeinschaft">🤝 Energiegemeinschaft<canvas id="nav_community_wave" class="nav-spark" width="52" height="16" aria-hidden="true"></canvas></a>
         {# VORLÄUFIG TEMPORARY_BMS_TAKEOVER: Menüpunkt nach der Übernahme wieder entfernen. #}
         <a class="nav-link nav-link-sub{% if request.path == '/wechselrichter-bms' %} active{% endif %}" href="/wechselrichter-bms">🔋 Wechselrichter BMS</a>
         <a class="nav-link nav-link-sub{% if request.path == '/grundverbrauchsrechner' %} active{% endif %}" href="/grundverbrauchsrechner">🧮 Grundverbrauchsrechner</a>
@@ -573,10 +573,31 @@
           .catch(function () {});
       }
 
+      function paintCommunityWave() {
+        const canvas = document.getElementById("nav_community_wave");
+        if (!canvas) return;
+        const ctx = canvas.getContext("2d");
+        const w = canvas.width;
+        const h = canvas.height;
+        const phase = (Date.now() / 900) % (Math.PI * 2);
+        ctx.clearRect(0, 0, w, h);
+        ctx.beginPath();
+        ctx.strokeStyle = "#00e676";
+        ctx.lineWidth = 1.5;
+        for (let x = 1; x < w; x += 1) {
+          const y = h / 2 - Math.sin((x / w) * Math.PI * 2 * 1.5 + phase) * (h * 0.32);
+          if (x === 1) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+      }
+
       document.addEventListener("DOMContentLoaded", function () {
         bindAjaxForms();
         paintPriceSpark();
+        paintCommunityWave();
         setInterval(paintPriceSpark, 60000);
+        setInterval(paintCommunityWave, 80);
         const params = new URLSearchParams(window.location.search);
         const hinweis = params.get("hinweis");
         if (hinweis) {
