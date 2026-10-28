@@ -3,9 +3,17 @@
 {% block title %}Börsenhandel{% endblock %}
 
 {% block content %}
-  <div class="page-header">
-    <h2>📈 Börsenhandel</h2>
-    <p>Börse wie in der go-e ChaCha-App wählen — Preis live in ct/kWh</p>
+  <div class="page-header" style="display:flex; justify-content:space-between; align-items:flex-start; gap:1rem; flex-wrap:wrap;">
+    <div>
+      <h2>📈 Börsenhandel</h2>
+      <p>Kerzenchart des Strompreises — Anzeige und Simulation, keine echten Orders</p>
+    </div>
+    <div class="trade-switch-row">
+      <span class="trade-switch-label">Börsenhandel aktiv</span>
+      <button type="button" id="trade_active" class="trade-switch on" role="switch" aria-checked="true" aria-label="Börsenhandel aktiv">
+        <span class="trade-switch-knob"></span>
+      </button>
+    </div>
   </div>
 
   <div class="panel" style="max-width: none;">
@@ -46,25 +54,33 @@
       </div>
     </div>
 
-    <div style="height: 420px; margin: 0.5rem 0 1.25rem;">
-      <canvas id="price_chart"></canvas>
+    <div id="day_panel">
+      <h5 class="panel-title" style="margin: 0.25rem 0 0.4rem;">Tagesverlauf</h5>
+      <div id="day_host"></div>
+    </div>
+
+    <div id="trade_wrap">
+      <div id="candle_host"></div>
+      <button type="button" class="px-tag buy" id="tag_buy">Buy</button>
+      <button type="button" class="px-tag hold" id="tag_stop">Hold</button>
+      <button type="button" class="px-tag sell" id="tag_sell">Sell</button>
     </div>
 
     <form id="threshold_form" class="field-grid">
       <div>
-        <label class="form-label" for="buy_ct">Kaufen unter (ct/kWh)</label>
+        <label class="form-label" for="buy_ct">Buy-Preis (ct/kWh)</label>
         <input class="form-control" id="buy_ct" name="buy_ct_kwh" type="number" step="0.1" value="{{ settings.buy_ct_kwh }}" required>
-        <div style="color: var(--muted); font-size: 0.78rem; margin-top: 0.3rem;">Grüne Linie. Darunter wird gekauft.</div>
+        <div style="color: var(--muted); font-size: 0.78rem; margin-top: 0.3rem;">Grünes Kästchen. Darunter würde gekauft.</div>
       </div>
       <div>
-        <label class="form-label" for="stop_ct">Nicht mehr kaufen über (ct/kWh)</label>
+        <label class="form-label" for="stop_ct">Hold-Preis (ct/kWh)</label>
         <input class="form-control" id="stop_ct" name="stop_ct_kwh" type="number" step="0.1" value="{{ settings.stop_ct_kwh }}" required>
-        <div style="color: var(--muted); font-size: 0.78rem; margin-top: 0.3rem;">Gelbe Linie. Darüber wird nicht mehr gekauft.</div>
+        <div style="color: var(--muted); font-size: 0.78rem; margin-top: 0.3rem;">Gelbes Kästchen. Darüber wird gehalten, nicht mehr gekauft.</div>
       </div>
       <div>
-        <label class="form-label" for="sell_ct">Verkaufen über (ct/kWh)</label>
+        <label class="form-label" for="sell_ct">Sell-Preis (ct/kWh)</label>
         <input class="form-control" id="sell_ct" name="sell_ct_kwh" type="number" step="0.1" value="{{ settings.sell_ct_kwh }}" required>
-        <div style="color: var(--muted); font-size: 0.78rem; margin-top: 0.3rem;">Rote Linie. Darüber wird verkauft. Linien im Chart ziehen.</div>
+        <div style="color: var(--muted); font-size: 0.78rem; margin-top: 0.3rem;">Rotes Kästchen. Darüber würde verkauft. Kästchen im Chart ziehen.</div>
       </div>
     </form>
     <div class="action-row">
@@ -74,7 +90,14 @@
   </div>
 
   <div class="panel" style="max-width: none;">
-    <h5 class="panel-title" style="margin-bottom: 0.35rem;">Jahresverlauf</h5>
+    <div class="year-head">
+      <h5 class="panel-title" style="margin: 0;">Jahresverlauf</h5>
+      <div class="year-nav">
+        <button type="button" id="year_prev" aria-label="Vorheriges Jahr">‹</button>
+        <span id="year_label">–</span>
+        <button type="button" id="year_next" aria-label="Nächstes Jahr">›</button>
+      </div>
+    </div>
     <p id="year_note" style="color: var(--muted); margin-bottom: 0.75rem;">Monatsmittel werden geladen…</p>
     <div style="height: 360px;">
       <canvas id="year_chart"></canvas>
@@ -84,6 +107,125 @@
 
 {% block extra_scripts %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+<style>
+  #day_panel { margin: 0.25rem 0 0.75rem; }
+  #day_host {
+    height: 180px;
+    border-radius: 12px;
+    overflow: hidden;
+    background: #0b1016;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+  }
+  #trade_wrap {
+    position: relative;
+    height: 520px;
+    margin: 0.5rem 0 1.25rem;
+    border-radius: 12px;
+    overflow: hidden;
+    background: #0b1016;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+  }
+  #candle_host { height: 100%; }
+  .px-tag {
+    position: absolute;
+    right: 8px;
+    z-index: 4;
+    transform: translateY(-50%);
+    border: 0;
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    cursor: ns-resize;
+    line-height: 1.2;
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
+  }
+  .px-tag.buy { background: #00e676; color: #04140a; }
+  .px-tag.hold { background: #ffb300; color: #1a1200; }
+  .px-tag.sell { background: #ef5350; color: #1a0505; }
+  .trade-switch-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+  }
+  .trade-switch-label {
+    font-weight: 700;
+    color: #8b9cb3;
+  }
+  body:not(.trade-off) .trade-switch-label {
+    color: #00e676;
+  }
+  .trade-switch {
+    position: relative;
+    width: 56px;
+    height: 32px;
+    padding: 0;
+    border: 0;
+    border-radius: 999px;
+    background: #3a4250;
+    cursor: pointer;
+    transition: background 0.2s ease, box-shadow 0.2s ease;
+  }
+  .trade-switch-knob {
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    background: #f4f6f8;
+    transition: transform 0.2s ease;
+  }
+  .trade-switch.on {
+    background: #00e676;
+    box-shadow: 0 0 14px rgba(0, 230, 118, 0.85);
+  }
+  .trade-switch.on .trade-switch-knob {
+    transform: translateX(24px);
+  }
+  .year-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.35rem;
+  }
+  .year-nav {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+  }
+  .year-nav button {
+    width: 36px;
+    height: 32px;
+    border: 0;
+    border-radius: 999px;
+    background: #243044;
+    color: #9fd4ff;
+    font-size: 1.35rem;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .year-nav button:disabled {
+    opacity: 0.35;
+    cursor: default;
+  }
+  #year_label {
+    min-width: 4.2rem;
+    text-align: center;
+    font-weight: 700;
+    color: #7ee7ff;
+  }
+  body.trade-off #trade_wrap,
+  body.trade-off #threshold_form,
+  body.trade-off #threshold_form + .action-row,
+  body.trade-off #save_hint {
+    display: none;
+  }
+</style>
 <script>
 (function () {
   const exchangeEl = document.getElementById("exchange");
@@ -102,8 +244,13 @@
     stopp: "Nicht mehr kaufen",
     unbekannt: "Preis unbekannt"
   };
-  let chart = null;
   let yearChart = null;
+  let tradeChart = null;
+  let candleSeries = null;
+  let dayChart = null;
+  let daySeries = null;
+  let fitted = false;
+  let dayFitted = false;
   let dragging = null;
 
   function thresholds() {
@@ -130,136 +277,213 @@
     return lines;
   }
 
-  const zonePlugin = {
-    id: "priceZones",
-    beforeDatasetsDraw: function (c) {
-      const area = c.chartArea;
-      const y = c.scales.y;
-      const lines = c.$lines;
-      if (!area || !y || !lines) return;
-      const yBuy = y.getPixelForValue(lines.buy);
-      const yStop = y.getPixelForValue(lines.stop);
-      const ySell = y.getPixelForValue(lines.sell);
-      const ctx = c.ctx;
-      ctx.save();
-      ctx.fillStyle = "rgba(239, 83, 80, 0.16)";
-      ctx.fillRect(area.left, area.top, area.right - area.left, Math.max(0, ySell - area.top));
-      ctx.fillStyle = "rgba(255, 179, 0, 0.10)";
-      ctx.fillRect(area.left, ySell, area.right - area.left, Math.max(0, yStop - ySell));
-      ctx.fillStyle = "rgba(255, 255, 255, 0.03)";
-      ctx.fillRect(area.left, yStop, area.right - area.left, Math.max(0, yBuy - yStop));
-      ctx.fillStyle = "rgba(0, 230, 118, 0.16)";
-      ctx.fillRect(area.left, yBuy, area.right - area.left, Math.max(0, area.bottom - yBuy));
-      ctx.restore();
-    }
-  };
+  const TAGS = [
+    { key: "buy", label: "Buy", id: "tag_buy" },
+    { key: "stop", label: "Hold", id: "tag_stop" },
+    { key: "sell", label: "Sell", id: "tag_sell" }
+  ];
 
-  function pointColor(value, lines) {
-    if (value >= lines.sell) return "#ef5350";
-    if (value > lines.stop) return "#ffb300";
-    if (value <= lines.buy) return "#00e676";
-    return "#c5d0de";
+  function chartOptions() {
+    return {
+      autoSize: true,
+      layout: { background: { color: "#0b1016" }, textColor: "#8b9cb3", fontFamily: "inherit" },
+      grid: { vertLines: { color: "rgba(255,255,255,0.04)" }, horzLines: { color: "rgba(255,255,255,0.04)" } },
+      rightPriceScale: { borderColor: "rgba(255,255,255,0.08)" },
+      timeScale: { borderColor: "rgba(255,255,255,0.08)", timeVisible: true, secondsVisible: false },
+      crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+      localization: {
+        priceFormatter: function (price) { return Number(price).toFixed(2); },
+        timeFormatter: function (time) {
+          return new Date(time * 1000).toLocaleString("de-AT", {
+            timeZone: "Europe/Vienna", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit"
+          });
+        }
+      }
+    };
   }
 
-  function draw(points, lines) {
-    const labels = points.map(function (p) {
-      return rangeEl.value === "day" ? p.hour : (p.day.slice(5) + " " + p.hour);
+  function addCandleSeries(chart) {
+    return chart.addCandlestickSeries({
+      upColor: "#00ff4a",
+      downColor: "#ff2438",
+      borderUpColor: "#00ff4a",
+      borderDownColor: "#ff2438",
+      wickUpColor: "#00ff4a",
+      wickDownColor: "#ff2438",
+      priceLineVisible: true,
+      priceLineColor: "#ffffff",
+      priceLineStyle: LightweightCharts.LineStyle.Dashed,
+      priceLineWidth: 1
     });
-    const values = points.map(function (p) { return p.ct_kwh; });
-    const colors = values.map(function (v) { return pointColor(v, lines); });
-    const flat = function (value) { return values.map(function () { return value; }); };
-    if (!chart) {
-      chart = new Chart(document.getElementById("price_chart"), {
-        type: "line",
-        plugins: [zonePlugin],
-        data: {
-          labels: labels,
-          datasets: [
-            {
-              label: "Börsenpreis ct/kWh",
-              data: values,
-              borderColor: "#e8eef7",
-              backgroundColor: colors,
-              pointBackgroundColor: colors,
-              pointBorderColor: colors,
-              tension: 0.25,
-              pointRadius: 3,
-              fill: false
-            },
-            { label: "Kaufen", data: flat(lines.buy), borderColor: "#00e676", borderDash: [6, 4], pointRadius: 0, fill: false },
-            { label: "Nicht mehr kaufen", data: flat(lines.stop), borderColor: "#ffb300", borderDash: [6, 4], pointRadius: 0, fill: false },
-            { label: "Verkaufen", data: flat(lines.sell), borderColor: "#ef5350", borderDash: [6, 4], pointRadius: 0, fill: false }
-          ]
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          animation: false,
-          plugins: { legend: { labels: { color: "#8b9cb3" } } },
-          scales: {
-            x: { ticks: { color: "#8b9cb3", maxRotation: 0, autoSkip: true, maxTicksLimit: 12 }, grid: { color: "rgba(255,255,255,0.06)" } },
-            y: { ticks: { color: "#8b9cb3" }, grid: { color: "rgba(255,255,255,0.06)" }, title: { display: true, text: "ct/kWh", color: "#8b9cb3" } }
-          }
-        }
-      });
-      bindDrag();
-    } else {
-      chart.data.labels = labels;
-      chart.data.datasets[0].data = values;
-      chart.data.datasets[0].pointBackgroundColor = colors;
-      chart.data.datasets[0].pointBorderColor = colors;
-      chart.data.datasets[1].data = flat(lines.buy);
-      chart.data.datasets[2].data = flat(lines.stop);
-      chart.data.datasets[3].data = flat(lines.sell);
-    }
-    chart.$lines = lines;
-    chart.update();
   }
 
-  function bindDrag() {
-    const canvas = document.getElementById("price_chart");
-    const keys = ["buy", "stop", "sell"];
-    function nearest(event) {
-      if (!chart || !chart.scales.y) return null;
-      const y = chart.scales.y;
-      const lines = chart.$lines || thresholds();
-      let best = null;
-      let bestDist = 14;
-      keys.forEach(function (key) {
-        const dist = Math.abs(event.offsetY - y.getPixelForValue(lines[key]));
-        if (dist < bestDist) {
-          best = key;
-          bestDist = dist;
+  function ensureDayChart() {
+    if (dayChart || typeof LightweightCharts === "undefined") return;
+    dayChart = LightweightCharts.createChart(document.getElementById("day_host"), chartOptions());
+    daySeries = addCandleSeries(dayChart);
+  }
+
+  function ensureChart() {
+    if (tradeChart || typeof LightweightCharts === "undefined") return;
+    const host = document.getElementById("candle_host");
+    tradeChart = LightweightCharts.createChart(host, {
+      autoSize: true,
+      layout: { background: { color: "#0b1016" }, textColor: "#8b9cb3", fontFamily: "inherit" },
+      grid: { vertLines: { color: "rgba(255,255,255,0.04)" }, horzLines: { color: "rgba(255,255,255,0.04)" } },
+      rightPriceScale: { borderColor: "rgba(255,255,255,0.08)" },
+      timeScale: { borderColor: "rgba(255,255,255,0.08)", timeVisible: true, secondsVisible: false },
+      crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+      localization: {
+        priceFormatter: function (price) { return Number(price).toFixed(2); },
+        timeFormatter: function (time) {
+          return new Date(time * 1000).toLocaleString("de-AT", {
+            timeZone: "Europe/Vienna", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit"
+          });
         }
+      }
+    });
+    candleSeries = addCandleSeries(tradeChart);
+    tradeChart.timeScale().subscribeVisibleLogicalRangeChange(placeTags);
+    TAGS.forEach(function (tag) {
+      const el = document.getElementById(tag.id);
+      el.addEventListener("pointerdown", function (event) {
+        dragging = tag.key;
+        el.setPointerCapture(event.pointerId);
+        event.preventDefault();
       });
-      return best;
+      el.addEventListener("pointermove", function (event) {
+        if (dragging !== tag.key || !candleSeries) return;
+        const rect = document.getElementById("candle_host").getBoundingClientRect();
+        const price = candleSeries.coordinateToPrice(event.clientY - rect.top);
+        if (!Number.isFinite(price)) return;
+        setThreshold(tag.key, Math.min(80, Math.max(-5, price)));
+        placeTags();
+      });
+      el.addEventListener("pointerup", function () {
+        if (dragging !== tag.key) return;
+        dragging = null;
+        saveThresholds(false);
+      });
+    });
+  }
+
+  const CANDLE_GREEN = "#00ff4a";
+  const CANDLE_RED = "#ff2438";
+  const CANDLE_BLUE = "#3aa0ff";
+
+  function candlesFrom(points) {
+    const rows = [];
+    let previous = null;
+    points.forEach(function (point) {
+      const close = Number(point.ct_kwh);
+      const time = Number(point.time);
+      if (!Number.isFinite(close) || !Number.isFinite(time)) return;
+      const open = previous == null ? close : previous;
+      rows.push({ time: time, open: open, close: close });
+      previous = close;
+    });
+    const unique = [];
+    rows.forEach(function (row) {
+      if (unique.length && unique[unique.length - 1].time === row.time) unique[unique.length - 1] = row;
+      else if (!unique.length || row.time > unique[unique.length - 1].time) unique.push(row);
+    });
+    const moves = unique.map(function (row) { return Math.abs(row.close - row.open); }).filter(function (value) { return value > 0; }).sort(function (a, b) { return a - b; });
+    const typical = moves.length ? moves[Math.floor(moves.length / 2)] : 0;
+    const flat = Math.max(0.04, typical * 0.45);
+    const outlier = Math.max(flat * 2.5, typical * 1.8);
+    return unique.map(function (row) {
+      const delta = row.close - row.open;
+      const body = Math.abs(delta);
+      let open = row.open;
+      let color = CANDLE_BLUE;
+      if (body > flat && delta > 0) color = CANDLE_GREEN;
+      else if (body > flat && delta < 0) color = CANDLE_RED;
+      if (body >= outlier && delta !== 0) {
+        const extra = body * Math.min(0.85, 0.4 * (body / outlier));
+        const direction = delta > 0 ? 1 : -1;
+        open = row.close - direction * (body + extra);
+      }
+      return {
+        time: row.time,
+        open: open,
+        high: Math.max(open, row.close),
+        low: Math.min(open, row.close),
+        close: row.close,
+        color: color,
+        borderColor: color,
+        wickColor: color
+      };
+    });
+  }
+
+  function showThinCandles(count) {
+    if (!tradeChart || !count) return;
+    const extra = Math.max(8, Math.round(count * 0.75));
+    tradeChart.timeScale().setVisibleLogicalRange({ from: -1, to: count - 1 + extra });
+  }
+
+  const markerLines = {};
+  const markerColor = { buy: "#00e676", stop: "#ffb300", sell: "#ef5350" };
+
+  function syncMarkerLines(lines) {
+    TAGS.forEach(function (tag) {
+      const options = {
+        price: lines[tag.key],
+        color: markerColor[tag.key],
+        lineWidth: 1,
+        lineStyle: LightweightCharts.LineStyle.Dashed,
+        axisLabelVisible: false,
+        title: ""
+      };
+      if (!markerLines[tag.key]) markerLines[tag.key] = candleSeries.createPriceLine(options);
+      else markerLines[tag.key].applyOptions(options);
+    });
+  }
+
+  function placeTags() {
+    if (!candleSeries) return;
+    const lines = thresholds();
+    syncMarkerLines(lines);
+    TAGS.forEach(function (tag) {
+      const el = document.getElementById(tag.id);
+      const y = candleSeries.priceToCoordinate(lines[tag.key]);
+      if (y == null) {
+        el.style.display = "none";
+        return;
+      }
+      el.style.display = "block";
+      el.style.top = y + "px";
+      el.textContent = tag.label + "  " + Number(lines[tag.key]).toFixed(2);
+    });
+  }
+
+  let lastCandleCount = 0;
+
+  function drawCandles(points) {
+    ensureChart();
+    if (!candleSeries) {
+      metaEl.textContent = "Kerzenchart nicht geladen.";
+      return;
     }
-    canvas.addEventListener("pointerdown", function (event) {
-      const key = nearest(event);
-      if (!key) return;
-      dragging = key;
-      canvas.setPointerCapture(event.pointerId);
-    });
-    canvas.addEventListener("pointermove", function (event) {
-      canvas.style.cursor = (nearest(event) || dragging) ? "ns-resize" : "default";
-      if (!dragging || !chart) return;
-      const value = chart.scales.y.getValueForPixel(event.offsetY);
-      if (!Number.isFinite(value)) return;
-      const lines = setThreshold(dragging, Math.min(80, Math.max(-5, value)));
-      chart.$lines = lines;
-      chart.data.datasets[1].data = chart.data.datasets[0].data.map(function () { return lines.buy; });
-      chart.data.datasets[2].data = chart.data.datasets[0].data.map(function () { return lines.stop; });
-      chart.data.datasets[3].data = chart.data.datasets[0].data.map(function () { return lines.sell; });
-      const colors = chart.data.datasets[0].data.map(function (v) { return pointColor(v, lines); });
-      chart.data.datasets[0].pointBackgroundColor = colors;
-      chart.data.datasets[0].pointBorderColor = colors;
-      chart.update();
-    });
-    canvas.addEventListener("pointerup", function () {
-      if (!dragging) return;
-      dragging = null;
-      saveThresholds(false);
-    });
+    const candles = candlesFrom(points);
+    lastCandleCount = candles.length;
+    candleSeries.setData(candles);
+    ensureDayChart();
+    if (daySeries) {
+      daySeries.setData(candles);
+      if (!dayFitted && candles.length && dayChart) {
+        const extra = Math.max(8, Math.round(candles.length * 0.75));
+        dayChart.timeScale().setVisibleLogicalRange({ from: -1, to: candles.length - 1 + extra });
+        dayFitted = true;
+      }
+    }
+    if (!fitted && candles.length) {
+      showThinCandles(candles.length);
+      fitted = true;
+    }
+    const last = candles[candles.length - 1];
+    if (last) priceEl.style.color = last.color || CANDLE_BLUE;
+    placeTags();
   }
 
   async function refresh() {
@@ -278,7 +502,7 @@
       if (data.stop_ct_kwh != null) document.getElementById("stop_ct").value = Number(data.stop_ct_kwh).toFixed(1);
       if (data.sell_ct_kwh != null) document.getElementById("sell_ct").value = Number(data.sell_ct_kwh).toFixed(1);
     }
-    draw(data.points || [], thresholds());
+    drawCandles(data.points || []);
   }
 
   async function saveThresholds(showHint) {
@@ -293,9 +517,17 @@
     return data;
   }
 
+  function yearBarColor(index) {
+    const month = index + 1;
+    if (month >= 5 && month <= 8) return "rgba(46, 214, 230, 0.9)";
+    if (month === 11 || month === 12 || month <= 2) return "rgba(110, 132, 255, 0.9)";
+    return "rgba(96, 140, 184, 0.62)";
+  }
+
   function drawYear(data) {
     const labels = data.months || [];
     const typical = data.typical_ct || [];
+    const title = data.year ? String(data.year) : "Jahr";
     if (!yearChart) {
       yearChart = new Chart(document.getElementById("year_chart"), {
         type: "bar",
@@ -304,14 +536,9 @@
           datasets: [
             {
               type: "bar",
-              label: "Typisches Jahr 2023–2025",
+              label: title,
               data: typical,
-              backgroundColor: typical.map(function (_, index) {
-                const month = index + 1;
-                if (month >= 5 && month <= 8) return "rgba(0, 230, 118, 0.75)";
-                if (month === 11 || month === 12 || month <= 2) return "rgba(239, 83, 80, 0.75)";
-                return "rgba(139, 156, 179, 0.45)";
-              }),
+              backgroundColor: typical.map(function (_, index) { return yearBarColor(index); }),
               borderRadius: 6
             }
           ]
@@ -328,32 +555,55 @@
       });
       return;
     }
+    yearChart.data.datasets[0].label = title;
     yearChart.data.datasets[0].data = typical;
-    yearChart.data.datasets[0].backgroundColor = typical.map(function (_, index) {
-      const month = index + 1;
-      if (month >= 5 && month <= 8) return "rgba(0, 230, 118, 0.75)";
-      if (month === 11 || month === 12 || month <= 2) return "rgba(239, 83, 80, 0.75)";
-      return "rgba(139, 156, 179, 0.45)";
-    });
+    yearChart.data.datasets[0].backgroundColor = typical.map(function (_, index) { return yearBarColor(index); });
     yearChart.update();
+  }
+
+  let selectedYear = null;
+
+  function paintYearNav(data) {
+    selectedYear = data.year || selectedYear;
+    const label = document.getElementById("year_label");
+    const prev = document.getElementById("year_prev");
+    const next = document.getElementById("year_next");
+    const years = data.years || [];
+    label.textContent = data.year || "–";
+    prev.disabled = !years.length || data.year <= years[0];
+    next.disabled = !years.length || data.year >= years[years.length - 1];
   }
 
   async function refreshYear() {
     const note = document.getElementById("year_note");
     try {
-      const response = await fetch("/api/boersenhandel/year?exchange=" + encodeURIComponent(exchangeEl.value), { credentials: "same-origin" });
+      const params = new URLSearchParams({ exchange: exchangeEl.value });
+      if (selectedYear) params.set("year", String(selectedYear));
+      const response = await fetch("/api/boersenhandel/year?" + params.toString(), { credentials: "same-origin" });
       const data = await response.json();
       if (!data.ok) {
         note.textContent = data.message || "Jahresverlauf nicht ladbar.";
         return;
       }
       note.textContent = data.note || "";
+      paintYearNav(data);
       if (yearChart) yearChart.data.labels = data.months || [];
       drawYear(data);
     } catch (err) {
       note.textContent = "Jahresverlauf nicht erreichbar.";
     }
   }
+
+  document.getElementById("year_prev").addEventListener("click", function () {
+    if (!selectedYear) return;
+    selectedYear -= 1;
+    refreshYear();
+  });
+  document.getElementById("year_next").addEventListener("click", function () {
+    if (!selectedYear) return;
+    selectedYear += 1;
+    refreshYear();
+  });
 
   exchangeEl.addEventListener("change", async function () {
     await saveThresholds(false);
@@ -371,6 +621,24 @@
       refresh();
     }
   });
+
+  const tradeToggle = document.getElementById("trade_active");
+  function applyTradeActive(on) {
+    document.body.classList.toggle("trade-off", !on);
+    tradeToggle.classList.toggle("on", on);
+    tradeToggle.setAttribute("aria-checked", on ? "true" : "false");
+    try { localStorage.setItem("boersenhandel_aktiv", on ? "1" : "0"); } catch (err) {}
+    if (on && tradeChart) {
+      showThinCandles(lastCandleCount);
+      placeTags();
+    }
+  }
+  tradeToggle.addEventListener("click", function () {
+    applyTradeActive(!tradeToggle.classList.contains("on"));
+  });
+  let tradeOn = true;
+  try { tradeOn = localStorage.getItem("boersenhandel_aktiv") !== "0"; } catch (err) {}
+  applyTradeActive(tradeOn);
 
   refresh();
   refreshYear();

@@ -185,6 +185,37 @@ def test_scan_still_rejects_real_token_in_kit(tmp_path: Path):
     assert pu.scan_tree(tmp_path, []) == ["leak.py"]
 
 
+def test_soft_scan_survives_upstream_hard_scan(tmp_path: Path):
+    upstream = tmp_path / "public_update.py"
+    upstream.write_text(
+        "def _copy_download(snapshot, dest_root=None):\n"
+        "    return 0\n"
+        "\n"
+        "def _download_worker():\n"
+        "    version = 1\n"
+        "    problems = scan_tree(DOWNLOAD_DIR, collect_sensitive_values(REPO_ROOT))\n"
+        "    if problems:\n"
+        "        raise RuntimeError(\n"
+        '            "Download abgebrochen: die öffentliche Version enthält persönliche Daten "\n'
+        '            f"({len(problems)} Fundstelle(n), z. B. {problems[0]})."\n'
+        "        )\n"
+        "    _copy_download(DOWNLOAD_DIR)\n",
+        encoding="utf-8",
+    )
+    pu._ensure_soft_download_scan_file(upstream)
+    text = upstream.read_text(encoding="utf-8")
+    assert "DOWNLOAD_SCAN_SOFT_V1" in text
+    assert "scan_tree(DOWNLOAD_DIR, [])" in text
+    assert "collect_sensitive_values(REPO_ROOT)" not in text
+    assert "_copy_download(DOWNLOAD_DIR)\n        _ensure_soft_download_scan_file()" in text
+    defs = text.count("def _ensure_soft_download_scan_file(")
+    assert defs >= 1
+    pu._ensure_soft_download_scan_file(upstream)
+    again = upstream.read_text(encoding="utf-8")
+    assert again.count("def _ensure_soft_download_scan_file(") == defs
+    assert "collect_sensitive_values(REPO_ROOT)" not in again
+
+
 def test_default_fields_have_empty_entity_ids():
     from ha_entity_mapping import _default_fields
 

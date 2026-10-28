@@ -281,8 +281,10 @@ def api_boersenhandel_year():
     from boersenhandel import year_view
 
     exchange = (request.args.get("exchange") or "").strip()
+    year_text = (request.args.get("year") or "").strip()
+    year = int(year_text) if year_text.isdigit() else None
     try:
-        payload = year_view(exchange)
+        payload = year_view(exchange, year)
     except Exception as exc:
         return jsonify({"ok": False, "message": str(exc) or "Jahresverlauf nicht erreichbar."}), 502
     return jsonify({"ok": True, **payload})
@@ -362,14 +364,24 @@ def api_energiegemeinschaft_settings():
 @app.route('/wechselrichter-bms')
 def wechselrichter_bms_page():
     # VORLÄUFIG TEMPORARY_BMS_TAKEOVER: Route und Seite nach der Übernahme entfernen.
-    return render_template("wechselrichter_bms.html")
+    from bms_seite import inverter_choices, load_settings
+
+    return render_template(
+        "wechselrichter_bms.html",
+        settings=load_settings(),
+        inverters=inverter_choices(),
+    )
 
 
 @app.route('/wechselrichter-bms/netzbezug')
 def wechselrichter_bms_netzbezug():
-    from bms_seite import load_settings as load_bms_test
+    from bms_seite import inverter_choices, load_settings
 
-    return render_template("bms_netzbezug.html", settings=load_bms_test())
+    return render_template(
+        "bms_netzbezug.html",
+        settings=load_settings(),
+        inverters=inverter_choices(),
+    )
 
 
 @app.route('/api/bms-netzbezug')
@@ -381,14 +393,26 @@ def api_bms_netzbezug():
 
 @app.route('/api/bms-netzbezug/settings', methods=['POST'])
 def api_bms_netzbezug_settings():
-    from bms_seite import save_settings as save_bms_test
+    from bms_seite import save_settings
 
-    saved = save_bms_test(
-        request.form.get("test_mode") in ("1", "true", "on"),
-        request.form.get("target_grid_kw") or 0,
-        request.form.get("peak_cap_kw") or 0,
-    )
-    return jsonify({"ok": True, "message": "Test-Modus gespeichert. Es wurde kein Befehl gesendet.", **saved})
+    form = request.form
+    updates = {}
+    if "inverter" in form:
+        updates["inverter"] = form.get("inverter")
+    if "real_mode" in form:
+        updates["real_mode"] = form.get("real_mode") in ("1", "true", "on")
+    if "target_grid_kw" in form:
+        updates["target_grid_kw"] = form.get("target_grid_kw") or 0
+    if "peak_cap_kw" in form:
+        updates["peak_cap_kw"] = form.get("peak_cap_kw") or 0
+    if "modbus_host" in form:
+        updates["modbus_host"] = form.get("modbus_host") or ""
+    if "modbus_port" in form:
+        updates["modbus_port"] = form.get("modbus_port") or 502
+    if "modbus_unit" in form:
+        updates["modbus_unit"] = form.get("modbus_unit") or 1
+    saved = save_settings(updates)
+    return jsonify({"ok": True, "message": "Gespeichert.", **saved})
 
 @app.route('/smartmeter', methods=['GET', 'POST'])
 def smartmeter():

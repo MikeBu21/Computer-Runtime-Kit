@@ -64,11 +64,27 @@ class HomeAssistantControlClient:
         return self._access_token
 
     def call_service(self, domain: str, service: str, entity_id: str) -> bool:
+        try:
+            self.call_service_data(domain, service, {"entity_id": entity_id})
+            return True
+        except Exception:
+            return False
+
+    def call_service_data(
+        self,
+        domain: str,
+        service: str,
+        data: Dict[str, Any],
+        return_response: bool = False,
+    ) -> Any:
+        """Service mit freiem Datenkörper. Bei return_response kommt die Antwort zurück."""
         token = self._get_access_token()
-        body = json.dumps({"entity_id": entity_id}).encode("utf-8")
+        url = f"{self.ha_url}/api/services/{domain}/{service}"
+        if return_response:
+            url += "?return_response"
         req = urllib.request.Request(
-            f"{self.ha_url}/api/services/{domain}/{service}",
-            data=body,
+            url,
+            data=json.dumps(data).encode("utf-8"),
             headers={
                 "Authorization": f"Bearer {token}",
                 "Content-Type": "application/json",
@@ -76,14 +92,14 @@ class HomeAssistantControlClient:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=15) as response:
-                return 200 <= response.status < 300
+            with urllib.request.urlopen(req, timeout=20) as response:
+                raw = response.read().decode("utf-8")
+                return json.loads(raw) if raw else None
         except urllib.error.HTTPError as exc:
             if exc.code == 401:
                 self._access_token = None
-            return False
-        except Exception:
-            return False
+            detail = exc.read().decode("utf-8", errors="replace")[:300]
+            raise OSError(detail or f"HTTP {exc.code}") from exc
 
     def get_state(self, entity_id: str) -> Optional[str]:
         """Live-Zustand einer Entity (None bei Fehler)."""
@@ -136,6 +152,11 @@ def ha_action_to_service(action: str, domain: str) -> Optional[str]:
             return "unlock"
         return "turn_on"
     return None
+
+
+def ha_service(domain: str, service: str, data: Dict[str, Any], return_response: bool = False) -> Any:
+    """Home-Assistant-Service aufrufen."""
+    return _get_client().call_service_data(domain, service, data, return_response=return_response)
 
 
 def read_ha_entity_state(entity_id: str) -> Optional[str]:

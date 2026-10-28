@@ -6,17 +6,65 @@
   {# VORLÄUFIG: nur für die Übernahme. Seite und Menüpunkt später wieder entfernen. #}
   <div class="page-header">
     <h2>🔋 Wechselrichterverknüpfung BMS</h2>
-    <p>Vorläufig — wird nach der Übernahme wieder entfernt</p>
+    <p>Welchen Wechselrichtertyp hast du? Jeder Typ schreibt in sein eigenes Register.</p>
+  </div>
+
+  <div class="panel" style="max-width: none;">
+    <form id="type_form" class="field-grid">
+      <div>
+        <label class="form-label" for="inverter">Wechselrichtertyp</label>
+        <select class="form-control" id="inverter" name="inverter">
+          {% for item in inverters %}
+            <option value="{{ item.id }}" data-note="{{ item.note }}" data-register="{{ item.register_text }}" {% if settings.inverter == item.id %}selected{% endif %}>{{ item.label }} — {{ item.register_text }}</option>
+          {% endfor %}
+        </select>
+        <p id="type_note" style="color: var(--muted); font-size: 0.82rem; margin: 0.45rem 0 0;"></p>
+      </div>
+    </form>
+    <div class="action-row">
+      <button type="submit" form="type_form" class="btn-primary-custom">Übernehmen</button>
+      <a class="btn-primary-custom" href="/wechselrichter-bms/netzbezug">Netzbezug öffnen</a>
+    </div>
+    <p id="save_hint" style="color: var(--muted); min-height: 1.2rem;"></p>
   </div>
 
   <div class="panel" style="max-width: 720px; border-color: rgba(255, 193, 7, 0.45);">
     <p style="margin: 0 0 0.75rem;">
       Platzhalter für die spätere Verknüpfung von Wechselrichter und BMS.
-      Noch keine Steuerung, nur die Stelle in der Oberfläche.
     </p>
-    <p style="color: var(--muted); margin: 0 0 0.75rem; font-size: 0.88rem;">
+    <p style="color: var(--muted); margin: 0; font-size: 0.88rem;">
       Markierung: TEMPORARY_BMS_TAKEOVER — dieses Feld ist nicht dauerhaft.
     </p>
-    <a class="btn-primary-custom" href="/wechselrichter-bms/netzbezug">Netzbezug öffnen</a>
   </div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+(function () {
+  const select = document.getElementById("inverter");
+  const note = document.getElementById("type_note");
+  const form = document.getElementById("type_form");
+  const hint = document.getElementById("save_hint");
+
+  function paintNote() {
+    const option = select.options[select.selectedIndex];
+    const extra = option.getAttribute("data-note") || "";
+    note.textContent = extra;
+  }
+
+  paintNote();
+  select.addEventListener("change", paintNote);
+  form.addEventListener("submit", async function (event) {
+    event.preventDefault();
+    const response = await fetch("/api/bms-netzbezug/settings", {
+      method: "POST",
+      body: new FormData(form),
+      credentials: "same-origin"
+    });
+    const data = await response.json();
+    hint.textContent = data.message || (data.ok ? "Gespeichert." : "Speichern fehlgeschlagen.");
+    hint.style.color = data.ok ? "var(--accent)" : "#f44336";
+  });
+})();
+</script>
 {% endblock %}

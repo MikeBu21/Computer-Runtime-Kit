@@ -5,7 +5,7 @@
 {% block content %}
   <div class="page-header">
     <h2>🔋 BMS · Netzbezug</h2>
-    <p>Live aus Home Assistant (Solarman). Der Testmodus rechnet nur und sendet keine Befehle an den Deye.</p>
+    <p>Live aus Home Assistant. Mit dem Häkchen geht der berechnete Wert in das Register des gewählten Typs.</p>
   </div>
 
   <div class="panel" style="max-width: none;">
@@ -31,29 +31,53 @@
   <div class="panel" style="max-width: none;">
     <form id="bms_form" class="field-grid">
       <div>
-        <label class="form-label" style="display:flex; gap:0.6rem; align-items:center;">
-          <input id="test_mode" name="test_mode" type="checkbox" value="1" {% if settings.test_mode %}checked{% endif %}>
-          Test-Modus
-        </label>
-        <div style="color: var(--muted); font-size: 0.78rem; margin-top: 0.3rem;">Ein: Rechnung und Log. Aus: nur die Live-Anzeige. Niemals ein Schreibbefehl.</div>
+        <label class="form-label" for="inverter">Wechselrichtertyp</label>
+        <select class="form-control" id="inverter" name="inverter">
+          {% for item in inverters %}
+            <option value="{{ item.id }}" data-note="{{ item.note }}" {% if settings.inverter == item.id %}selected{% endif %}>{{ item.label }} — {{ item.register_text }}</option>
+          {% endfor %}
+        </select>
+        <p id="inverter_note" style="color: var(--muted); font-size: 0.82rem; margin: 0.45rem 0 0;"></p>
       </div>
       <div>
-        <label class="form-label" for="target_grid_kw">Soll-Zukauf (kW)</label>
-        <input class="form-control" id="target_grid_kw" name="target_grid_kw" type="number" min="0" max="100" step="0.1" value="{{ settings.target_grid_kw }}" required>
+        <label class="form-label" style="display:flex; gap:0.6rem; align-items:center;">
+          <input id="real_mode" name="real_mode" type="checkbox" value="1" {% if settings.real_mode %}checked{% endif %}>
+          Ins Register schreiben
+        </label>
+        <div style="color: var(--muted); font-size: 0.78rem; margin-top: 0.3rem;">Ein: der berechnete Wert wird in das Register oben geschrieben. Aus: nur Anzeige.</div>
+      </div>
+      <div>
+        <label class="form-label" for="target_grid_kw">Zukauf/Einspeisung (kW)</label>
+        <input class="form-control" id="target_grid_kw" name="target_grid_kw" type="number" min="-100" max="100" step="0.1" value="{{ settings.target_grid_kw }}" required>
+        <div style="color: var(--muted); font-size: 0.78rem; margin-top: 0.3rem;">Plus ist Zukauf, Minus ist Einspeisung.</div>
       </div>
       <div>
         <label class="form-label" for="peak_cap_kw">Spitzenkappung ab (kW)</label>
         <input class="form-control" id="peak_cap_kw" name="peak_cap_kw" type="number" min="0" max="100" step="0.1" value="{{ settings.peak_cap_kw }}" required>
+      </div>
+      <div>
+        <label class="form-label" for="modbus_host">Modbus-Host</label>
+        <input class="form-control" id="modbus_host" name="modbus_host" type="text" value="{{ settings.modbus_host }}" placeholder="IP des Wechselrichters" autocomplete="off">
+        <div style="color: var(--muted); font-size: 0.78rem; margin-top: 0.3rem;">{% if settings.modbus_source %}Aus Home Assistant: {{ settings.modbus_source }}{% else %}Wird aus Home Assistant übernommen, sobald ein Wechselrichter verknüpft ist.{% endif %}</div>
+      </div>
+      <div>
+        <label class="form-label" for="modbus_port">Port</label>
+        <input class="form-control" id="modbus_port" name="modbus_port" type="number" min="1" max="65535" value="{{ settings.modbus_port }}" required>
+      </div>
+      <div>
+        <label class="form-label" for="modbus_unit">Unit-ID</label>
+        <input class="form-control" id="modbus_unit" name="modbus_unit" type="number" min="1" max="247" value="{{ settings.modbus_unit }}" required>
       </div>
     </form>
     <div class="action-row">
       <button type="submit" form="bms_form" class="btn-primary-custom">Übernehmen</button>
     </div>
     <p id="save_hint" style="color: var(--muted); min-height: 1.2rem;"></p>
+    <p id="write_text" style="margin: 0 0 0.75rem;"></p>
 
     <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.75rem;">
       <div class="stat-card" style="margin:0;">
-        <h5>Soll-Netzbezug</h5>
+        <h5>Zukauf/Einspeisung</h5>
         <p id="plan_target" style="margin:0; font-size: 1.4rem; font-weight: 700;">–</p>
       </div>
       <div class="stat-card" style="margin:0;">
@@ -68,8 +92,7 @@
   </div>
 
   <div class="panel" style="max-width: none;">
-    <h5 class="panel-title">Log der letzten Rechnungen</h5>
-    <p style="color: var(--muted); font-size: 0.85rem;">Nur was der Regler gerechnet hätte. Es wurde nichts an den Deye gesendet.</p>
+    <h5 class="panel-title">Log</h5>
     <ol id="sim_log" style="margin: 0; padding-left: 1.2rem; color: var(--text);"></ol>
   </div>
 {% endblock %}
@@ -79,10 +102,17 @@
 (function () {
   const form = document.getElementById("bms_form");
   const hint = document.getElementById("save_hint");
+  const select = document.getElementById("inverter");
+  const note = document.getElementById("inverter_note");
 
   function kw(value, digits) {
     if (value == null || Number.isNaN(Number(value))) return "–";
     return Number(value).toFixed(digits == null ? 1 : digits) + " kW";
+  }
+
+  function paintNote() {
+    const option = select.options[select.selectedIndex];
+    note.textContent = option ? (option.getAttribute("data-note") || "") : "";
   }
 
   function paint(data) {
@@ -98,21 +128,19 @@
     box.innerHTML = warnings.map(function (text) {
       return '<p style="margin:0.35rem 0; color:' + (blocked ? "#ffb300" : "var(--muted)") + ';">' + text + "</p>";
     }).join("");
-    const plan = data.plan;
-    if (!data.settings || !data.settings.test_mode || !plan) {
-      document.getElementById("plan_target").textContent = "Test aus";
-      document.getElementById("plan_battery").textContent = "Test aus";
-      document.getElementById("plan_peak").textContent = "Test aus";
-    } else {
-      document.getElementById("plan_target").textContent = kw(plan.target_grid_kw, 1);
-      document.getElementById("plan_battery").textContent = plan.battery_setpoint_kw == null ? "–" : (Number(plan.battery_setpoint_kw).toFixed(1) + " kW");
-      document.getElementById("plan_peak").textContent = plan.peak_shave_kw == null ? "–" : (Number(plan.peak_shave_kw).toFixed(1) + " kW");
-    }
+    const plan = data.plan || {};
+    const target = plan.target_grid_kw;
+    document.getElementById("plan_target").textContent = target == null || Number.isNaN(Number(target)) ? "–" : ((Number(target) > 0 ? "+" : "") + Number(target).toFixed(1) + " kW");
+    document.getElementById("plan_battery").textContent = plan.battery_setpoint_kw == null ? "–" : (Number(plan.battery_setpoint_kw).toFixed(1) + " kW");
+    document.getElementById("plan_peak").textContent = plan.peak_shave_kw == null ? "–" : (Number(plan.peak_shave_kw).toFixed(1) + " kW");
+    const write = document.getElementById("write_text");
+    write.textContent = plan.write_text || "";
+    write.style.color = plan.command_sent ? "var(--accent)" : "var(--muted)";
     const log = document.getElementById("sim_log");
     const rows = data.log || [];
     log.innerHTML = rows.length ? rows.map(function (row) {
       return "<li>" + (row.at || "").replace("T", " ") + " — " + (row.text || "") + "</li>";
-    }).join("") : "<li>Noch keine Rechnung.</li>";
+    }).join("") : "<li>Noch kein Eintrag.</li>";
   }
 
   async function refresh() {
@@ -124,7 +152,7 @@
   form.addEventListener("submit", async function (event) {
     event.preventDefault();
     const body = new FormData(form);
-    if (!document.getElementById("test_mode").checked) body.set("test_mode", "0");
+    if (!document.getElementById("real_mode").checked) body.set("real_mode", "0");
     const response = await fetch("/api/bms-netzbezug/settings", { method: "POST", body: body, credentials: "same-origin" });
     const data = await response.json();
     hint.textContent = data.message || (data.ok ? "Gespeichert." : "Speichern fehlgeschlagen.");
@@ -132,10 +160,15 @@
     if (data.ok) refresh();
   });
 
-  document.getElementById("test_mode").addEventListener("change", function () {
+  document.getElementById("real_mode").addEventListener("change", function () {
+    form.requestSubmit();
+  });
+  select.addEventListener("change", function () {
+    paintNote();
     form.requestSubmit();
   });
 
+  paintNote();
   refresh();
   setInterval(refresh, 5000);
 })();

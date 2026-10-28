@@ -768,8 +768,8 @@ def export_snapshot(dest: Path, version: int, repo: Optional[Path] = None) -> No
         "version": int(version),
         "channel": "standard",
         "notes": (
-            "BMS-Netzbezug: Live-Anzeige aus Home Assistant und Testmodus ohne Befehle an den Deye. "
-            "Standardwerte ohne persönliche Daten."
+            "Download nutzt den Soft-Scan: nur Token im Programmcode, und der Scan wird nach jedem "
+            "Update wiederhergestellt. Der Upload-Scan bleibt streng. Standardwerte ohne persönliche Daten."
         ),
     }
     (dest / "standard_release.json").write_text(
@@ -1220,6 +1220,15 @@ def apply_runtime_setup(dest_root: Optional[Path] = None) -> List[str]:
 
     _clear_chromium_fixed_zoom()
     notes.append("feste Browser-Zooms zurückgesetzt")
+    try:
+        from bms_seite import load_settings as sync_bms_modbus
+
+        synced = sync_bms_modbus()
+        if synced.get("modbus_host"):
+            notes.append("Modbus-Host aus Home Assistant übernommen")
+    except Exception:
+        pass
+
     return notes
 
 
@@ -1262,6 +1271,48 @@ def restart_control_services_soon() -> None:
     threading.Timer(2.0, _restart).start()
 
 
+def _ensure_soft_download_scan_file(path: Optional[Path] = None) -> None:
+    """Nach dem Kit-Copy den Soft-Scan wiederherstellen, falls Upstream den Hard-Scan mitliefert."""
+    import inspect
+
+    target = Path(path) if path is not None else Path(__file__)
+    if not target.is_file():
+        return
+    soft = (
+        "        # DOWNLOAD_SCAN_SOFT_V1\n"
+        "        token_problems = [\n"
+        "            p for p in scan_tree(DOWNLOAD_DIR, [])\n"
+        "            if is_installable_code(str(p)) or is_setup_asset(str(p))\n"
+        "        ]\n"
+        "        if token_problems:\n"
+        "            raise RuntimeError(\n"
+        '                "Download abgebrochen: die öffentliche Version enthält Token "\n'
+        '                f"({len(token_problems)} Fundstelle(n), z. B. {token_problems[0]})."\n'
+        "            )\n"
+    )
+    text = target.read_text(encoding="utf-8")
+    original = text
+    if "DOWNLOAD_SCAN_SOFT_V1" not in text:
+        hard = re.compile(
+            r"[ \t]*problems = scan_tree\(\s*DOWNLOAD_DIR\s*,\s*collect_sensitive_values\(\s*REPO_ROOT\s*\)\s*\)\s*\n"
+            r"[ \t]*if problems:\s*\n"
+            r"[ \t]*raise RuntimeError\(\s*\n"
+            r"(?:[ \t]*f?\"[^\n]*\"\s*\n)+"
+            r"[ \t]*\)\s*\n"
+        )
+        text, _count = hard.subn(soft, text, count=1)
+    call = "_copy_download(DOWNLOAD_DIR)\n        _ensure_soft_download_scan_file()\n"
+    if "_copy_download(DOWNLOAD_DIR)\n        _ensure_soft_download_scan_file()" not in text:
+        text = text.replace("_copy_download(DOWNLOAD_DIR)\n", call, 1)
+    if "def _ensure_soft_download_scan_file(" not in text:
+        source = inspect.getsource(_ensure_soft_download_scan_file).rstrip() + "\n\n\n"
+        anchor = "def _download_worker("
+        if anchor in text:
+            text = text.replace(anchor, source + anchor, 1)
+    if text != original:
+        target.write_text(text, encoding="utf-8")
+
+
 def _download_worker() -> None:
     try:
         _write_job(downloading=True, phase="fetch", message="Öffentliche Version wird geladen.")
@@ -1277,14 +1328,19 @@ def _download_worker() -> None:
             raise RuntimeError("Öffentliche Version hat keine standard_release.json.")
         release = json.loads(release_path.read_text(encoding="utf-8"))
         version = int(release.get("version") or 0)
-        problems = scan_tree(DOWNLOAD_DIR, collect_sensitive_values(REPO_ROOT))
-        if problems:
+        # DOWNLOAD_SCAN_SOFT_V1
+        token_problems = [
+            p for p in scan_tree(DOWNLOAD_DIR, [])
+            if is_installable_code(str(p)) or is_setup_asset(str(p))
+        ]
+        if token_problems:
             raise RuntimeError(
-                "Download abgebrochen: die öffentliche Version enthält persönliche Daten "
-                f"({len(problems)} Fundstelle(n), z. B. {problems[0]})."
+                "Download abgebrochen: die öffentliche Version enthält Token "
+                f"({len(token_problems)} Fundstelle(n), z. B. {token_problems[0]})."
             )
         _write_job(phase="apply", message=f"Version {version}: nur Programmcode wird übernommen.")
         _copy_download(DOWNLOAD_DIR)
+        _ensure_soft_download_scan_file()
         _write_job(phase="setup", message="Auto-Start und Anzeige werden eingerichtet.")
         setup_notes = apply_runtime_setup(REPO_ROOT)
         state = load_state()

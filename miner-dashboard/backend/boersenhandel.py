@@ -344,7 +344,12 @@ def price_view(exchange: str, range_mode: str, settings: Optional[Dict[str, Any]
         "upper_ct_kwh": stop,
         "action": charge_action(price, buy, stop, sell),
         "points": [
-            {"hour": s["hour"], "day": s["day"], "ct_kwh": s["ct_kwh"]}
+            {
+                "hour": s["hour"],
+                "day": s["day"],
+                "ct_kwh": s["ct_kwh"],
+                "time": int(s["start_ms"] / 1000),
+            }
             for s in shown
         ],
         "exchanges": [
@@ -388,10 +393,10 @@ def _year_base(bzn: str) -> Dict[str, Any]:
     cache_key = f"year:{bzn}"
     now = time.time()
     cached = _cache.get(cache_key)
-    if cached and now - cached["fetched"] < _YEAR_CACHE_SEC:
+    if cached and now - cached["fetched"] < _YEAR_CACHE_SEC and _year_payload_ready(cached.get("payload")):
         return cached["payload"]
     disk = _read_year_disk().get(cache_key)
-    if isinstance(disk, dict) and now - float(disk.get("fetched") or 0) < _YEAR_CACHE_SEC:
+    if isinstance(disk, dict) and now - float(disk.get("fetched") or 0) < _YEAR_CACHE_SEC and _year_payload_ready(disk.get("payload")):
         _cache[cache_key] = disk
         return disk["payload"]
 
@@ -429,7 +434,11 @@ def _year_base(bzn: str) -> Dict[str, Any]:
                     "ct_kwh": monthly[key],
                 }
             )
-    payload = {"typical_ct": typical, "recent": recent}
+    payload = {
+        "typical_ct": typical,
+        "recent": recent,
+        "monthly": {label: round(float(avg), 2) for label, avg in monthly.items()},
+    }
     packed = {"fetched": now, "payload": payload}
     _cache[cache_key] = packed
     store = _read_year_disk()
@@ -438,40 +447,58 @@ def _year_base(bzn: str) -> Dict[str, Any]:
     return payload
 
 
-def year_view(exchange: str) -> Dict[str, Any]:
-    """Monatsmittel: typisches Jahr (2023–2025). Ein Netzabruf pro Börsenzone."""
+def _year_payload_ready(payload: Any) -> bool:
+    return isinstance(payload, dict) and isinstance(payload.get("monthly"), dict) and bool(payload["monthly"])
+
+
+def _years_in(monthly: Dict[str, Any]) -> List[int]:
+    years = set()
+    for label in monthly:
+        text = str(label)
+        if len(text) >= 4 and text[:4].isdigit():
+            years.add(int(text[:4]))
+    return sorted(years)
+
+
+def year_view(exchange: str, year: Optional[int] = None) -> Dict[str, Any]:
+    """Monatsmittel eines Kalenderjahres. Die Rohdaten bleiben im Zwischenspeicher."""
     if exchange not in EXCHANGES:
         exchange = "awattar_at"
     spec = EXCHANGES[exchange]
     base = _year_base(spec["bzn"])
     extra = _markup(spec)
+    monthly = base.get("monthly") if isinstance(base.get("monthly"), dict) else {}
+    years = _years_in(monthly)
+    if not years:
+        years = [datetime.now(TZ).year]
+    if year not in years:
+        year = years[-1]
 
     def shift(value: Optional[float]) -> Optional[float]:
         if value is None:
             return None
         return round(float(value) + extra, 2)
 
-    typical = [shift(value) for value in base.get("typical_ct") or []]
-    summer_vals = [typical[month - 1] for month in (5, 6, 7, 8) if month - 1 < len(typical) and typical[month - 1] is not None]
-    winter_vals = [typical[month - 1] for month in (11, 12, 1, 2) if month - 1 < len(typical) and typical[month - 1] is not None]
+    values = [shift(monthly.get(f"{year}-{month:02d}")) for month in range(1, 13)]
+    summer_vals = [values[month - 1] for month in (5, 6, 7, 8) if values[month - 1] is not None]
+    winter_vals = [values[month - 1] for month in (11, 12, 1, 2) if values[month - 1] is not None]
     summer = round(sum(summer_vals) / len(summer_vals), 2) if summer_vals else None
     winter = round(sum(winter_vals) / len(winter_vals), 2) if winter_vals else None
-    recent = [
-        {"label": row["label"], "ct_kwh": shift(row.get("ct_kwh"))}
-        for row in base.get("recent") or []
-    ]
-    note = "Monatsmittel Day-Ahead in ct/kWh."
+    note = f"{year}: Monatsmittel Day-Ahead in ct/kWh."
     if extra:
         note += f" Inklusive {extra:.2f} ct/kWh Anbieteraufschlag."
     if summer is not None and winter is not None:
-        note += f" Typisches Jahr 2023–2025: Sommer (Mai–Aug) {summer:.1f} ct, Winter (Nov–Feb) {winter:.1f} ct."
+        note += f" Sommer (Mai–Aug) {summer:.1f} ct, Winter (Nov–Feb) {winter:.1f} ct."
+    elif summer is None or winter is None:
+        note += " Dieses Jahr ist noch nicht vollständig."
     return {
         "exchange": exchange,
         "exchange_label": spec["label"],
         "unit": "ct/kWh",
+        "year": year,
+        "years": years,
         "months": MONTH_LABELS,
-        "typical_ct": typical,
-        "recent": recent,
+        "typical_ct": values,
         "summer_ct": summer,
         "winter_ct": winter,
         "note": note,
