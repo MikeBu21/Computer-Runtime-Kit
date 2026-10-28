@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+
+{% block title %}Energiegemeinschaft{% endblock %}
+
+{% block content %}
+  <div class="page-header">
+    <h2>🤝 Energiegemeinschaftsprogramm</h2>
+    <p>Gemeinschaft wählen und Preise gegen die Börse halten — Datenquellen folgen, die Struktur steht</p>
+  </div>
+
+  <div class="panel" style="max-width: 920px;">
+    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0.75rem; margin-bottom: 1.1rem;" id="community_cards">
+      {% for item in communities %}
+      <button type="button" class="community-card{% if item.id == settings.community %} active{% endif %}" data-id="{{ item.id }}">
+        <strong>{{ item.label }}</strong>
+        <span>{{ item.region }}</span>
+      </button>
+      {% endfor %}
+    </div>
+
+    <div style="display:flex; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 1rem;">
+      <div class="stat-card" style="flex:1; min-width: 180px; margin:0;">
+        <h5>Status</h5>
+        <p id="flow_status" style="margin:0; font-size: 1.15rem; font-weight: 700;">–</p>
+      </div>
+      <div class="stat-card" style="flex:1; min-width: 180px; margin:0;">
+        <h5>Günstiger als Börse</h5>
+        <p id="cheaper_hours" style="margin:0; font-size: 1.15rem; font-weight: 700;">–</p>
+      </div>
+    </div>
+
+    <p id="placeholder_note" style="color: var(--muted); font-size: 0.88rem;"></p>
+    <div style="height: 300px;">
+      <canvas id="compare_chart"></canvas>
+    </div>
+  </div>
+
+  <style>
+    .community-card {
+      text-align: left;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 0.9rem 1rem;
+      color: var(--text);
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+    .community-card span { color: var(--muted); font-size: 0.8rem; }
+    .community-card.active {
+      border-color: rgba(0, 230, 118, 0.55);
+      box-shadow: inset 0 0 0 1px rgba(0, 230, 118, 0.25);
+    }
+  </style>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+(function () {
+  let chart = null;
+  let community = "{{ settings.community }}";
+
+  function draw(points) {
+    const labels = points.map(function (p) { return p.hour; });
+    const market = points.map(function (p) { return p.market_ct_kwh; });
+    const group = points.map(function (p) { return p.community_ct_kwh; });
+    if (!chart) {
+      chart = new Chart(document.getElementById("compare_chart"), {
+        type: "line",
+        data: {
+          labels: labels,
+          datasets: [
+            { label: "Börse ct/kWh", data: market, borderColor: "#ffb300", tension: 0.25, pointRadius: 2 },
+            { label: "Gemeinschaft ct/kWh (Beispiel)", data: group, borderColor: "#00e676", tension: 0.25, pointRadius: 2 }
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { labels: { color: "#8b9cb3" } } },
+          scales: {
+            x: { ticks: { color: "#8b9cb3", maxTicksLimit: 12 }, grid: { color: "rgba(255,255,255,0.06)" } },
+            y: { ticks: { color: "#8b9cb3" }, grid: { color: "rgba(255,255,255,0.06)" }, title: { display: true, text: "ct/kWh", color: "#8b9cb3" } }
+          }
+        }
+      });
+      return;
+    }
+    chart.data.labels = labels;
+    chart.data.datasets[0].data = market;
+    chart.data.datasets[1].data = group;
+    chart.update();
+  }
+
+  async function refresh() {
+    const response = await fetch("/api/energiegemeinschaft?community=" + encodeURIComponent(community), { credentials: "same-origin" });
+    const data = await response.json();
+    document.getElementById("flow_status").textContent = data.status_label || "–";
+    document.getElementById("cheaper_hours").textContent = (data.cheaper_hours == null ? "–" : data.cheaper_hours + " Stunden");
+    document.getElementById("placeholder_note").textContent = data.note || "";
+    draw(data.points || []);
+  }
+
+  document.querySelectorAll(".community-card").forEach(function (card) {
+    card.addEventListener("click", async function () {
+      community = card.dataset.id;
+      document.querySelectorAll(".community-card").forEach(function (el) { el.classList.remove("active"); });
+      card.classList.add("active");
+      const body = new FormData();
+      body.set("community", community);
+      await fetch("/api/energiegemeinschaft/settings", { method: "POST", body: body, credentials: "same-origin" });
+      refresh();
+    });
+  });
+
+  refresh();
+})();
+</script>
+{% endblock %}

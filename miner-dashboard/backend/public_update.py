@@ -85,6 +85,8 @@ SKIP_FILE_NAMES = {
     "telegram_pcs_latch.json",
     "telegram_shutdown_latch.json",
     "grundverbrauch_rechner.json",
+    "boersenhandel_settings.json",
+    "energiegemeinschaft_settings.json",
     "ip_recovery_notifications.json",
     "daten.json",
 }
@@ -763,9 +765,9 @@ def export_snapshot(dest: Path, version: int, repo: Optional[Path] = None) -> No
         "version": int(version),
         "channel": "standard",
         "notes": (
-            "Seitenleiste wieder im klassischen Stil mit Icons; "
-            "Update-Zähler nur am Updates-Button; Neuigkeiten-Menü entfernt; "
-            "Netzwerkstatus bleibt. Standardwerte ohne persönliche Daten."
+            "Börsenhandel wie go-e Controller (aWATTar AT/DE, ct/kWh, Schwellwerte), "
+            "Energiegemeinschaft als Platzhalter, vorläufige Wechselrichter-BMS-Seite. "
+            "Standardwerte ohne persönliche Daten."
         ),
     }
     (dest / "standard_release.json").write_text(

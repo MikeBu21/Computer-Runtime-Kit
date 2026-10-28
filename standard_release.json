@@ -1,5 +1,5 @@
 {
-  "version": 9,
+  "version": 10,
   "channel": "standard",
-  "notes": "Seitenleiste wieder im klassischen Stil mit Icons; Update-Zähler nur am Updates-Button; Neuigkeiten-Menü entfernt; Netzwerkstatus bleibt. Standardwerte ohne persönliche Daten."
+  "notes": "Börsenhandel wie go-e Controller (aWATTar AT/DE, ct/kWh, Schwellwerte), Energiegemeinschaft als Platzhalter, vorläufige Wechselrichter-BMS-Seite. Standardwerte ohne persönliche Daten."
 }

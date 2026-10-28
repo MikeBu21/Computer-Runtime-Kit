@@ -155,6 +155,13 @@
       box-shadow: 0 0 10px rgba(0, 230, 118, 0.35);
     }
 
+    .nav-spark {
+      margin-left: auto;
+      width: 52px;
+      height: 16px;
+      flex: 0 0 auto;
+    }
+
     .main-content {
       flex: 1;
       overflow-x: auto;
@@ -444,6 +451,10 @@
         <a class="nav-link nav-link-sub{% if request.path == '/zeitsteuerung' %} active{% endif %}" href="/zeitsteuerung">⏱ Zeitsteuerung</a>
         <a class="nav-link nav-link-sub{% if request.path == '/telegrambot' %} active{% endif %}" href="/telegrambot">💬 Telegram Bot</a>
         <a class="nav-link nav-link-sub{% if request.path == '/steuerungsalgorithmus' %} active{% endif %}" href="/steuerungsalgorithmus">🧠 Steuerungsalgorithmus</a>
+        <a class="nav-link nav-link-sub{% if request.path == '/boersenhandel' %} active{% endif %}" href="/boersenhandel">📈 Börsenhandel<canvas id="nav_price_spark" class="nav-spark" width="52" height="16" aria-hidden="true"></canvas></a>
+        <a class="nav-link nav-link-sub{% if request.path == '/energiegemeinschaft' %} active{% endif %}" href="/energiegemeinschaft">🤝 Energiegemeinschaft</a>
+        {# VORLÄUFIG TEMPORARY_BMS_TAKEOVER: Menüpunkt nach der Übernahme wieder entfernen. #}
+        <a class="nav-link nav-link-sub{% if request.path == '/wechselrichter-bms' %} active{% endif %}" href="/wechselrichter-bms">🔋 Wechselrichter BMS</a>
         <a class="nav-link nav-link-sub{% if request.path == '/grundverbrauchsrechner' %} active{% endif %}" href="/grundverbrauchsrechner">🧮 Grundverbrauchsrechner</a>
         <a class="nav-link nav-link-sub{% if request.path == '/statistik-konfigurieren' %} active{% endif %}" href="/statistik-konfigurieren">📈 Statistik konfigurieren</a>
         <a class="nav-link nav-link-sub{% if request.path == '/fehlerberichte' %} active{% endif %}" href="/fehlerberichte">📋 Fehlerberichte</a>
@@ -533,8 +544,39 @@
         });
       }
 
+      function paintPriceSpark() {
+        const canvas = document.getElementById("nav_price_spark");
+        if (!canvas) return;
+        fetch("/api/boersenhandel/sparkline", { credentials: "same-origin" })
+          .then(function (response) { return response.json(); })
+          .then(function (data) {
+            const values = data.points || [];
+            if (!values.length) return;
+            const ctx = canvas.getContext("2d");
+            const w = canvas.width;
+            const h = canvas.height;
+            const min = Math.min.apply(null, values);
+            const max = Math.max.apply(null, values);
+            const span = (max - min) || 1;
+            ctx.clearRect(0, 0, w, h);
+            ctx.beginPath();
+            ctx.strokeStyle = "#00e676";
+            ctx.lineWidth = 1.5;
+            values.forEach(function (value, index) {
+              const x = values.length === 1 ? w / 2 : (index / (values.length - 1)) * (w - 2) + 1;
+              const y = h - 2 - ((value - min) / span) * (h - 4);
+              if (index === 0) ctx.moveTo(x, y);
+              else ctx.lineTo(x, y);
+            });
+            ctx.stroke();
+          })
+          .catch(function () {});
+      }
+
       document.addEventListener("DOMContentLoaded", function () {
         bindAjaxForms();
+        paintPriceSpark();
+        setInterval(paintPriceSpark, 60000);
         const params = new URLSearchParams(window.location.search);
         const hinweis = params.get("hinweis");
         if (hinweis) {

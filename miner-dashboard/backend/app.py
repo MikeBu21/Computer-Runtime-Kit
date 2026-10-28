@@ -249,6 +249,101 @@ def _network_info() -> dict:
 def netzwerk_page():
     return render_template('netzwerk.html', network=_network_info())
 
+
+@app.route('/boersenhandel')
+def boersenhandel_page():
+    from boersenhandel import EXCHANGES, load_settings
+
+    settings = load_settings()
+    exchanges = [{"id": key, "label": spec["label"]} for key, spec in EXCHANGES.items()]
+    return render_template("boersenhandel.html", settings=settings, exchanges=exchanges)
+
+
+@app.route('/api/boersenhandel/prices')
+def api_boersenhandel_prices():
+    from boersenhandel import load_settings, price_view
+
+    settings = load_settings()
+    exchange = (request.args.get("exchange") or settings["exchange"]).strip()
+    range_mode = (request.args.get("range") or "24h").strip()
+    try:
+        payload = price_view(exchange, range_mode, settings)
+    except Exception as exc:
+        return jsonify({"ok": False, "message": str(exc) or "Börsenpreis nicht erreichbar."}), 502
+    return jsonify({"ok": True, **payload})
+
+
+@app.route('/api/boersenhandel/sparkline')
+def api_boersenhandel_sparkline():
+    from boersenhandel import sparkline
+
+    try:
+        points = sparkline()
+    except Exception:
+        points = []
+    return jsonify({"ok": True, "points": points})
+
+
+@app.route('/api/boersenhandel/settings', methods=['POST'])
+def api_boersenhandel_settings():
+    from boersenhandel import save_settings
+
+    try:
+        saved = save_settings(
+            (request.form.get("exchange") or "").strip(),
+            request.form.get("lower_ct_kwh") or 0,
+            request.form.get("upper_ct_kwh") or 0,
+        )
+    except ValueError as exc:
+        return jsonify({"ok": False, "message": str(exc)}), 400
+    return jsonify({"ok": True, "message": "Börse und Schwellwerte gespeichert.", **saved})
+
+
+@app.route('/energiegemeinschaft')
+def energiegemeinschaft_page():
+    from energiegemeinschaft import COMMUNITIES, load_settings
+
+    settings = load_settings()
+    communities = [
+        {"id": key, "label": item["label"], "region": item["region"]}
+        for key, item in COMMUNITIES.items()
+    ]
+    return render_template("energiegemeinschaft.html", settings=settings, communities=communities)
+
+
+@app.route('/api/energiegemeinschaft')
+def api_energiegemeinschaft():
+    from boersenhandel import load_settings as load_market, price_view
+    from energiegemeinschaft import comparison, load_settings
+
+    settings = load_settings()
+    community = (request.args.get("community") or settings["community"]).strip()
+    market = load_market()
+    try:
+        prices = price_view(market["exchange"], "day", market)
+        points = prices.get("points") or []
+    except Exception:
+        points = []
+    payload = comparison(points, community)
+    return jsonify({"ok": True, **payload})
+
+
+@app.route('/api/energiegemeinschaft/settings', methods=['POST'])
+def api_energiegemeinschaft_settings():
+    from energiegemeinschaft import save_settings
+
+    try:
+        saved = save_settings((request.form.get("community") or "").strip())
+    except ValueError as exc:
+        return jsonify({"ok": False, "message": str(exc)}), 400
+    return jsonify({"ok": True, "message": "Energiegemeinschaft gespeichert.", **saved})
+
+
+@app.route('/wechselrichter-bms')
+def wechselrichter_bms_page():
+    # VORLÄUFIG TEMPORARY_BMS_TAKEOVER: Route und Seite nach der Übernahme entfernen.
+    return render_template("wechselrichter_bms.html")
+
 @app.route('/smartmeter', methods=['GET', 'POST'])
 def smartmeter():
     settings = load_settings()  # <-- DAS FEHLT aktuell bei GET
