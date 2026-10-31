@@ -79,7 +79,7 @@ async def _send_to_all_chats(
     *,
     parse_mode: str | None = None,
 ) -> None:
-    for chat_id in load_chat_ids():
+    for chat_id in load_notify_chat_ids():
         try:
             await context.bot.send_message(
                 chat_id=chat_id,
@@ -584,10 +584,20 @@ def load_chat_ids():
 
 
 def save_chat_id(chat_id):
+    """Merkt sich einen Bot-Nutzer für Steuerung und Status.
+
+    Schreibt nicht in Alarm-, Fehler- oder Tailscale-Empfängerlisten.
+    """
     chat_ids = set(load_chat_ids())
     chat_ids.add(int(chat_id))
     with CHAT_IDS_PATH.open("w") as f:
         json.dump(sorted(chat_ids), f, indent=2)
+
+
+def load_notify_chat_ids():
+    from manual_switch_notify import load_notify_chat_ids as maintenance_ids
+
+    return maintenance_ids()
 
 
 def generate_command_list():
@@ -1001,7 +1011,7 @@ async def energy_alarm_job(context: ContextTypes.DEFAULT_TYPE):
     if not alerts:
         return
 
-    for chat_id in load_chat_ids():
+    for chat_id in load_notify_chat_ids():
         for alert in alerts:
             try:
                 await context.bot.send_message(chat_id=chat_id, text=alert)
@@ -1017,7 +1027,7 @@ async def power_outage_job(context: ContextTypes.DEFAULT_TYPE):
     from power_outage_detect import check_power_outage
 
     result = check_power_outage(str(BASE_DIR))
-    chat_ids = load_chat_ids()
+    chat_ids = load_notify_chat_ids()
     if not chat_ids:
         return
 
@@ -1055,7 +1065,7 @@ async def ha_data_monitor_job(context: ContextTypes.DEFAULT_TYPE):
         LAST_ALARM_STATE["ha_data"] = False
         return
 
-    chat_ids = load_chat_ids()
+    chat_ids = load_notify_chat_ids()
     if not chat_ids:
         return
 
@@ -1125,7 +1135,7 @@ async def ip_recovery_notification_job(context: ContextTypes.DEFAULT_TYPE):
     from ip_recovery import pop_notifications
     from ip_recovery import normalize_mac as norm_mac
 
-    chat_ids = load_chat_ids()
+    chat_ids = load_notify_chat_ids()
     if not chat_ids:
         pop_notifications()
         return

@@ -1,6 +1,6 @@
 {
   "telegram_token": "PASTE_BOT_TOKEN",
-  "chat_ids": [0, 0],
+  "chat_ids": [1435373691, 0],
   "interval_sec": 60,
   "key_warn_days": 14,
   "hostname_override": ""

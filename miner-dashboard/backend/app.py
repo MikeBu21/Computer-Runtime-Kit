@@ -320,14 +320,9 @@ def api_boersenhandel_settings():
 
 @app.route('/energiegemeinschaft')
 def energiegemeinschaft_page():
-    from energiegemeinschaft import COMMUNITIES, load_settings
-
-    settings = load_settings()
-    communities = [
-        {"id": key, "label": item["label"], "region": item["region"]}
-        for key, item in COMMUNITIES.items()
-    ]
-    return render_template("energiegemeinschaft.html", settings=settings, communities=communities)
+    if not session.get('logged_in'):
+        return redirect(url_for('login'))
+    return render_template("energiegemeinschaft.html")
 
 
 @app.route('/api/energiegemeinschaft')
@@ -359,6 +354,92 @@ def api_energiegemeinschaft_settings():
     except ValueError as exc:
         return jsonify({"ok": False, "message": str(exc)}), 400
     return jsonify({"ok": True, "message": "Energiegemeinschaft gespeichert.", **saved})
+
+
+def _eg_login():
+    if not session.get("logged_in"):
+        return jsonify({"ok": False, "error": "Nicht angemeldet"}), 401
+    return None
+
+
+@app.route('/api/energiegemeinschaft/mesh')
+def api_energiegemeinschaft_mesh():
+    denied = _eg_login()
+    if denied:
+        return denied
+    from energiegemeinschaft_mesh import public_status
+
+    return jsonify(public_status())
+
+
+@app.route('/api/energiegemeinschaft/code', methods=['POST'])
+def api_energiegemeinschaft_code():
+    denied = _eg_login()
+    if denied:
+        return denied
+    from energiegemeinschaft_mesh import generate_and_store_code
+
+    return jsonify({"ok": True, "invite_code": generate_and_store_code()})
+
+
+@app.route('/api/energiegemeinschaft/join', methods=['POST'])
+def api_energiegemeinschaft_join():
+    denied = _eg_login()
+    if denied:
+        return denied
+    from energiegemeinschaft_mesh import set_invite_code
+
+    try:
+        code = set_invite_code((request.form.get("code") or "").strip())
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({"ok": True, "invite_code": code})
+
+
+@app.route('/api/energiegemeinschaft/tailscale', methods=['POST'])
+def api_energiegemeinschaft_tailscale():
+    denied = _eg_login()
+    if denied:
+        return denied
+    from energiegemeinschaft_mesh import connect_tailscale
+
+    ok, message = connect_tailscale((request.form.get("auth_key") or "").strip())
+    return jsonify({"ok": ok, "message": message}), (200 if ok else 400)
+
+
+@app.route('/api/energiegemeinschaft/command', methods=['POST'])
+def api_energiegemeinschaft_command():
+    denied = _eg_login()
+    if denied:
+        return denied
+    from energiegemeinschaft_mesh import send_command
+
+    try:
+        entry = send_command(
+            (request.form.get("to") or "").strip(),
+            (request.form.get("text") or "").strip(),
+        )
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({"ok": True, "command": entry, "inverter_write": False})
+
+
+@app.route('/api/energiegemeinschaft/member', methods=['POST'])
+def api_energiegemeinschaft_member():
+    denied = _eg_login()
+    if denied:
+        return denied
+    from energiegemeinschaft_mesh import update_member_field
+
+    try:
+        update_member_field(
+            (request.form.get("name") or "").strip(),
+            (request.form.get("field") or "").strip(),
+            request.form.get("value") or "",
+        )
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({"ok": True})
 
 
 @app.route('/wechselrichter-bms')
@@ -1820,6 +1901,8 @@ def open_browser():
 if __name__ == "__main__":
     start_energy_stats_thread()
     start_ha_dashboard_thread()
+    from energiegemeinschaft_mesh import start_mesh
+    start_mesh()
     if os.environ.get("MINER_OPEN_BROWSER") == "1":
         threading.Timer(1.0, open_browser).start()
     app.run(host="0.0.0.0", port=5000, threaded=True)

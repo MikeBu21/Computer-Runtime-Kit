@@ -53,12 +53,18 @@ def save_settings(community: str, enabled: bool | None = None) -> Dict[str, Any]
     if community not in COMMUNITIES:
         raise ValueError("Unbekannte Energiegemeinschaft.")
     current = load_settings()
-    payload = {
-        "community": community,
-        "enabled": current["enabled"] if enabled is None else bool(enabled),
-    }
-    SETTINGS_FILE.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-    return payload
+    raw: Dict[str, Any] = {}
+    if SETTINGS_FILE.is_file():
+        try:
+            loaded = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                raw = loaded
+        except (OSError, json.JSONDecodeError):
+            raw = {}
+    raw["community"] = community
+    raw["enabled"] = current["enabled"] if enabled is None else bool(enabled)
+    SETTINGS_FILE.write_text(json.dumps(raw, indent=2) + "\n", encoding="utf-8")
+    return {"community": raw["community"], "enabled": raw["enabled"]}
 
 
 def comparison(exchange_points: List[Dict[str, Any]], community_id: str) -> Dict[str, Any]:

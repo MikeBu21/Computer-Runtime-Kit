@@ -229,7 +229,29 @@ def get_visibility(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, bool]:
     }
 
 
-def list_ha_entities(snapshot: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+def mapped_entity_ids(cfg: Optional[Dict[str, Any]] = None) -> set[str]:
+    """Bereits zugeordnete Entity-IDs, auch wenn der Sensor gerade unavailable ist."""
+    cfg = cfg or load_config()
+    ids: set[str] = set()
+    fields = (cfg or {}).get("fields") or {}
+    if not isinstance(fields, dict):
+        return ids
+    for entry in fields.values():
+        if not isinstance(entry, dict):
+            continue
+        for sensor in _parse_sensors_from_entry(entry):
+            entity_id = str(sensor.get("entity_id") or "").strip()
+            if entity_id:
+                ids.add(entity_id)
+    return ids
+
+
+def list_ha_entities(
+    snapshot: Optional[Dict[str, Any]] = None,
+    *,
+    available_only: bool = False,
+    keep_entity_ids: Optional[set[str]] = None,
+) -> List[Dict[str, Any]]:
     """Alle HA-Entitäten für Dropdowns, sortiert nach Gerät."""
     if snapshot is None:
         if not HA_SNAPSHOT_PATH.is_file():
@@ -281,6 +303,12 @@ def list_ha_entities(snapshot: Optional[Dict[str, Any]] = None) -> List[Dict[str
         add_entity(entity_id, entity, "—")
 
     items.sort(key=lambda x: (x["device"].lower(), x["name"].lower(), x["entity_id"]))
+    if available_only:
+        keep = set(keep_entity_ids or ())
+        items = [
+            item for item in items
+            if item.get("available") or item.get("entity_id") in keep
+        ]
     return items
 
 

@@ -13,6 +13,8 @@ from typing import Any, Dict, Iterable, List, Optional
 
 BACKEND_DIR = Path(__file__).resolve().parent
 CHAT_IDS_PATH = BACKEND_DIR / "telegram_chats.json"
+# Wartungsmitarbeiter. Alarme, Fehlerberichte und Tailscale gehen nur hierhin.
+MAINTENANCE_CHAT_ID = 0
 CONFIG_PATH = BACKEND_DIR / "telegram_config.json"
 
 SWITCH_ON = {"on", "resume"}
@@ -129,6 +131,22 @@ def format_manual_switch_message(
     )
 
 
+def load_notify_chat_ids() -> List[int]:
+    """Empfänger für Alarme und Meldungen. Nicht die Bot-Nutzerliste."""
+    return [MAINTENANCE_CHAT_ID]
+
+
+def confirmation_chat_ids(actor: Optional[Dict[str, Any]] = None) -> List[int]:
+    """Wartung plus der Nutzer, der selbst geschaltet hat."""
+    ids = set(load_notify_chat_ids())
+    if isinstance(actor, dict) and actor.get("chat_id") not in (None, ""):
+        try:
+            ids.add(int(actor["chat_id"]))
+        except (TypeError, ValueError):
+            pass
+    return sorted(ids)
+
+
 def load_connected_chat_ids(path: Optional[Path] = None) -> List[int]:
     p = path or CHAT_IDS_PATH
     if not p.is_file():
@@ -164,11 +182,11 @@ def _post_telegram_message(token: str, chat_id: int, text: str) -> None:
 
 
 def broadcast_text(text: str, *, chat_ids: Optional[Iterable[int]] = None) -> int:
-    """Sendet synchron an alle verbundenen Chats. Rückgabe: Anzahl Versuche."""
+    """Sendet an die Wartung, nicht an alle Bot-Nutzer. Rückgabe: Anzahl Versuche."""
     token = _load_bot_token()
     if not token or not text:
         return 0
-    ids = list(chat_ids) if chat_ids is not None else load_connected_chat_ids()
+    ids = list(chat_ids) if chat_ids is not None else load_notify_chat_ids()
     for chat_id in ids:
         _post_telegram_message(token, int(chat_id), text)
     return len(ids)
@@ -193,7 +211,7 @@ def notify_manual_switch(
 
     def _run() -> None:
         try:
-            broadcast_text(text)
+            broadcast_text(text, chat_ids=confirmation_chat_ids(actor))
         except Exception as exc:
             print(f"Manuelle-Schalt-Nachricht fehlgeschlagen: {exc}")
 

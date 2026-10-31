@@ -1,5 +1,5 @@
 {
-  "version": 14,
+  "version": 15,
   "channel": "standard",
   "notes": "Download nutzt den Soft-Scan: nur Token im Programmcode, und der Scan wird nach jedem Update wiederhergestellt. Der Upload-Scan bleibt streng. Standardwerte ohne persönliche Daten."
 }

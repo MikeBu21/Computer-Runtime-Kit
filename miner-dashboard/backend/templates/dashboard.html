@@ -2613,7 +2613,12 @@
       if (!overlay) return;
       if (titleEl) titleEl.textContent = title || "Sensoren zuordnen";
       if (subtitleEl) subtitleEl.textContent = "Sensoren wählen und mit +/− kombinieren — Werte werden live summiert";
-      if (statusEl) { statusEl.textContent = ""; statusEl.className = "flow-config-status"; }
+      if (statusEl) {
+        statusEl.textContent = "Sensoren werden geladen…";
+        statusEl.className = "flow-config-status";
+      }
+      overlay.classList.add("open");
+      overlay.setAttribute("aria-hidden", "false");
 
       Promise.all([
         fetch("/api/ha/mapping").then(r => r.json()),
@@ -2671,6 +2676,7 @@
             };
           });
           renderFlowConfigSections();
+          if (statusEl) statusEl.textContent = "";
           overlay.classList.add("open");
           overlay.setAttribute("aria-hidden", "false");
         })

@@ -4,118 +4,161 @@
 
 {% block content %}
   <div class="page-header">
-    <h2>🤝 Energiegemeinschaftsprogramm</h2>
-    <p>Gemeinschaft wählen und Preise gegen die Börse halten — Datenquellen folgen, die Struktur steht</p>
+    <h2>🤝 Energiegemeinschaft</h2>
+    <p>Einmal pro Minute Einspeisung und Speicherstand, direkt über Tailscale.</p>
   </div>
 
-  <div class="panel" style="max-width: 920px;">
-    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0.75rem; margin-bottom: 1.1rem;" id="community_cards">
-      {% for item in communities %}
-      <button type="button" class="community-card{% if item.id == settings.community %} active{% endif %}" data-id="{{ item.id }}">
-        <strong>{{ item.label }}</strong>
-        <span>{{ item.region }}</span>
-      </button>
-      {% endfor %}
+  <section class="panel eg-invite">
+    <h3>Einladungscode</h3>
+    <p class="eg-hint">Wer den Code hat, kann mitsenden und empfangen. Er bleibt auf diesem Pi und geht nicht ins Update.</p>
+    <p class="eg-code" id="eg_code">noch keiner</p>
+    <div class="eg-row">
+      <button type="button" class="btn-secondary-custom" id="eg_generate">Code erzeugen</button>
+      <button type="button" class="btn-secondary-custom" id="eg_copy">Kopieren</button>
     </div>
+    <label class="form-label" for="eg_join">Code einer anderen Steuerung</label>
+    <input class="form-control eg-join" id="eg_join" placeholder="Code einfügen, dann verstehen sich die Pis" autocomplete="off">
+    <p class="eg-hint" id="eg_code_msg"></p>
+  </section>
 
-    <div style="display:flex; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 1rem;">
-      <div class="stat-card" style="flex:1; min-width: 180px; margin:0;">
-        <h5>Status</h5>
-        <p id="flow_status" style="margin:0; font-size: 1.15rem; font-weight: 700;">–</p>
+  <div class="eg-wrap">
+    <section class="eg-hero">
+      <div>
+        <p class="eg-kicker">Summe Einspeisung</p>
+        <p class="eg-sum" id="eg_sum">– kW</p>
+        <p class="eg-sub" id="eg_fresh">Noch keine Minute angekommen</p>
       </div>
-      <div class="stat-card" style="flex:1; min-width: 180px; margin:0;">
-        <h5>Günstiger als Börse</h5>
-        <p id="cheaper_hours" style="margin:0; font-size: 1.15rem; font-weight: 700;">–</p>
-      </div>
-    </div>
+      <div class="eg-net" id="eg_net">Tailscale wird gelesen…</div>
+    </section>
 
-    <p id="placeholder_note" style="color: var(--muted); font-size: 0.88rem;"></p>
-    <div style="height: 300px;">
-      <canvas id="compare_chart"></canvas>
-    </div>
+    <section class="panel">
+      <h3>Tailscale</h3>
+      <p class="eg-hint">Tailscale ist nur die Netzwerkschicht. Es gibt ein Konto, das von Michael. Alle Pis sind Geräte dieses Kontos. Niemand legt hier ein eigenes Tailscale-Konto an.</p>
+      <label class="form-label" for="eg_key">Diesen Pi als Gerät in Michaels Konto</label>
+      <div class="eg-row">
+        <input class="form-control" id="eg_key" type="password" placeholder="Auth-Key aus Michaels Konto, ohne Markierung" autocomplete="off">
+        <button type="button" class="btn-save" id="eg_up">Als Gerät verbinden</button>
+      </div>
+      <p class="eg-hint" id="eg_key_msg"></p>
+    </section>
+
+    <section>
+      <div class="eg-grid" id="eg_grid"></div>
+    </section>
+
   </div>
 
   <style>
-    .community-card {
-      text-align: left;
-      background: var(--surface-2);
-      border: 1px solid var(--border);
-      border-radius: 16px;
-      padding: 0.9rem 1rem;
-      color: var(--text);
-      display: flex;
-      flex-direction: column;
-      gap: 0.25rem;
+    .eg-wrap { display: flex; flex-direction: column; gap: 1rem; max-width: 980px; }
+    .eg-invite { width: 100%; max-width: none; box-sizing: border-box; }
+    .eg-hero {
+      display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap;
+      padding: 1.1rem 1.2rem; border-radius: 18px;
+      background: linear-gradient(160deg, rgba(0,230,118,0.16), rgba(15,20,27,0.92));
+      border: 1px solid rgba(0,230,118,0.28);
     }
-    .community-card span { color: var(--muted); font-size: 0.8rem; }
-    .community-card.active {
-      border-color: rgba(0, 230, 118, 0.55);
-      box-shadow: inset 0 0 0 1px rgba(0, 230, 118, 0.25);
+    .eg-kicker { margin: 0; color: var(--muted); letter-spacing: 0.06em; text-transform: uppercase; font-size: 0.75rem; }
+    .eg-sum { margin: 0.15rem 0 0; font-size: 2.4rem; font-weight: 800; color: #fff; }
+    .eg-sub, .eg-hint, .eg-net { color: var(--muted); font-size: 0.86rem; }
+    .eg-code { font-size: 1.8rem; font-weight: 800; letter-spacing: 0.08em; margin: 0.4rem 0; color: #00e676; }
+    .eg-row { display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center; }
+    .eg-row .form-control { max-width: 280px; }
+    .eg-join { display: block; width: 100%; max-width: none; box-sizing: border-box; margin-top: 0.35rem; }
+    .eg-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 0.75rem; }
+    .eg-card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 0.9rem 1rem;
     }
+    .eg-card.fresh { border-color: rgba(0,230,118,0.45); }
+    .eg-card h4 { margin: 0 0 0.35rem; display: flex; justify-content: space-between; gap: 0.4rem; }
+    .eg-dot { width: 0.65rem; height: 0.65rem; border-radius: 50%; background: #607d8b; display: inline-block; }
+    .eg-card.fresh .eg-dot { background: #00e676; box-shadow: 0 0 8px #00e676; }
+    .eg-kw { font-size: 1.7rem; font-weight: 800; margin: 0; }
+    .eg-cmds { list-style: none; padding: 0; margin: 0.8rem 0 0; }
+    .eg-cmds li { padding: 0.35rem 0; border-top: 1px solid var(--border); font-size: 0.88rem; }
   </style>
 {% endblock %}
 
 {% block extra_scripts %}
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script>
 (function () {
-  let chart = null;
-  let community = "{{ settings.community }}";
+  const codeEl = document.getElementById("eg_code");
+  const msg = document.getElementById("eg_code_msg");
+  const keyMsg = document.getElementById("eg_key_msg");
 
-  function draw(points) {
-    const labels = points.map(function (p) { return p.hour; });
-    const market = points.map(function (p) { return p.market_ct_kwh; });
-    const group = points.map(function (p) { return p.community_ct_kwh; });
-    if (!chart) {
-      chart = new Chart(document.getElementById("compare_chart"), {
-        type: "line",
-        data: {
-          labels: labels,
-          datasets: [
-            { label: "Börse ct/kWh", data: market, borderColor: "#ffb300", tension: 0.25, pointRadius: 2 },
-            { label: "Gemeinschaft ct/kWh (Beispiel)", data: group, borderColor: "#00e676", tension: 0.25, pointRadius: 2 }
-          ]
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          plugins: { legend: { labels: { color: "#8b9cb3" } } },
-          scales: {
-            x: { ticks: { color: "#8b9cb3", maxTicksLimit: 12 }, grid: { color: "rgba(255,255,255,0.06)" } },
-            y: { ticks: { color: "#8b9cb3" }, grid: { color: "rgba(255,255,255,0.06)" }, title: { display: true, text: "ct/kWh", color: "#8b9cb3" } }
-          }
-        }
-      });
-      return;
-    }
-    chart.data.labels = labels;
-    chart.data.datasets[0].data = market;
-    chart.data.datasets[1].data = group;
-    chart.update();
+  function ageText(sec) {
+    if (sec == null) return "noch keine Meldung";
+    if (sec < 90) return "letzte Minute da";
+    return "still seit " + Math.round(sec) + " s";
   }
 
   async function refresh() {
-    const response = await fetch("/api/energiegemeinschaft?community=" + encodeURIComponent(community), { credentials: "same-origin" });
+    const response = await fetch("/api/energiegemeinschaft/mesh", { credentials: "same-origin" });
+    if (!response.ok) return;
     const data = await response.json();
-    document.getElementById("flow_status").textContent = data.status_label || "–";
-    document.getElementById("cheaper_hours").textContent = (data.cheaper_hours == null ? "–" : data.cheaper_hours + " Stunden");
-    document.getElementById("placeholder_note").textContent = data.note || "";
-    draw(data.points || []);
+    codeEl.textContent = data.invite_code || "noch keiner";
+    document.getElementById("eg_sum").textContent = (data.feed_sum_kw == null ? "–" : data.feed_sum_kw) + " kW";
+    document.getElementById("eg_fresh").textContent = data.fresh_count + " von " + (data.members || []).length + " in der letzten Minute";
+    const net = data.tailscale_ok
+      ? (data.self_name + " · " + (data.self_ip || "keine Adresse") + " · " + data.peer_count + " Gegenstellen")
+      : ("Tailscale nicht bereit. " + (data.tailscale_error || ""));
+    document.getElementById("eg_net").textContent = net;
+    const grid = document.getElementById("eg_grid");
+    grid.innerHTML = "";
+    (data.members || []).forEach(function (member) {
+      const card = document.createElement("article");
+      card.className = "eg-card" + (member.fresh ? " fresh" : "");
+      const soc = member.soc_percent == null ? "–" : member.soc_percent + " %";
+      const kw = member.feed_in_kw == null ? "–" : member.feed_in_kw + " kW";
+      card.innerHTML = "<h4><span>" + member.name + (member.self ? " · hier" : "") + "</span><i class='eg-dot'></i></h4>"
+        + "<p class='eg-kw'>" + kw + "</p><p class='eg-hint'>Speicher " + soc + " · " + ageText(member.age_sec) + "</p>";
+      grid.appendChild(card);
+    });
   }
 
-  document.querySelectorAll(".community-card").forEach(function (card) {
-    card.addEventListener("click", async function () {
-      community = card.dataset.id;
-      document.querySelectorAll(".community-card").forEach(function (el) { el.classList.remove("active"); });
-      card.classList.add("active");
-      const body = new FormData();
-      body.set("community", community);
-      await fetch("/api/energiegemeinschaft/settings", { method: "POST", body: body, credentials: "same-origin" });
-      refresh();
-    });
+  document.getElementById("eg_generate").addEventListener("click", async function () {
+    const response = await fetch("/api/energiegemeinschaft/code", { method: "POST", credentials: "same-origin" });
+    const data = await response.json();
+    msg.textContent = data.ok ? "Neuer Code. Auf der anderen Steuerung einfügen." : (data.error || "Konnte nicht erzeugen.");
+    refresh();
   });
-
+  document.getElementById("eg_copy").addEventListener("click", function () {
+    const value = codeEl.textContent || "";
+    if (!value || value === "noch keiner") return;
+    navigator.clipboard.writeText(value);
+    msg.textContent = "Kopiert.";
+  });
+  async function applyForeignCode() {
+    const field = document.getElementById("eg_join");
+    const value = (field.value || "").trim();
+    if (!value || value === field.dataset.applied) return;
+    const body = new FormData();
+    body.set("code", value);
+    const response = await fetch("/api/energiegemeinschaft/join", { method: "POST", body: body, credentials: "same-origin" });
+    const data = await response.json();
+    if (data.ok) field.dataset.applied = value;
+    msg.textContent = data.ok ? "Die Steuerungen verstehen sich jetzt." : (data.error || "Code ungültig.");
+    refresh();
+  }
+  const joinField = document.getElementById("eg_join");
+  joinField.addEventListener("change", applyForeignCode);
+  joinField.addEventListener("paste", function () { setTimeout(applyForeignCode, 0); });
+  joinField.addEventListener("keydown", function (event) {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      applyForeignCode();
+    }
+  });
+  document.getElementById("eg_up").addEventListener("click", async function () {
+    const body = new FormData();
+    body.set("auth_key", document.getElementById("eg_key").value);
+    const response = await fetch("/api/energiegemeinschaft/tailscale", { method: "POST", body: body, credentials: "same-origin" });
+    const data = await response.json();
+    keyMsg.textContent = data.message || data.error || "";
+    document.getElementById("eg_key").value = "";
+    refresh();
+  });
   refresh();
+  setInterval(refresh, 5000);
 })();
 </script>
 {% endblock %}
