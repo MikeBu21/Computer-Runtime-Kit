@@ -250,6 +250,35 @@ def netzwerk_page():
     return render_template('netzwerk.html', network=_network_info())
 
 
+@app.route('/energie')
+def energie_page():
+    from energie_steuerung import status
+
+    payload = status()
+    return render_template(
+        "energie.html",
+        settings=payload["settings"],
+        soc_target_percent=payload["soc_target_percent"],
+    )
+
+
+@app.route('/api/energie/settings', methods=['POST'])
+def api_energie_settings():
+    from energie_steuerung import save_settings
+
+    form = request.form
+    saved = save_settings(
+        {
+            "boersentarif_besitze": form.get("boersentarif_besitze") in ("1", "true", "on"),
+            "boersentarif_nutzen": form.get("boersentarif_nutzen") in ("1", "true", "on"),
+            "gemeinschaft_bin_mitglied": form.get("gemeinschaft_bin_mitglied") in ("1", "true", "on"),
+            "gemeinschaft_nutzen": form.get("gemeinschaft_nutzen") in ("1", "true", "on"),
+            "algorithmische_planung": form.get("algorithmische_planung") in ("1", "true", "on"),
+        }
+    )
+    return jsonify({"ok": True, "message": "Gespeichert.", "settings": saved})
+
+
 @app.route('/boersenhandel')
 def boersenhandel_page():
     from boersenhandel import EXCHANGES, load_settings

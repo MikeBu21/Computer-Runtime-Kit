@@ -28,8 +28,14 @@ TZ = ZoneInfo("Europe/Vienna")
 SOC_EMPTY = 10.0
 SOC_FULL = 98.0
 BATTERY_LIMIT_KW = 12.0
+# Unterkante des Niedervolt-Fensters. Der Ladestrom wird so bemessen, dass der
+# ganze Zukauf auch dort noch in die Batterie passt. Register 0x0080 zählt Ampere.
+GRID_CHARGE_SIZING_VOLT = 40
+GRID_CHARGE_CURRENT_MAX = 350
 LOG_LIMIT = 30
 SAMPLE_GAP_SEC = 15
+# Rechnung alle 3 s aus dem RAM. Die schnellen Werte bleiben dort und gehen nicht auf die SD-Karte.
+CONTROL_SAMPLE_SEC = 3
 
 # Deye-Adressen aus den Solarman-Definitionen, Fronius aus der GEN24-Anleitung
 # (float): WMaxLimPct ist dort Register 40242, Basic Storage Control beginnt bei
@@ -60,6 +66,7 @@ INVERTER_LIST: List[Dict[str, Any]] = [
         "minimum": -20,
         "maximum": 12000,
         "grid_charge_register": 0x0082,
+        "grid_charge_current_register": 0x0080,
         "note": "Soll-Netzbezug in Watt. Dasselbe Register wie beim SG04LP3.",
     },
     {
@@ -126,6 +133,7 @@ INVERTER_LIST: List[Dict[str, Any]] = [
         "minimum": -20,
         "maximum": 12000,
         "grid_charge_register": 0x0082,
+        "grid_charge_current_register": 0x0080,
         "note": "Soll-Netzbezug in Watt. Die Messwertdatei hat kein eigenes Sollregister, der Niedervolt nutzt 0x0068.",
     },
     {
@@ -214,6 +222,11 @@ DEFAULT_INVERTER = "deye_hybrid"
 _lock = threading.Lock()
 _last_write: Dict[str, Any] = {"at": 0.0, "signature": None, "result": None}
 _writer_started = False
+# Einmal lösen, nachdem wirklich ein Zukauf geschrieben wurde. Steht in den Einstellungen,
+# damit ein Neustart den offenen Löschvorgang nicht vergisst.
+_needs_release = False
+# Vor dem Zukauf: Time of Use 255, also alle Wochentage und eingeschaltet.
+TOU_WEEK_ENABLED = 0x00FF
 
 
 def inverter_choices(selected: str = "") -> List[Dict[str, Any]]:
@@ -249,6 +262,7 @@ def default_settings() -> Dict[str, Any]:
         "modbus_host": "",
         "modbus_port": 502,
         "modbus_unit": 1,
+        "release_pending": False,
     }
 
 
@@ -480,9 +494,17 @@ def _control_item(item: Dict[str, Any], link: Optional[Dict[str, Any]]) -> Dict[
     if chosen["id"] == "deye_hybrid" and not _three_phase(link):
         chosen["register"] = 0x00CE
         chosen.pop("grid_charge_register", None)
+        chosen.pop("grid_charge_current_register", None)
+        chosen.pop("grid_charge_start_register", None)
+        chosen.pop("time_of_use_register", None)
+        chosen.pop("work_mode_register", None)
     else:
         chosen["register"] = 0x0068
         chosen["grid_charge_register"] = 0x0082
+        chosen["grid_charge_current_register"] = 0x0080
+        chosen["grid_charge_start_register"] = 0x007F
+        chosen["time_of_use_register"] = 0x0092
+        chosen["work_mode_register"] = 0x008E
     chosen["register_name"] = "Zero Export power"
     chosen["writable"] = True
     chosen["encoding"] = "watts"
@@ -504,6 +526,7 @@ def _persist_settings(data: Dict[str, Any]) -> None:
         "modbus_unit": data["modbus_unit"],
         "modbus_source": data.get("modbus_source") or "",
         "known_entry_ids": data.get("known_entry_ids") or [],
+        "release_pending": bool(data.get("release_pending")),
     }
     SETTINGS_FILE.write_text(json.dumps(stored, indent=2) + "\n", encoding="utf-8")
 
@@ -551,6 +574,7 @@ def load_settings() -> Dict[str, Any]:
     if not isinstance(data.get("known_entry_ids"), list):
         data["known_entry_ids"] = []
     data["modbus_source"] = str(data.get("modbus_source") or "")
+    data["release_pending"] = bool(data.get("release_pending"))
     return _apply_ha_link(data)
 
 
@@ -584,8 +608,13 @@ def _parse_soc(raw: Any) -> Optional[float]:
         return None
 
 
-def read_live() -> Dict[str, Any]:
-    """Ladezustand, Batterieleistung und Netzbezug aus den Home-Assistant-Werten."""
+_sample_lock = threading.Lock()
+_control_sample: Dict[str, Any] = {}
+_sampler_started = False
+
+
+def _read_live_now() -> Dict[str, Any]:
+    """Einmal Home Assistant lesen. Das Ergebnis bleibt im RAM und wird nicht gespeichert."""
     soc = None
     battery_kw = None
     grid_kw = None
@@ -599,18 +628,66 @@ def read_live() -> Dict[str, Any]:
     except Exception:
         pass
     try:
-        from dashboard_control import get_grid_kw_for_control
+        from ha_device_control import read_ha_entity_state
 
-        grid = get_grid_kw_for_control(str(BACKEND_DIR))
-        grid_kw = None if grid is None else round(float(grid), 2)
+        # Derselbe Zähler wie in Home Assistant, nicht der Kelag-Wert.
+        # Der liegt oft einige hundert Watt daneben und hat den Ladestrom auf 6 A gedrückt.
+        raw_grid = read_ha_entity_state("sensor.192_168_1_176_grid_power")
+        if raw_grid not in (None, "", "unavailable", "unknown"):
+            grid_kw = round(float(raw_grid) / 1000.0, 2)
     except Exception:
         pass
+    if grid_kw is None:
+        try:
+            from dashboard_control import get_grid_kw_for_control
+
+            grid = get_grid_kw_for_control(str(BACKEND_DIR))
+            grid_kw = None if grid is None else round(float(grid), 2)
+        except Exception:
+            pass
     return {
         "soc_percent": None if soc is None else round(soc, 1),
         "battery_kw": battery_kw,
         "grid_kw": grid_kw,
         "source": "Home Assistant / Solarman",
     }
+
+
+def _store_control_sample(sample: Dict[str, Any]) -> None:
+    """Ein Rechenwert. Der vorige wird verworfen, nichts wird auf die SD-Karte geschrieben."""
+    stored = dict(sample)
+    stored["sampled_at"] = time.time()
+    with _sample_lock:
+        _control_sample.clear()
+        _control_sample.update(stored)
+
+
+def _sampler_loop() -> None:
+    while True:
+        try:
+            _store_control_sample(_read_live_now())
+        except Exception:
+            pass
+        time.sleep(CONTROL_SAMPLE_SEC)
+
+
+def _ensure_sampler() -> None:
+    global _sampler_started
+    if _sampler_started:
+        return
+    _sampler_started = True
+    threading.Thread(target=_sampler_loop, name="bms-sample", daemon=True).start()
+
+
+def read_live() -> Dict[str, Any]:
+    """Ladezustand, Batterieleistung und Netzbezug. Die Rechnung nimmt den 3-Sekunden-Wert aus dem RAM."""
+    _ensure_sampler()
+    with _sample_lock:
+        if _control_sample:
+            return dict(_control_sample)
+    sample = _read_live_now()
+    _store_control_sample(sample)
+    return dict(sample)
 
 
 def assess(soc: Optional[float], target_kw: float, peak_cap_kw: float) -> Dict[str, Any]:
@@ -854,13 +931,191 @@ def _write_result(sent: bool, text: str, raw: Optional[int] = None) -> Dict[str,
     return {"command_sent": sent, "write_text": text, "raw": raw}
 
 
-def apply_write(settings: Dict[str, Any], plan: Dict[str, Any]) -> Dict[str, Any]:
+def _grid_charge_amps(watts: int) -> int:
+    """Ampere für Register 0x0080. Deckt den vollen Zukauf bei GRID_CHARGE_SIZING_VOLT ab."""
+    if watts <= 0:
+        return 0
+    amps = (int(watts) + GRID_CHARGE_SIZING_VOLT - 1) // GRID_CHARGE_SIZING_VOLT
+    return max(1, min(GRID_CHARGE_CURRENT_MAX, amps))
+
+
+# Gemessene Packspannung. Der Ladestrom ist nur die Stellgröße, der Netzfehler korrigiert ihn.
+PACK_VOLT = 53
+CHARGE_CURRENT_CAP = 240
+# Voller Sollabstand in einem Schritt schaukelt: 0 A, dann 25–50 A, dann wieder 0 A.
+AMP_STEP = 4
+GRID_DEADBAND_W = 250
+_commanded_amps = 0
+
+
+def _goal_charge_amps(soll_kw: float, live: Optional[Dict[str, Any]]) -> int:
+    """Dauerstrom, der den gemessenen Netzbezug auf den Sollwert brächte.
+
+    read_live meldet Batterieleistung positiv beim Laden.
+    """
+    target_w = int(round(float(soll_kw) * 1000))
+    grid = None if not live else live.get("grid_kw")
+    battery = None if not live else live.get("battery_kw")
+    if grid is None or battery is None:
+        return _grid_charge_amps(target_w)
+    charge_now_w = max(0.0, float(battery) * 1000.0)
+    needed_w = charge_now_w + (target_w - float(grid) * 1000.0)
+    if needed_w <= 0:
+        return 0
+    amps = (int(round(needed_w)) + PACK_VOLT - 1) // PACK_VOLT
+    return max(1, min(CHARGE_CURRENT_CAP, amps))
+
+
+def _needed_charge_amps(soll_kw: float, live: Optional[Dict[str, Any]]) -> int:
+    """Nähert den Dauerstrom in kleinen Schritten an. In der Totzone bleibt er stehen."""
+    global _commanded_amps
+    goal = _goal_charge_amps(soll_kw, live)
+    grid = None if not live else live.get("grid_kw")
+    if grid is not None:
+        error_w = int(round(float(soll_kw) * 1000)) - int(round(float(grid) * 1000))
+        if abs(error_w) <= GRID_DEADBAND_W:
+            return _commanded_amps
+    if goal > _commanded_amps:
+        stepped = min(goal, _commanded_amps + AMP_STEP)
+    else:
+        stepped = max(goal, _commanded_amps - AMP_STEP)
+    _commanded_amps = stepped
+    return stepped
+
+
+def _charge_writes(
+    item: Dict[str, Any],
+    soll_kw: Optional[float],
+    live: Optional[Dict[str, Any]] = None,
+) -> List[tuple]:
+    """Netzladung passend zum Soll. Plus gibt frei, sonst aus. Kein eigenes Feld in der Oberfläche."""
+    enable = item.get("grid_charge_register")
+    current = item.get("grid_charge_current_register")
+    if enable is None or current is None:
+        return []
+    watts = 0 if soll_kw is None else int(round(float(soll_kw) * 1000))
+    watts = max(int(item.get("minimum", -20)), min(int(item.get("maximum", 12000)), watts))
+    if watts <= 0:
+        return [
+            (int(current), "Battery Grid Charging Current", 0),
+            (int(enable), "Battery Grid Charging", 0),
+        ]
+    rows = []
+    if item.get("work_mode_register") is not None:
+        rows.append((int(item["work_mode_register"]), "Work Mode", 2))
+    if item.get("time_of_use_register") is not None:
+        rows.append((int(item["time_of_use_register"]), "Time of Use", 0))
+    if item.get("grid_charge_start_register") is not None:
+        rows.append((int(item["grid_charge_start_register"]), "Battery Grid Charging Start", 100))
+    rows.append((int(current), "Battery Grid Charging Current", _needed_charge_amps(watts / 1000.0, live)))
+    rows.append((int(enable), "Battery Grid Charging", 1))
+    return rows
+
+
+def _phrase(address: int, name: str, value: int) -> str:
+    return f"Register {int(address)} (0x{int(address):04X}, {name}), Wert {int(value)}"
+
+
+def _send_holding(host: str, port: int, unit: int, serial: int, address: int, value: int) -> None:
+    """Ein Holding-Register. Am Solarman-Logger Funktionscode 16, sonst Funktionscode 6."""
+    if int(port) == 8899 or serial:
+        if not serial:
+            raise OSError("Solarman-Seriennummer fehlt")
+        write_solarman_multiple(host, port, unit, serial, address, value)
+        return
+    write_register(host, port, unit, address, value)
+
+
+def _mark_release_pending(settings: Dict[str, Any]) -> None:
+    if settings.get("release_pending"):
+        return
+    settings["release_pending"] = True
+    _persist_settings(settings)
+
+
+def _clear_release_pending(settings: Dict[str, Any]) -> None:
+    if not settings.get("release_pending"):
+        return
+    settings["release_pending"] = False
+    _persist_settings(settings)
+
+
+def _release_due(settings: Dict[str, Any]) -> bool:
+    return bool(_needs_release or settings.get("release_pending"))
+
+
+def _release_writes(item: Dict[str, Any]) -> List[tuple]:
+    """Zukauf lösen. Der Wechselrichter behält sonst Soll, Ladestrom und Freigabe.
+
+    Die Zeitschaltuhr wird auf den Wochenplan zurückgestellt. Ohne sie bleibt die
+    Batterie stehen und das Netz deckt die Hauslast.
+    """
+    if item.get("register") is None:
+        return []
+    rows = [(int(item["register"]), item.get("register_name") or "Soll", 0)]
+    current = item.get("grid_charge_current_register")
+    enable = item.get("grid_charge_register")
+    if current is not None:
+        rows.append((int(current), "Battery Grid Charging Current", 0))
+    if enable is not None:
+        rows.append((int(enable), "Battery Grid Charging", 0))
+    schedule = item.get("time_of_use_register")
+    if schedule is not None:
+        rows.append((int(schedule), "Time of Use", TOU_WEEK_ENABLED))
+    return rows
+
+
+def _send_rows(settings: Dict[str, Any], serial: int, writes: List[tuple], raw: Optional[int]) -> Dict[str, Any]:
+    done: List[str] = []
+    try:
+        for address, name, value in writes:
+            _send_holding(
+                settings["modbus_host"],
+                settings["modbus_port"],
+                settings["modbus_unit"],
+                serial,
+                address,
+                value,
+            )
+            done.append(_phrase(address, name, value))
+    except OSError as exc:
+        written = "; ".join(done) if done else "Schreiben"
+        return _write_result(False, f"{written}. Schreiben fehlgeschlagen: {exc}.", raw)
+    return _write_result(True, "Geschrieben: " + "; ".join(done) + ".", raw)
+
+
+def apply_write(
+    settings: Dict[str, Any],
+    plan: Dict[str, Any],
+    live: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    global _needs_release, _commanded_amps
     base = INVERTERS.get(settings.get("inverter"), INVERTERS[DEFAULT_INVERTER])
     link = resolve_ha_link(str(settings.get("inverter") or ""), settings.get("known_entry_ids") or [])
     item = _control_item(base, link)
     register_text = _register_text(item)
     if not settings.get("real_mode"):
-        return _write_result(False, "Aus. Es wird nichts geschrieben.")
+        if not _release_due(settings):
+            return _write_result(False, "Aus. Es wird nichts geschrieben.")
+        host = settings.get("modbus_host") or ""
+        writes = _release_writes(item)
+        if not host or not writes:
+            _needs_release = False
+            _clear_release_pending(settings)
+            return _write_result(False, "Aus. Es wird nichts geschrieben.")
+        serial = int(link.get("serial") or 0) if link else 0
+        with _lock:
+            if not _release_due(settings):
+                return _write_result(False, "Aus. Es wird nichts geschrieben.")
+            result = _send_rows(settings, serial, writes, 0)
+            if result.get("command_sent"):
+                _needs_release = False
+                _commanded_amps = 0
+                _clear_release_pending(settings)
+                _last_write["at"] = time.monotonic()
+                _last_write["signature"] = ("release",)
+                _last_write["result"] = result
+            return result
     if not item.get("writable") or item.get("register") is None:
         return _write_result(False, item.get("note") or "Für diesen Typ wird nichts geschrieben.")
     raw = _raw_value(item, plan.get("battery_setpoint_kw"), plan.get("target_grid_kw"))
@@ -870,25 +1125,23 @@ def apply_write(settings: Dict[str, Any], plan: Dict[str, Any]) -> Dict[str, Any
     if not host:
         return _write_result(False, f"{register_text}. Modbus-Host fehlt, es wurde nichts geschrieben.", raw)
     serial = int(link.get("serial") or 0) if link else 0
-    signature = (item["id"], int(item["register"]), raw, host, settings["modbus_port"], settings["modbus_unit"])
+    writes = [(int(item["register"]), item.get("register_name") or "Soll", int(raw))]
+    writes.extend(_charge_writes(item, plan.get("target_grid_kw"), live))
+    signature = (
+        item["id"],
+        tuple((address, value) for address, _name, value in writes),
+        host,
+        settings["modbus_port"],
+        settings["modbus_unit"],
+    )
     now = time.monotonic()
     with _lock:
+        _needs_release = True
+        _mark_release_pending(settings)
         if signature == _last_write["signature"] and now - float(_last_write["at"]) < SAMPLE_GAP_SEC:
             previous = _last_write["result"] or _write_result(False, "unverändert")
             return previous
-        try:
-            write_register(
-                host,
-                settings["modbus_port"],
-                settings["modbus_unit"],
-                int(item["register"]),
-                raw,
-                serial=serial,
-            )
-        except OSError as exc:
-            result = _write_result(False, f"{register_text}, Wert {raw}. Schreiben fehlgeschlagen: {exc}.", raw)
-        else:
-            result = _write_result(True, f"Geschrieben: {register_text}, Wert {raw}.", raw)
+        result = _send_rows(settings, serial, writes, raw)
         _last_write["at"] = now
         _last_write["signature"] = signature
         _last_write["result"] = result
@@ -957,16 +1210,16 @@ def _ensure_writer() -> None:
             try:
                 reapply_dauerzukauf_test()
                 settings = load_settings()
-                if settings.get("real_mode"):
-                    live = read_live()
-                    plan = simulate(
-                        live.get("grid_kw"),
-                        live.get("battery_kw"),
-                        settings["target_grid_kw"],
-                        settings["peak_cap_kw"],
-                    )
-                    item = INVERTERS[settings["inverter"]]
-                    write = apply_write(settings, plan)
+                live = read_live()
+                plan = simulate(
+                    live.get("grid_kw"),
+                    live.get("battery_kw"),
+                    settings["target_grid_kw"],
+                    settings["peak_cap_kw"],
+                )
+                item = INVERTERS[settings["inverter"]]
+                write = apply_write(settings, plan, live)
+                if settings.get("real_mode") or write.get("command_sent"):
                     _remember(live, plan, write, item["label"])
             except Exception:
                 pass
@@ -987,11 +1240,14 @@ def status(record: bool = True) -> Dict[str, Any]:
         settings["target_grid_kw"],
         settings["peak_cap_kw"],
     )
-    write = apply_write(settings, plan)
-    plan["command_sent"] = bool(write["command_sent"])
-    plan["write_text"] = write["write_text"]
+    # Nur der Hintergrundlauf schreibt. Ein Seitenabruf alle 5 s würde sonst
+    # denselben Strom noch einmal nachziehen und die Schwingung verstärken.
+    write = _last_write["result"] or _write_result(False, "Aus. Es wird nichts geschrieben.")
+    plan["command_sent"] = bool(write.get("command_sent"))
+    plan["write_text"] = write.get("write_text") or ""
     plan["raw"] = write.get("raw")
-    log = _remember(live, plan, write, item["label"]) if record and settings.get("real_mode") else _load_log()
+    log = _load_log()
+    del record
     return {
         "settings": settings,
         "inverter": {

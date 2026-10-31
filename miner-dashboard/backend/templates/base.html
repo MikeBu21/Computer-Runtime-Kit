@@ -127,11 +127,81 @@
       border-left: 2px solid rgba(255, 255, 255, 0.08);
     }
 
+    /* Ordnerstruktur: Hauptpunkte eingerückt (hinten), Unterpunkte weiter vorne. */
+    .sidebar-nav .nav-link-main {
+      margin-left: 1.15rem;
+      padding: 0.62rem 0.9rem 0.62rem 1rem;
+      border-left: 2px solid rgba(0, 230, 118, 0.35);
+      border-radius: 10px;
+      font-size: 0.9rem;
+      font-weight: 600;
+    }
+
+    .sidebar-nav .nav-link-leaf {
+      margin-left: 0.15rem;
+      padding: 0.48rem 0.85rem;
+      font-size: 0.84rem;
+      border-left: 2px solid transparent;
+    }
+
     .sidebar-nav .nav-link-child {
-      margin-left: 1.35rem;
-      padding: 0.42rem 0.75rem 0.42rem 0.85rem;
-      font-size: 0.8rem;
-      border-left: 2px solid rgba(0, 230, 118, 0.28);
+      margin-left: 0.15rem;
+      padding: 0.48rem 0.85rem;
+      font-size: 0.84rem;
+      border-left: 2px solid transparent;
+    }
+
+    .sidebar-nav .nav-group {
+      margin: 0.2rem 0;
+    }
+
+    .sidebar-nav .nav-group-toggle {
+      width: calc(100% - 1.15rem);
+      display: flex;
+      align-items: center;
+      gap: 0.65rem;
+      color: var(--muted);
+      background: transparent;
+      border: 0;
+      margin-left: 1.15rem;
+      padding: 0.62rem 0.9rem 0.62rem 1rem;
+      border-left: 2px solid rgba(0, 230, 118, 0.35);
+      border-radius: 10px;
+      font-weight: 600;
+      font-size: 0.9rem;
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .sidebar-nav .nav-group-toggle:hover {
+      color: #fff;
+      background: rgba(255, 255, 255, 0.06);
+    }
+
+    .sidebar-nav .nav-group-toggle[aria-expanded="true"] {
+      color: #fff;
+      background: var(--accent-soft);
+      border-left-color: rgba(0, 230, 118, 0.55);
+    }
+
+    .sidebar-nav .nav-group-caret {
+      margin-left: auto;
+      font-size: 0.72rem;
+      opacity: 0.75;
+      transition: transform 0.18s ease;
+    }
+
+    .sidebar-nav .nav-group-toggle[aria-expanded="true"] .nav-group-caret {
+      transform: rotate(90deg);
+    }
+
+    .sidebar-nav .nav-group-body {
+      display: none;
+      padding: 0.1rem 0 0.3rem;
+    }
+
+    .sidebar-nav .nav-group-body.is-open {
+      display: block;
     }
 
     .sidebar-section-label {
@@ -438,34 +508,99 @@
         <span>Mining Dashboard</span>
       </a>
       <div class="sidebar-nav navbar-nav">
-        <a class="nav-link{% if request.path == '/' %} active{% endif %}" href="/">📊 Dashboard</a>
-        <a class="nav-link{% if request.path == '/add_miner' %} active{% endif %}" href="/add_miner">➕ Miner hinzufügen</a>
-        <a class="nav-link{% if request.path == '/add_device' %} active{% endif %}" href="/add_device">🔌 Geräte hinzufügen</a>
-        <a class="nav-link{% if request.path == '/smartmeter' %} active{% endif %}" href="/smartmeter">⚡ Smartmeter</a>
+        <a class="nav-link nav-link-main{% if request.path == '/' %} active{% endif %}" href="/">📊 Dashboard</a>
 
-        <div class="sidebar-section-label">Einstellungen</div>
-        <a class="nav-link nav-link-sub{% if request.path == '/dienste' %} active{% endif %}" href="/dienste">🚀 Dienste</a>
-        <a class="nav-link nav-link-sub{% if request.path == '/reboot' %} active{% endif %}" href="/reboot">🔁 Neustart</a>
-        <a class="nav-link nav-link-sub{% if request.path == '/updates' %} active{% endif %}" href="/updates">
-          🔄 Updates
-          {% if nav_update_count and nav_update_count > 0 %}
-          <span class="nav-badge" id="nav_update_badge" title="Verfügbare Updates">{{ nav_update_count }}</span>
-          {% endif %}
-        </a>
-        <a class="nav-link nav-link-sub{% if request.path == '/netzwerk' %} active{% endif %}" href="/netzwerk">🌐 Netzwerkeinstellungen</a>
-        <a class="nav-link nav-link-sub{% if request.path == '/settings' %} active{% endif %}" href="/settings">⚙️ Zugang</a>
-        <a class="nav-link nav-link-sub{% if request.path == '/automatikmodus' %} active{% endif %}" href="/automatikmodus">🤖 Automatikmodus</a>
-        <a class="nav-link nav-link-sub{% if request.path == '/zeitsteuerung' %} active{% endif %}" href="/zeitsteuerung">⏱ Zeitsteuerung</a>
-        <a class="nav-link nav-link-sub{% if request.path == '/telegrambot' %} active{% endif %}" href="/telegrambot">💬 Telegram Bot</a>
-        <a class="nav-link nav-link-sub{% if request.path == '/steuerungsalgorithmus' %} active{% endif %}" href="/steuerungsalgorithmus">🧠 Steuerungsalgorithmus</a>
-        <a class="nav-link nav-link-sub{% if request.path == '/boersenhandel' %} active{% endif %}" href="/boersenhandel">📈 Börsenhandel<canvas id="nav_price_spark" class="nav-spark" width="52" height="16" aria-hidden="true"></canvas></a>
-        <a class="nav-link nav-link-sub{% if request.path == '/energiegemeinschaft' %} active{% endif %}" href="/energiegemeinschaft">🤝 Energiegemeinschaft<canvas id="nav_community_wave" class="nav-spark" width="52" height="16" aria-hidden="true"></canvas></a>
-        {# VORLÄUFIG TEMPORARY_BMS_TAKEOVER: Menüpunkt nach der Übernahme wieder entfernen. #}
-        <a class="nav-link nav-link-sub{% if request.path.startswith('/wechselrichter-bms') %} active{% endif %}" href="/wechselrichter-bms">🔋 Wechselrichter BMS</a>
-        <a class="nav-link nav-link-sub nav-link-child{% if request.path == '/wechselrichter-bms/netzbezug' %} active{% endif %}" href="/wechselrichter-bms/netzbezug">Netzbezug</a>
-        <a class="nav-link nav-link-sub{% if request.path == '/grundverbrauchsrechner' %} active{% endif %}" href="/grundverbrauchsrechner">🧮 Grundverbrauchsrechner</a>
-        <a class="nav-link nav-link-sub{% if request.path == '/statistik-konfigurieren' %} active{% endif %}" href="/statistik-konfigurieren">📈 Statistik konfigurieren</a>
-        <a class="nav-link nav-link-sub{% if request.path == '/fehlerberichte' %} active{% endif %}" href="/fehlerberichte">📋 Fehlerberichte</a>
+        {% set energy_paths = ['/energie', '/boersenhandel', '/energiegemeinschaft'] %}
+        {% set energy_open = request.path in energy_paths or request.path.startswith('/energie') or request.path.startswith('/wechselrichter-bms') %}
+        <div class="nav-group" data-nav-group>
+          <button type="button" class="nav-group-toggle" aria-expanded="{{ 'true' if energy_open else 'false' }}" aria-controls="nav_energy_group" data-nav-group-toggle>
+            <span>⚡ Energie</span>
+            <span class="nav-group-caret" aria-hidden="true">▸</span>
+          </button>
+          <div id="nav_energy_group" class="nav-group-body{% if energy_open %} is-open{% endif %}" data-nav-group-body {% if not energy_open %}hidden{% endif %}>
+            <a class="nav-link nav-link-leaf{% if request.path == '/energie' %} active{% endif %}" href="/energie">🎛️ Steuerung</a>
+            <a class="nav-link nav-link-leaf{% if request.path == '/boersenhandel' %} active{% endif %}" href="/boersenhandel">📈 Börsenhandel<canvas id="nav_price_spark" class="nav-spark" width="52" height="16" aria-hidden="true"></canvas></a>
+            <a class="nav-link nav-link-leaf{% if request.path == '/energiegemeinschaft' %} active{% endif %}" href="/energiegemeinschaft">🤝 Energiegemeinschaft<canvas id="nav_community_wave" class="nav-spark" width="52" height="16" aria-hidden="true"></canvas></a>
+            {# VORLÄUFIG TEMPORARY_BMS_TAKEOVER: Menüpunkt nach der Übernahme wieder entfernen. #}
+            <a class="nav-link nav-link-leaf{% if request.path == '/wechselrichter-bms' %} active{% endif %}" href="/wechselrichter-bms">🔋 Wechselrichter BMS</a>
+            <a class="nav-link nav-link-leaf{% if request.path == '/wechselrichter-bms/netzbezug' %} active{% endif %}" href="/wechselrichter-bms/netzbezug">Netzbezug</a>
+          </div>
+        </div>
+
+        {% set devices_paths = ['/add_miner', '/add_device', '/smartmeter'] %}
+        {% set devices_open = request.path in devices_paths %}
+        <div class="nav-group" data-nav-group>
+          <button type="button" class="nav-group-toggle" aria-expanded="{{ 'true' if devices_open else 'false' }}" aria-controls="nav_devices_group" data-nav-group-toggle>
+            <span>🔌 Geräte hinzufügen</span>
+            <span class="nav-group-caret" aria-hidden="true">▸</span>
+          </button>
+          <div id="nav_devices_group" class="nav-group-body{% if devices_open %} is-open{% endif %}" data-nav-group-body {% if not devices_open %}hidden{% endif %}>
+            <a class="nav-link nav-link-leaf{% if request.path == '/add_miner' %} active{% endif %}" href="/add_miner">➕ Miner hinzufügen</a>
+            <a class="nav-link nav-link-leaf{% if request.path == '/add_device' %} active{% endif %}" href="/add_device">🔌 Sonstige Geräte hinzufügen</a>
+            <a class="nav-link nav-link-leaf{% if request.path == '/smartmeter' %} active{% endif %}" href="/smartmeter">⚡ Smart Meter hinzufügen</a>
+          </div>
+        </div>
+
+        {% set settings_paths = ['/dienste', '/reboot', '/updates', '/netzwerk', '/settings'] %}
+        {% set settings_open = request.path in settings_paths %}
+        <div class="nav-group" data-nav-group>
+          <button type="button" class="nav-group-toggle" aria-expanded="{{ 'true' if settings_open else 'false' }}" aria-controls="nav_settings_group" data-nav-group-toggle>
+            <span>⚙️ Einstellungen</span>
+            <span class="nav-group-caret" aria-hidden="true">▸</span>
+          </button>
+          <div id="nav_settings_group" class="nav-group-body{% if settings_open %} is-open{% endif %}" data-nav-group-body {% if not settings_open %}hidden{% endif %}>
+            <a class="nav-link nav-link-leaf{% if request.path == '/dienste' %} active{% endif %}" href="/dienste">🚀 Dienste</a>
+            <a class="nav-link nav-link-leaf{% if request.path == '/reboot' %} active{% endif %}" href="/reboot">🔁 Neustart</a>
+            <a class="nav-link nav-link-leaf{% if request.path == '/updates' %} active{% endif %}" href="/updates">
+              🔄 Update
+              {% if nav_update_count and nav_update_count > 0 %}
+              <span class="nav-badge" id="nav_update_badge" title="Verfügbare Updates">{{ nav_update_count }}</span>
+              {% endif %}
+            </a>
+            <a class="nav-link nav-link-leaf{% if request.path == '/netzwerk' %} active{% endif %}" href="/netzwerk">🌐 Netzwerkeinstellungen</a>
+            <a class="nav-link nav-link-leaf{% if request.path == '/settings' %} active{% endif %}" href="/settings">🔑 Zugang</a>
+          </div>
+        </div>
+
+        {% set auto_paths = ['/automatikmodus', '/zeitsteuerung', '/telegrambot', '/steuerungsalgorithmus'] %}
+        {% set auto_open = request.path in auto_paths %}
+        <div class="nav-group" data-nav-group>
+          <button type="button" class="nav-group-toggle" aria-expanded="{{ 'true' if auto_open else 'false' }}" aria-controls="nav_auto_group" data-nav-group-toggle>
+            <span>🤖 Automationen</span>
+            <span class="nav-group-caret" aria-hidden="true">▸</span>
+          </button>
+          <div id="nav_auto_group" class="nav-group-body{% if auto_open %} is-open{% endif %}" data-nav-group-body {% if not auto_open %}hidden{% endif %}>
+            <a class="nav-link nav-link-leaf{% if request.path == '/automatikmodus' %} active{% endif %}" href="/automatikmodus">⚙️ Automatik</a>
+            <a class="nav-link nav-link-leaf{% if request.path == '/automatikmodus' %} active{% endif %}" href="/automatikmodus">🤖 Automatikmodus</a>
+            <a class="nav-link nav-link-leaf{% if request.path == '/zeitsteuerung' %} active{% endif %}" href="/zeitsteuerung">⏱ Zeitsteuerung</a>
+            <a class="nav-link nav-link-leaf{% if request.path == '/telegrambot' %} active{% endif %}" href="/telegrambot">💬 Telegram-Bot</a>
+            <a class="nav-link nav-link-leaf{% if request.path == '/steuerungsalgorithmus' %} active{% endif %}" href="/steuerungsalgorithmus">🧠 Steuerungsalgorithmus</a>
+          </div>
+        </div>
+
+        {% set calc_paths = ['/grundverbrauchsrechner', '/statistik-konfigurieren', '/fehlerberichte'] %}
+        {% set calc_open = request.path in calc_paths %}
+        <div class="nav-group" data-nav-group>
+          <button type="button" class="nav-group-toggle" aria-expanded="{{ 'true' if calc_open else 'false' }}" aria-controls="nav_calc_group" data-nav-group-toggle>
+            <span>🧮 Rechner</span>
+            <span class="nav-group-caret" aria-hidden="true">▸</span>
+          </button>
+          <div id="nav_calc_group" class="nav-group-body{% if calc_open %} is-open{% endif %}" data-nav-group-body {% if not calc_open %}hidden{% endif %}>
+            <a class="nav-link nav-link-leaf{% if request.path == '/grundverbrauchsrechner' %} active{% endif %}" href="/grundverbrauchsrechner">🧮 Grundverbrauchsrechner</a>
+            <a class="nav-link nav-link-leaf{% if request.path == '/statistik-konfigurieren' %} active{% endif %}" href="/statistik-konfigurieren">📈 Statistik konfigurieren</a>
+            <a class="nav-link nav-link-leaf{% if request.path == '/fehlerberichte' %} active{% endif %}" href="/fehlerberichte">📋 Fehlerbericht</a>
+          </div>
+        </div>
+
+        <div class="nav-group" data-nav-group>
+          <button type="button" class="nav-group-toggle" aria-expanded="false" aria-controls="nav_other_group" data-nav-group-toggle>
+            <span>📦 Sonstige</span>
+            <span class="nav-group-caret" aria-hidden="true">▸</span>
+          </button>
+          <div id="nav_other_group" class="nav-group-body" data-nav-group-body hidden>
+            <span class="nav-link nav-link-leaf" style="opacity:0.55; cursor:default;">Noch keine Einträge</span>
+          </div>
+        </div>
       </div>
     </nav>
 
@@ -478,6 +613,18 @@
 
   <script>
     (function () {
+      document.querySelectorAll("[data-nav-group]").forEach(function (group) {
+        const toggle = group.querySelector("[data-nav-group-toggle]");
+        const body = group.querySelector("[data-nav-group-body]");
+        if (!toggle || !body) return;
+        toggle.addEventListener("click", function () {
+          const open = toggle.getAttribute("aria-expanded") !== "true";
+          toggle.setAttribute("aria-expanded", open ? "true" : "false");
+          body.classList.toggle("is-open", open);
+          body.hidden = !open;
+        });
+      });
+
       let toastTimer = null;
 
       window.showAppToast = function (message, type) {
