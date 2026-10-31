@@ -442,6 +442,20 @@ def api_energiegemeinschaft_member():
     return jsonify({"ok": True})
 
 
+@app.route('/api/energiegemeinschaft/member/delete', methods=['POST'])
+def api_energiegemeinschaft_member_delete():
+    denied = _eg_login()
+    if denied:
+        return denied
+    from energiegemeinschaft_mesh import remove_member
+
+    try:
+        remove_member((request.form.get("name") or "").strip())
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({"ok": True})
+
+
 @app.route('/wechselrichter-bms')
 def wechselrichter_bms_page():
     # VORLÄUFIG TEMPORARY_BMS_TAKEOVER: Route und Seite nach der Übernahme entfernen.
@@ -1902,7 +1916,11 @@ if __name__ == "__main__":
     start_energy_stats_thread()
     start_ha_dashboard_thread()
     from energiegemeinschaft_mesh import start_mesh
+    from bms_seite import _ensure_writer
+    from public_update import start_auto_update
     start_mesh()
+    _ensure_writer()
+    start_auto_update()
     if os.environ.get("MINER_OPEN_BROWSER") == "1":
         threading.Timer(1.0, open_browser).start()
     app.run(host="0.0.0.0", port=5000, threaded=True)

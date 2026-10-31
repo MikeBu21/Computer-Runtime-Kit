@@ -15,6 +15,7 @@ import re
 import shutil
 import subprocess
 import threading
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -41,6 +42,8 @@ STATE_FILE = STATE_DIR / "state.json"
 JOB_FILE = STATE_DIR / "job.json"
 PUBLISH_DIR = STATE_DIR / "publish"
 DOWNLOAD_DIR = STATE_DIR / "download"
+AUTO_UPDATE_WAIT_SEC = 60
+_auto_update_started = False
 
 EXAMPLE_IP = "192.0.2.10"
 _TOKEN_RE = re.compile(r"\b\d{6,12}:[A-Za-z0-9_-]{20,}\b")
@@ -1393,6 +1396,71 @@ def _restart_flask_soon() -> None:
         )
 
     threading.Timer(1.5, _restart).start()
+
+
+def pull_if_newer() -> bool:
+    """Nur laden, wenn im Web eine höhere Version liegt. Kein erneutes Laden derselben Version."""
+    job = _job()
+    if job.get("uploading") or job.get("downloading"):
+        return False
+    remote = fetch_remote_version()
+    local = int(load_state().get("local_version") or 0)
+    if remote is None or int(remote) <= local:
+        return False
+    ok, _message = start_download()
+    return bool(ok)
+
+
+def auto_update_step(
+    remote: Optional[int],
+    local: int,
+    busy: bool,
+    seen_version: Optional[int],
+    seen_at: Optional[float],
+    now: float,
+    wait_sec: float = AUTO_UPDATE_WAIT_SEC,
+) -> Tuple[str, Optional[int], Optional[float]]:
+    """Neue Web-Version merken, etwa eine Minute warten, dann laden."""
+    if busy or remote is None or int(remote) <= int(local):
+        return "idle", None, None
+    version = int(remote)
+    if seen_version != version or seen_at is None:
+        return "wait", version, now
+    if now - float(seen_at) >= float(wait_sec):
+        return "download", version, seen_at
+    return "wait", version, seen_at
+
+
+def _auto_update_loop() -> None:
+    seen_version: Optional[int] = None
+    seen_at: Optional[float] = None
+    while True:
+        try:
+            job = _job()
+            busy = bool(job.get("uploading") or job.get("downloading"))
+            action, seen_version, seen_at = auto_update_step(
+                fetch_remote_version(),
+                int(load_state().get("local_version") or 0),
+                busy,
+                seen_version,
+                seen_at,
+                time.time(),
+            )
+            if action == "download":
+                pull_if_newer()
+                seen_at = time.time()
+        except Exception:
+            pass
+        time.sleep(15)
+
+
+def start_auto_update() -> None:
+    global _auto_update_started
+    if _auto_update_started:
+        return
+    _auto_update_started = True
+    threading.Thread(target=_auto_update_loop, name="public-update-watch", daemon=True).start()
+    print("Automatische Update-Erkennung läuft.", flush=True)
 
 
 def start_download() -> Tuple[bool, str]:

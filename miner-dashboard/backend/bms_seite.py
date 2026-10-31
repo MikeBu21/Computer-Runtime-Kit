@@ -22,6 +22,7 @@ SETTINGS_FILE = BACKEND_DIR / "bms_test_settings.json"
 HA_CONFIG_ENTRIES = BACKEND_DIR.parents[1] / "homeassistant" / "config" / ".storage" / "core.config_entries"
 HA_DEVICE_REGISTRY = BACKEND_DIR.parents[1] / "homeassistant" / "config" / ".storage" / "core.device_registry"
 LOG_FILE = BACKEND_DIR / "bms_test_log.json"
+DAUERZUKAUF_TEST_FILE = BACKEND_DIR / "dauerzukauf_test.json"
 TZ = ZoneInfo("Europe/Vienna")
 
 SOC_EMPTY = 10.0
@@ -764,6 +765,68 @@ def write_solarman_register(host: str, port: int, unit: int, serial: int, addres
         raise OSError(f"Modbus-Fehler {code}")
 
 
+def write_solarman_multiple(host: str, port: int, unit: int, serial: int, address: int, value: int) -> None:
+    """Funktionscode 16. Einzelne Schreibbefehle bleiben am SG04LP3 nicht stehen."""
+    payload = struct.pack(">H", _u16(value))
+    modbus = struct.pack(">BBHHB", int(unit) & 0xFF, 16, int(address) & 0xFFFF, 1, len(payload)) + payload
+    modbus += _modbus_crc(modbus)
+    sequence = 1
+    header = (
+        b"\xA5"
+        + struct.pack("<H", 15 + len(modbus))
+        + b"\x10"
+        + struct.pack("<B", 0x45)
+        + struct.pack("<H", sequence)
+        + struct.pack("<I", int(serial) & 0xFFFFFFFF)
+        + b"\x02\x00\x00"
+        + (b"\x00" * 12)
+        + modbus
+    )
+    frame = header + struct.pack("<B", _solarman_checksum(header)) + b"\x15"
+    with socket.create_connection((host, int(port)), timeout=4.0) as sock:
+        sock.settimeout(4.0)
+        sock.sendall(frame)
+        data = b""
+        while len(data) < 29 or data[-1:] != b"\x15":
+            chunk = sock.recv(256)
+            if not chunk:
+                break
+            data += chunk
+            if len(data) > 512:
+                break
+    if len(data) < 29 or data[0:1] != b"\xA5" or data[-1:] != b"\x15" or data[4] != 0x15:
+        raise OSError("Logger hat den Mehrfachschreibbefehl abgelehnt")
+    reply = data[25:-2]
+    if len(reply) >= 2 and reply[1] & 0x80:
+        code = reply[2] if len(reply) > 2 else 0
+        raise OSError(f"Modbus-Fehler {code}")
+
+
+def reapply_dauerzukauf_test() -> None:
+    """Testgrenze über 92 % und 1,2 kW Netzbezug halten, bis der Test abgebrochen wird."""
+    if not DAUERZUKAUF_TEST_FILE.is_file():
+        return
+    try:
+        stored = json.loads(DAUERZUKAUF_TEST_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    if not isinstance(stored, dict) or not stored.get("active"):
+        return
+    applied = stored.get("applied")
+    if not isinstance(applied, dict):
+        return
+    settings = load_settings()
+    host = settings.get("modbus_host") or ""
+    if not host:
+        return
+    link = resolve_ha_link(str(settings.get("inverter") or ""), settings.get("known_entry_ids") or [])
+    serial = int(link.get("serial") or 0) if link else 0
+    if not serial:
+        return
+    for key, value in applied.items():
+        write_solarman_multiple(host, settings["modbus_port"], settings["modbus_unit"], serial, int(key), int(value))
+
+
 def write_register(host: str, port: int, unit: int, address: int, value: int, serial: int = 0) -> None:
     """Holding-Register schreiben. Port 8899 läuft über das Solarman-Protokoll."""
     if int(port) == 8899 or serial:
@@ -792,7 +855,9 @@ def _write_result(sent: bool, text: str, raw: Optional[int] = None) -> Dict[str,
 
 
 def apply_write(settings: Dict[str, Any], plan: Dict[str, Any]) -> Dict[str, Any]:
-    item = INVERTERS.get(settings.get("inverter"), INVERTERS[DEFAULT_INVERTER])
+    base = INVERTERS.get(settings.get("inverter"), INVERTERS[DEFAULT_INVERTER])
+    link = resolve_ha_link(str(settings.get("inverter") or ""), settings.get("known_entry_ids") or [])
+    item = _control_item(base, link)
     register_text = _register_text(item)
     if not settings.get("real_mode"):
         return _write_result(False, "Aus. Es wird nichts geschrieben.")
@@ -804,9 +869,8 @@ def apply_write(settings: Dict[str, Any], plan: Dict[str, Any]) -> Dict[str, Any
     host = settings.get("modbus_host") or ""
     if not host:
         return _write_result(False, f"{register_text}. Modbus-Host fehlt, es wurde nichts geschrieben.", raw)
-    link = resolve_ha_link(str(settings.get("inverter") or ""), settings.get("known_entry_ids") or [])
     serial = int(link.get("serial") or 0) if link else 0
-    signature = (item["id"], raw, host, settings["modbus_port"], settings["modbus_unit"])
+    signature = (item["id"], int(item["register"]), raw, host, settings["modbus_port"], settings["modbus_unit"])
     now = time.monotonic()
     with _lock:
         if signature == _last_write["signature"] and now - float(_last_write["at"]) < SAMPLE_GAP_SEC:
@@ -890,23 +954,23 @@ def _ensure_writer() -> None:
 
     def loop() -> None:
         while True:
-            time.sleep(SAMPLE_GAP_SEC)
             try:
+                reapply_dauerzukauf_test()
                 settings = load_settings()
-                if not settings.get("real_mode"):
-                    continue
-                live = read_live()
-                plan = simulate(
-                    live.get("grid_kw"),
-                    live.get("battery_kw"),
-                    settings["target_grid_kw"],
-                    settings["peak_cap_kw"],
-                )
-                item = INVERTERS[settings["inverter"]]
-                write = apply_write(settings, plan)
-                _remember(live, plan, write, item["label"])
+                if settings.get("real_mode"):
+                    live = read_live()
+                    plan = simulate(
+                        live.get("grid_kw"),
+                        live.get("battery_kw"),
+                        settings["target_grid_kw"],
+                        settings["peak_cap_kw"],
+                    )
+                    item = INVERTERS[settings["inverter"]]
+                    write = apply_write(settings, plan)
+                    _remember(live, plan, write, item["label"])
             except Exception:
-                continue
+                pass
+            time.sleep(SAMPLE_GAP_SEC)
 
     threading.Thread(target=loop, name="bms-modbus", daemon=True).start()
 

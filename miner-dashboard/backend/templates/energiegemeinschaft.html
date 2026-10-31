@@ -16,10 +16,15 @@
       <button type="button" class="btn-secondary-custom" id="eg_generate">Code erzeugen</button>
       <button type="button" class="btn-secondary-custom" id="eg_copy">Kopieren</button>
     </div>
-    <label class="form-label" for="eg_join">Code einer anderen Steuerung</label>
-    <input class="form-control eg-join" id="eg_join" placeholder="Code einfügen, dann verstehen sich die Pis" autocomplete="off">
+      <label class="form-label" for="eg_join" id="eg_join_label">Code einer anderen Steuerung</label>
+      <div class="eg-row" id="eg_join_row">
+        <input class="form-control eg-join" id="eg_join" placeholder="Code einfügen, dann verstehen sich die Pis" autocomplete="off">
+        <button type="button" class="btn-secondary-custom" id="eg_join_save">Speichern</button>
+      </div>
     <p class="eg-hint" id="eg_code_msg"></p>
   </section>
+
+  <section class="eg-devices" id="eg_grid"></section>
 
   <div class="eg-wrap">
     <section class="eg-hero">
@@ -42,10 +47,6 @@
       <p class="eg-hint" id="eg_key_msg"></p>
     </section>
 
-    <section>
-      <div class="eg-grid" id="eg_grid"></div>
-    </section>
-
   </div>
 
   <style>
@@ -64,10 +65,23 @@
     .eg-row { display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center; }
     .eg-row .form-control { max-width: 280px; }
     .eg-join { display: block; width: 100%; max-width: none; box-sizing: border-box; margin-top: 0.35rem; }
-    .eg-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 0.75rem; }
+    #eg_join_row { width: 100%; }
+    #eg_join_row .eg-join { flex: 1; width: auto; min-width: 0; margin-top: 0; }
+    .eg-devices { width: 100%; max-width: none; display: flex; flex-direction: column; gap: 0.85rem; margin: 1rem 0; }
     .eg-card {
-      background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 0.9rem 1rem;
+      width: 100%; box-sizing: border-box;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 1.15rem 1.3rem;
     }
+    .eg-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.75rem; margin: 0.4rem 0 0.8rem; }
+    .eg-bar { height: 10px; border-radius: 99px; background: rgba(255,255,255,0.08); overflow: hidden; margin-bottom: 0.85rem; }
+    .eg-bar > span { display: block; height: 100%; width: 0; background: #00e676; }
+    .eg-card .form-label { display: block; margin-top: 0.7rem; }
+    .eg-card .form-control { width: 100%; max-width: none; box-sizing: border-box; }
+    .eg-actions { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 0.9rem; }
+    .eg-save { margin-top: 0; }
+    .eg-abgleich { margin-top: 0.9rem; padding-top: 0.7rem; border-top: 1px solid var(--border); }
+    .eg-history { margin-top: 0.7rem; }
+    .eg-spark { width: 100%; height: 72px; display: block; background: rgba(0,0,0,0.22); border-radius: 10px; }
     .eg-card.fresh { border-color: rgba(0,230,118,0.45); }
     .eg-card h4 { margin: 0 0 0.35rem; display: flex; justify-content: space-between; gap: 0.4rem; }
     .eg-dot { width: 0.65rem; height: 0.65rem; border-radius: 50%; background: #607d8b; display: inline-block; }
@@ -85,7 +99,8 @@
   const msg = document.getElementById("eg_code_msg");
   const keyMsg = document.getElementById("eg_key_msg");
 
-  function ageText(sec) {
+  function ageText(sec, mismatch) {
+    if (mismatch) return "im Netz, der Code passt nicht mehr";
     if (sec == null) return "noch keine Meldung";
     if (sec < 90) return "letzte Minute da";
     return "still seit " + Math.round(sec) + " s";
@@ -102,16 +117,271 @@
       ? (data.self_name + " · " + (data.self_ip || "keine Adresse") + " · " + data.peer_count + " Gegenstellen")
       : ("Tailscale nicht bereit. " + (data.tailscale_error || ""));
     document.getElementById("eg_net").textContent = net;
+    renderMembers(data.members || []);
+  }
+
+  const peerCards = {};
+
+  function parseCt(raw) {
+    const text = String(raw || "").trim().replace(",", ".");
+    if (!text) return null;
+    const value = Number(text);
+    return Number.isFinite(value) ? value : null;
+  }
+
+  function updateAbgleich(card) {
+    const priceInput = card.querySelector('[data-field="ask_ct_kwh"]');
+    const gridInput = card.querySelector('[data-field="grid_cost_ct_kwh"]');
+    if (!priceInput || !gridInput) return;
+    const price = parseCt(priceInput.value);
+    const gridCost = parseCt(gridInput.value);
+    card.querySelector('[data-cmp="price"]').textContent = price == null ? "–" : price + " ct";
+    card.querySelector('[data-cmp="grid"]').textContent = gridCost == null ? "–" : gridCost + " ct";
+    const note = card.querySelector("[data-abgleich]");
+    const sumEl = card.querySelector('[data-cmp="sum"]');
+    if (price == null || gridCost == null) {
+      sumEl.textContent = "–";
+      note.textContent = "Beide Werte eintragen, dann steht der Abgleich.";
+      return;
+    }
+    const sum = Math.round((price + gridCost) * 1000) / 1000;
+    const delta = Math.round((gridCost - price) * 1000) / 1000;
+    sumEl.textContent = sum + " ct";
+    if (delta === 0) note.textContent = "Netzkosten und Preis sind gleich.";
+    else if (delta > 0) note.textContent = "Netzkosten liegen " + delta + " Cent über dem Preis.";
+    else note.textContent = "Netzkosten liegen " + Math.abs(delta) + " Cent unter dem Preis.";
+  }
+
+  function shown(value) {
+    return value == null || value === "" ? "" : String(value);
+  }
+
+  function seriesChart(title, key) {
+    const wrap = document.createElement("div");
+    wrap.className = "eg-history";
+    const label = document.createElement("p");
+    label.className = "eg-kicker";
+    label.textContent = title;
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 320 72");
+    svg.setAttribute("class", "eg-spark");
+    svg.dataset.series = key;
+    const empty = document.createElement("p");
+    empty.className = "eg-hint";
+    empty.dataset.empty = key;
+    empty.textContent = "Noch kein Wert.";
+    wrap.append(label, svg, empty);
+    return wrap;
+  }
+
+  function drawHistory(card, history) {
+    ["feed_in_kw", "soc_percent"].forEach(function (key) {
+      const svg = card.querySelector('[data-series="' + key + '"]');
+      const empty = card.querySelector('[data-empty="' + key + '"]');
+      if (!svg || !empty) return;
+      const points = (history || []).filter(function (point) { return point[key] != null; });
+      while (svg.firstChild) svg.removeChild(svg.firstChild);
+      if (!points.length) {
+        empty.hidden = false;
+        return;
+      }
+      empty.hidden = true;
+      const values = points.map(function (point) { return Number(point[key]); });
+      let min = Math.min.apply(null, values);
+      let max = Math.max.apply(null, values);
+      if (key === "soc_percent") {
+        min = 0;
+        max = 100;
+      } else if (min === max) {
+        min = 0;
+        max = max || 1;
+      }
+      function yOf(value) {
+        return 68 - ((value - min) / (max - min)) * 60;
+      }
+      if (points.length === 1) {
+        const dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+        dot.setAttribute("cx", "300");
+        dot.setAttribute("cy", yOf(Number(points[0][key])).toFixed(1));
+        dot.setAttribute("r", "5");
+        dot.setAttribute("fill", "#00e676");
+        svg.appendChild(dot);
+        return;
+      }
+      const coords = points.map(function (point, index) {
+        const x = (index / (points.length - 1)) * 320;
+        const y = yOf(Number(point[key]));
+        return x.toFixed(1) + "," + y.toFixed(1);
+      }).join(" ");
+      const line = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+      line.setAttribute("points", coords);
+      line.setAttribute("fill", "none");
+      line.setAttribute("stroke", "#00e676");
+      line.setAttribute("stroke-width", "2");
+      svg.appendChild(line);
+    });
+  }
+
+  function fieldInput(label, field, placeholder) {
+    const caption = document.createElement("label");
+    caption.className = "form-label";
+    caption.textContent = label;
+    const input = document.createElement("input");
+    input.className = "form-control";
+    input.placeholder = placeholder;
+    input.dataset.field = field;
+    if (field !== "alias") input.inputMode = "decimal";
+    return [caption, input];
+  }
+
+  function renderMembers(members) {
     const grid = document.getElementById("eg_grid");
-    grid.innerHTML = "";
-    (data.members || []).forEach(function (member) {
-      const card = document.createElement("article");
-      card.className = "eg-card" + (member.fresh ? " fresh" : "");
-      const soc = member.soc_percent == null ? "–" : member.soc_percent + " %";
-      const kw = member.feed_in_kw == null ? "–" : member.feed_in_kw + " kW";
-      card.innerHTML = "<h4><span>" + member.name + (member.self ? " · hier" : "") + "</span><i class='eg-dot'></i></h4>"
-        + "<p class='eg-kw'>" + kw + "</p><p class='eg-hint'>Speicher " + soc + " · " + ageText(member.age_sec) + "</p>";
+    const keep = {};
+    members.forEach(function (member) {
+      if (member.self) return;
+      keep[member.name] = true;
+      let card = peerCards[member.name];
+      if (!card) {
+        card = document.createElement("article");
+        card.className = "eg-card";
+        const title = document.createElement("h4");
+        const titleText = document.createElement("span");
+        titleText.dataset.title = "1";
+        const dot = document.createElement("i");
+        dot.className = "eg-dot";
+        title.append(titleText, dot);
+        const stats = document.createElement("div");
+        stats.className = "eg-stats";
+        ["Einspeisung", "Während verbunden", "Speicher"].forEach(function (label, index) {
+          const box = document.createElement("div");
+          const kicker = document.createElement("p");
+          kicker.className = "eg-kicker";
+          kicker.textContent = label;
+          const value = document.createElement("p");
+          value.className = "eg-kw";
+          value.dataset.stat = ["kw", "kwh", "soc"][index];
+          box.append(kicker, value);
+          stats.append(box);
+        });
+        const bar = document.createElement("div");
+        bar.className = "eg-bar";
+        const fill = document.createElement("span");
+        fill.dataset.bar = "1";
+        bar.append(fill);
+        const age = document.createElement("p");
+        age.className = "eg-hint";
+        age.dataset.age = "1";
+        card.append(title, stats, bar, age, seriesChart("Einspeisung über die Zeit", "feed_in_kw"), seriesChart("Speicher über die Zeit", "soc_percent"));
+        fieldInput("Name", "alias", "Haus Martin").forEach(function (node) { card.append(node); });
+        fieldInput("Vereinbarter Preis", "ask_ct_kwh", "z. B. 12 Cent").forEach(function (node) { card.append(node); });
+        fieldInput("Netzkosten", "grid_cost_ct_kwh", "z. B. 6 Cent").forEach(function (node) { card.append(node); });
+        const abgleich = document.createElement("div");
+        abgleich.className = "eg-abgleich";
+        const abTitle = document.createElement("p");
+        abTitle.className = "eg-kicker";
+        abTitle.textContent = "Abgleich";
+        const abStats = document.createElement("div");
+        abStats.className = "eg-stats";
+        ["Preis", "Netzkosten", "Zusammen"].forEach(function (label, index) {
+          const box = document.createElement("div");
+          const kicker = document.createElement("p");
+          kicker.className = "eg-kicker";
+          kicker.textContent = label;
+          const value = document.createElement("p");
+          value.className = "eg-kw";
+          value.dataset.cmp = ["price", "grid", "sum"][index];
+          box.append(kicker, value);
+          abStats.append(box);
+        });
+        const abNote = document.createElement("p");
+        abNote.className = "eg-hint";
+        abNote.dataset.abgleich = "1";
+        abgleich.append(abTitle, abStats, abNote);
+        card.append(abgleich);
+        card.querySelectorAll("[data-field]").forEach(function (input) {
+          input.addEventListener("input", function () { updateAbgleich(card); });
+        });
+        const actions = document.createElement("div");
+        actions.className = "eg-actions";
+        const save = document.createElement("button");
+        save.type = "button";
+        save.className = "btn-secondary-custom eg-save";
+        save.textContent = "Speichern";
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "btn-secondary-custom";
+        remove.textContent = "Entfernen";
+        const note = document.createElement("p");
+        note.className = "eg-hint";
+        note.dataset.save = "1";
+        const peerName = member.name;
+        remove.addEventListener("click", async function () {
+          const label = (member.alias || peerName);
+          if (!window.confirm(label + " aus der Energiegemeinschaft entfernen? Das Gerät kann danach nicht wieder beitreten.")) return;
+          const body = new FormData();
+          body.set("name", peerName);
+          const response = await fetch("/api/energiegemeinschaft/member/delete", { method: "POST", body: body, credentials: "same-origin" });
+          const data = await response.json();
+          if (!data.ok) {
+            note.textContent = data.error || "Nicht entfernt.";
+            return;
+          }
+          card.remove();
+          delete peerCards[peerName];
+        });
+        save.addEventListener("click", async function () {
+          const inputs = card.querySelectorAll("[data-field]");
+          for (let i = 0; i < inputs.length; i += 1) {
+            const input = inputs[i];
+            const body = new FormData();
+            body.set("name", member.name);
+            body.set("field", input.dataset.field);
+            body.set("value", input.value);
+            const response = await fetch("/api/energiegemeinschaft/member", { method: "POST", body: body, credentials: "same-origin" });
+            const data = await response.json();
+            if (!data.ok) {
+              note.textContent = data.error || "Nicht gespeichert.";
+              return;
+            }
+            input.dataset.applied = input.value;
+          }
+          const alias = card.querySelector('[data-field="alias"]');
+          const titleText = card.querySelector("[data-title]");
+          if (alias && titleText && alias.value.trim()) titleText.textContent = alias.value.trim();
+          note.textContent = "Gespeichert.";
+        });
+        actions.append(save, remove);
+        card.append(actions, note);
+        grid.appendChild(card);
+        peerCards[member.name] = card;
+      }
+      card.classList.toggle("fresh", !!member.fresh);
+      card.querySelector("[data-title]").textContent = (member.alias || member.name) + (member.self ? " · hier" : "");
+      card.querySelector('[data-stat="kw"]').textContent = member.feed_in_kw == null ? "– kW" : member.feed_in_kw + " kW";
+      const connected = member.connected_kwh == null ? 0 : member.connected_kwh;
+      card.querySelector('[data-stat="kwh"]').textContent = connected + " kWh";
+      card.querySelector('[data-stat="soc"]').textContent = member.soc_percent == null ? "– %" : member.soc_percent + " %";
+      const pct = member.soc_percent == null ? 0 : Math.max(0, Math.min(100, Number(member.soc_percent)));
+      card.querySelector("[data-bar]").style.width = pct + "%";
+      card.querySelector("[data-age]").textContent = ageText(member.age_sec, member.code_mismatch);
+      ["alias", "ask_ct_kwh", "grid_cost_ct_kwh"].forEach(function (field) {
+        const input = card.querySelector('[data-field="' + field + '"]');
+        if (!input || document.activeElement === input) return;
+        const text = shown(member[field]);
+        if (input.dataset.applied !== text) {
+          input.value = text;
+          input.dataset.applied = text;
+        }
+      });
+      drawHistory(card, member.history || []);
+      updateAbgleich(card);
       grid.appendChild(card);
+    });
+    Object.keys(peerCards).forEach(function (name) {
+      if (!keep[name]) {
+        peerCards[name].remove();
+        delete peerCards[name];
+      }
     });
   }
 
@@ -127,22 +397,33 @@
     navigator.clipboard.writeText(value);
     msg.textContent = "Kopiert.";
   });
+  function hideJoinField() {
+    const row = document.getElementById("eg_join_row");
+    const label = document.getElementById("eg_join_label");
+    if (row) row.hidden = true;
+    if (label) label.hidden = true;
+  }
   async function applyForeignCode() {
     const field = document.getElementById("eg_join");
     const value = (field.value || "").trim();
-    if (!value || value === field.dataset.applied) return;
+    if (!value) {
+      msg.textContent = "Bitte zuerst den Code eintragen.";
+      return;
+    }
     const body = new FormData();
     body.set("code", value);
     const response = await fetch("/api/energiegemeinschaft/join", { method: "POST", body: body, credentials: "same-origin" });
     const data = await response.json();
-    if (data.ok) field.dataset.applied = value;
-    msg.textContent = data.ok ? "Die Steuerungen verstehen sich jetzt." : (data.error || "Code ungültig.");
+    if (data.ok) {
+      hideJoinField();
+      msg.textContent = "Code gespeichert.";
+    } else {
+      msg.textContent = data.error || "Code ungültig.";
+    }
     refresh();
   }
-  const joinField = document.getElementById("eg_join");
-  joinField.addEventListener("change", applyForeignCode);
-  joinField.addEventListener("paste", function () { setTimeout(applyForeignCode, 0); });
-  joinField.addEventListener("keydown", function (event) {
+  document.getElementById("eg_join_save").addEventListener("click", applyForeignCode);
+  document.getElementById("eg_join").addEventListener("keydown", function (event) {
     if (event.key === "Enter") {
       event.preventDefault();
       applyForeignCode();

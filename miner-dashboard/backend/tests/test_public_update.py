@@ -216,6 +216,40 @@ def test_soft_scan_survives_upstream_hard_scan(tmp_path: Path):
     assert "collect_sensitive_values(REPO_ROOT)" not in again
 
 
+def test_auto_update_waits_about_a_minute_then_downloads():
+    action, version, seen = pu.auto_update_step(16, 15, False, None, None, 1000.0)
+    assert action == "wait"
+    assert version == 16
+    action, version, seen = pu.auto_update_step(16, 15, False, version, seen, 1030.0)
+    assert action == "wait"
+    action, version, seen = pu.auto_update_step(16, 15, False, version, seen, 1060.0)
+    assert action == "download"
+    assert version == 16
+
+
+def test_auto_update_ignores_same_version_and_clears_when_busy():
+    assert pu.auto_update_step(15, 15, False, None, None, 1000.0)[0] == "idle"
+    assert pu.auto_update_step(14, 15, False, 16, 1000.0, 1100.0)[0] == "idle"
+    assert pu.auto_update_step(None, 15, False, 16, 1000.0, 1100.0)[0] == "idle"
+    assert pu.auto_update_step(16, 15, True, 16, 1000.0, 1100.0)[0] == "idle"
+
+
+def test_pull_if_newer_leaves_the_current_version_alone(monkeypatch):
+    monkeypatch.setattr(pu, "fetch_remote_version", lambda: 15)
+    monkeypatch.setattr(pu, "load_state", lambda: {"local_version": 15})
+    monkeypatch.setattr(pu, "_job", lambda: {"uploading": False, "downloading": False})
+    monkeypatch.setattr(pu, "start_download", lambda: (_ for _ in ()).throw(AssertionError("kein Download")))
+    assert pu.pull_if_newer() is False
+
+
+def test_pull_if_newer_starts_when_the_web_version_is_higher(monkeypatch):
+    monkeypatch.setattr(pu, "fetch_remote_version", lambda: 16)
+    monkeypatch.setattr(pu, "load_state", lambda: {"local_version": 15})
+    monkeypatch.setattr(pu, "_job", lambda: {"uploading": False, "downloading": False})
+    monkeypatch.setattr(pu, "start_download", lambda: (True, "ok"))
+    assert pu.pull_if_newer() is True
+
+
 def test_default_fields_have_empty_entity_ids():
     from ha_entity_mapping import _default_fields
 
