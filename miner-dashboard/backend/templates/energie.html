@@ -1,0 +1,453 @@
+{% extends "base.html" %}
+
+{% block title %}Energie{% endblock %}
+
+{% block extra_head %}
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@500;700;800&family=Source+Serif+4:opsz,wght@8..60,500;8..60,700&display=swap" rel="stylesheet">
+  <style>
+    .energy-stage {
+      --energy-ink: #e8f6ef;
+      --energy-mute: rgba(232, 246, 239, 0.68);
+      --energy-line: rgba(120, 220, 170, 0.28);
+      --energy-glow: rgba(0, 214, 140, 0.45);
+      --energy-deep: #06140f;
+      --energy-panel: linear-gradient(155deg, rgba(10, 42, 30, 0.92), rgba(7, 18, 24, 0.96) 55%, rgba(18, 28, 16, 0.9));
+      position: relative;
+      isolation: isolate;
+      padding: 0.25rem 0 1.5rem;
+      font-family: "Outfit", "Segoe UI", sans-serif;
+    }
+    .energy-stage::before {
+      content: "";
+      position: absolute;
+      inset: -1.5rem -0.5rem auto;
+      height: 18rem;
+      background:
+        radial-gradient(ellipse 70% 80% at 12% 20%, rgba(0, 214, 140, 0.22), transparent 55%),
+        radial-gradient(ellipse 55% 70% at 88% 0%, rgba(74, 170, 255, 0.16), transparent 50%),
+        linear-gradient(180deg, rgba(0, 40, 28, 0.35), transparent);
+      z-index: -1;
+      pointer-events: none;
+    }
+    .energy-hero {
+      display: grid;
+      gap: 0.55rem;
+      margin-bottom: 1.4rem;
+      max-width: 42rem;
+    }
+    .energy-hero .brand {
+      font-family: "Source Serif 4", Georgia, serif;
+      font-size: clamp(2rem, 4vw, 2.85rem);
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      color: var(--energy-ink);
+      line-height: 1.05;
+      margin: 0;
+    }
+    .energy-hero p {
+      margin: 0;
+      color: var(--energy-mute);
+      font-size: 1.02rem;
+      line-height: 1.45;
+      max-width: 36rem;
+    }
+    .energy-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 1rem;
+    }
+    .energy-tile {
+      position: relative;
+      overflow: hidden;
+      border-radius: 22px;
+      border: 1px solid var(--energy-line);
+      background: var(--energy-panel);
+      box-shadow: 0 18px 40px rgba(0, 0, 0, 0.28);
+      padding: 1.15rem 1.2rem 1.25rem;
+      display: grid;
+      gap: 0.95rem;
+      min-height: 100%;
+      transition: transform 0.22s ease, border-color 0.22s ease, box-shadow 0.22s ease;
+    }
+    .energy-tile::after {
+      content: "";
+      position: absolute;
+      width: 9rem;
+      height: 9rem;
+      right: -2.5rem;
+      top: -3rem;
+      border-radius: 50%;
+      background: radial-gradient(circle, var(--tile-glow, var(--energy-glow)), transparent 68%);
+      opacity: 0.55;
+      pointer-events: none;
+    }
+    .energy-tile:hover {
+      transform: translateY(-3px);
+      border-color: rgba(0, 230, 118, 0.45);
+      box-shadow: 0 22px 48px rgba(0, 0, 0, 0.34);
+    }
+    .energy-tile.tile-exchange { --tile-glow: rgba(255, 196, 72, 0.4); }
+    .energy-tile.tile-community { --tile-glow: rgba(90, 180, 255, 0.38); }
+    .energy-tile.tile-algo { --tile-glow: rgba(0, 230, 118, 0.42); }
+    .energy-tile-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 0.75rem;
+      position: relative;
+      z-index: 1;
+    }
+    .energy-tile-kicker {
+      font-size: 0.72rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: rgba(232, 246, 239, 0.55);
+      font-weight: 700;
+      margin-bottom: 0.35rem;
+    }
+    .energy-tile h3 {
+      margin: 0;
+      font-size: 1.35rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      color: #fff;
+    }
+    .energy-tile-badge {
+      flex: 0 0 auto;
+      width: 2.6rem;
+      height: 2.6rem;
+      border-radius: 14px;
+      display: grid;
+      place-items: center;
+      font-size: 1.2rem;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    .energy-tile-copy {
+      position: relative;
+      z-index: 1;
+      margin: 0;
+      color: var(--energy-mute);
+      font-size: 0.92rem;
+      line-height: 1.45;
+    }
+    .energy-switches {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      gap: 0.7rem;
+    }
+    .energy-switch {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 0.75rem;
+      align-items: center;
+      padding: 0.85rem 0.95rem;
+      border-radius: 16px;
+      background: rgba(0, 0, 0, 0.28);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      cursor: pointer;
+      transition: opacity 0.2s ease, border-color 0.2s ease;
+    }
+    .energy-switch.is-disabled {
+      opacity: 0.42;
+      pointer-events: none;
+    }
+    .energy-switch-label {
+      display: grid;
+      gap: 0.18rem;
+    }
+    .energy-switch-label strong {
+      color: #fff;
+      font-size: 0.95rem;
+      font-weight: 700;
+    }
+    .energy-switch-label span {
+      color: rgba(232, 246, 239, 0.55);
+      font-size: 0.78rem;
+      line-height: 1.35;
+    }
+    .energy-toggle {
+      position: relative;
+      width: 3.1rem;
+      height: 1.75rem;
+      flex: 0 0 auto;
+    }
+    .energy-toggle input {
+      position: absolute;
+      opacity: 0;
+      inset: 0;
+      margin: 0;
+      cursor: pointer;
+    }
+    .energy-toggle-track {
+      display: block;
+      width: 100%;
+      height: 100%;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.14);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      transition: background 0.2s ease, box-shadow 0.2s ease;
+      position: relative;
+    }
+    .energy-toggle-track::after {
+      content: "";
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 1.35rem;
+      height: 1.35rem;
+      border-radius: 50%;
+      background: #f4fff8;
+      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.35);
+      transition: transform 0.2s ease;
+    }
+    .energy-toggle input:checked + .energy-toggle-track {
+      background: linear-gradient(90deg, #00c853, #69f0ae);
+      box-shadow: 0 0 0 3px rgba(0, 230, 118, 0.18);
+    }
+    .energy-toggle input:checked + .energy-toggle-track::after {
+      transform: translateX(1.3rem);
+    }
+    .energy-save-row {
+      margin-top: 1.25rem;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.85rem;
+      align-items: center;
+    }
+    .energy-save {
+      appearance: none;
+      border: 0;
+      cursor: pointer;
+      font-family: inherit;
+      font-weight: 800;
+      letter-spacing: 0.02em;
+      color: #04140d;
+      background: linear-gradient(120deg, #7CFFB2 0%, #00E676 45%, #00BFA5 100%);
+      padding: 0.85rem 1.35rem;
+      border-radius: 999px;
+      box-shadow: 0 10px 30px rgba(0, 230, 118, 0.28);
+      transition: transform 0.18s ease, filter 0.18s ease;
+    }
+    .energy-save:hover {
+      transform: translateY(-2px) scale(1.01);
+      filter: brightness(1.05);
+    }
+    .energy-save-hint {
+      color: var(--energy-mute);
+      min-height: 1.2rem;
+      margin: 0;
+      font-size: 0.9rem;
+    }
+    .energy-links {
+      margin-top: 1.75rem;
+      display: grid;
+      gap: 0.75rem;
+    }
+    .energy-links h4 {
+      margin: 0;
+      font-size: 0.78rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: rgba(232, 246, 239, 0.5);
+    }
+    .energy-link-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 0.7rem;
+    }
+    .energy-link {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+      text-decoration: none;
+      color: #eafff4;
+      padding: 0.9rem 1rem;
+      border-radius: 16px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      background: rgba(255, 255, 255, 0.04);
+      font-weight: 700;
+      transition: background 0.18s ease, border-color 0.18s ease, transform 0.18s ease;
+    }
+    .energy-link:hover {
+      background: rgba(0, 230, 118, 0.12);
+      border-color: rgba(0, 230, 118, 0.35);
+      transform: translateY(-2px);
+      color: #fff;
+    }
+    .energy-link span {
+      opacity: 0.55;
+      font-size: 0.85rem;
+    }
+  </style>
+{% endblock %}
+
+{% block content %}
+  <div class="energy-stage">
+    <div class="energy-hero">
+      <h2 class="brand">Energie</h2>
+      <p>Drei Steuerpunkte für Börse, Gemeinschaft und Speicherplanung. Die Schalter werden gespeichert und greifen erst nach Übernehmen.</p>
+    </div>
+
+    <form id="energy_form">
+      <div class="energy-grid">
+        <section class="energy-tile tile-exchange">
+          <div class="energy-tile-head">
+            <div>
+              <div class="energy-tile-kicker">Punkt 1</div>
+              <h3>Börsentarif</h3>
+            </div>
+            <div class="energy-tile-badge">📈</div>
+          </div>
+          <p class="energy-tile-copy">Nur wer einen Börsentarif hat, kann ihn für den Handel freigeben.</p>
+          <div class="energy-switches">
+            <label class="energy-switch">
+              <div class="energy-switch-label">
+                <strong>Besitze ich einen Börsentarif</strong>
+                <span>Grundlage für alle Börsenfunktionen</span>
+              </div>
+              <span class="energy-toggle">
+                <input type="checkbox" id="boersentarif_besitze" name="boersentarif_besitze" value="1" {% if settings.boersentarif_besitze %}checked{% endif %}>
+                <span class="energy-toggle-track"></span>
+              </span>
+            </label>
+            <label class="energy-switch" id="wrap_boersentarif_nutzen">
+              <div class="energy-switch-label">
+                <strong>Möchte ich ihn nutzen</strong>
+                <span>Nur sichtbar und wirksam, wenn Besitz aktiv ist</span>
+              </div>
+              <span class="energy-toggle">
+                <input type="checkbox" id="boersentarif_nutzen" name="boersentarif_nutzen" value="1" {% if settings.boersentarif_nutzen %}checked{% endif %}>
+                <span class="energy-toggle-track"></span>
+              </span>
+            </label>
+          </div>
+        </section>
+
+        <section class="energy-tile tile-community">
+          <div class="energy-tile-head">
+            <div>
+              <div class="energy-tile-kicker">Punkt 2</div>
+              <h3>Energiegemeinschaft</h3>
+            </div>
+            <div class="energy-tile-badge">🤝</div>
+          </div>
+          <p class="energy-tile-copy">Mitgliedschaft zuerst bestätigen, dann die Nutzung freigeben.</p>
+          <div class="energy-switches">
+            <label class="energy-switch">
+              <div class="energy-switch-label">
+                <strong>Bin ich in einer Energiegemeinschaft</strong>
+                <span>Mitgliedschaft am Standort</span>
+              </div>
+              <span class="energy-toggle">
+                <input type="checkbox" id="gemeinschaft_bin_mitglied" name="gemeinschaft_bin_mitglied" value="1" {% if settings.gemeinschaft_bin_mitglied %}checked{% endif %}>
+                <span class="energy-toggle-track"></span>
+              </span>
+            </label>
+            <label class="energy-switch" id="wrap_gemeinschaft_nutzen">
+              <div class="energy-switch-label">
+                <strong>Möchte ich sie nutzen</strong>
+                <span>Nur wenn die Mitgliedschaft aktiv ist</span>
+              </div>
+              <span class="energy-toggle">
+                <input type="checkbox" id="gemeinschaft_nutzen" name="gemeinschaft_nutzen" value="1" {% if settings.gemeinschaft_nutzen %}checked{% endif %}>
+                <span class="energy-toggle-track"></span>
+              </span>
+            </label>
+          </div>
+        </section>
+
+        <section class="energy-tile tile-algo">
+          <div class="energy-tile-head">
+            <div>
+              <div class="energy-tile-kicker">Punkt 3</div>
+              <h3>Algorithmische Planung</h3>
+            </div>
+            <div class="energy-tile-badge">🧠</div>
+          </div>
+          <p class="energy-tile-copy">Der Steuerungsalgorithmus überwacht den Speicher. Wird er leer, liefert der Grundverbrauchsrechner den Zukauf — und bei aktivem Schalter geht der Wert automatisch ins BMS-Register. Ziel über 24 Stunden: etwa {{ soc_target_percent|int }}&nbsp;% Akkustand.</p>
+          <div class="energy-switches">
+            <label class="energy-switch">
+              <div class="energy-switch-label">
+                <strong>Algorithmische Planung aktiv</strong>
+                <span>Speicherüberwachung und automatischer BMS-Schreibwert</span>
+              </div>
+              <span class="energy-toggle">
+                <input type="checkbox" id="algorithmische_planung" name="algorithmische_planung" value="1" {% if settings.algorithmische_planung %}checked{% endif %}>
+                <span class="energy-toggle-track"></span>
+              </span>
+            </label>
+          </div>
+        </section>
+      </div>
+
+      <div class="energy-save-row">
+        <button type="submit" class="energy-save">Übernehmen</button>
+        <p class="energy-save-hint" id="energy_hint"></p>
+      </div>
+    </form>
+
+    <div class="energy-links">
+      <h4>Bereiche</h4>
+      <div class="energy-link-row">
+        <a class="energy-link" href="/boersenhandel">Börsenhandel <span>→</span></a>
+        <a class="energy-link" href="/energiegemeinschaft">Energiegemeinschaft <span>→</span></a>
+        <a class="energy-link" href="/wechselrichter-bms">Wechselrichter BMS <span>→</span></a>
+        <a class="energy-link" href="/wechselrichter-bms/netzbezug">Netzbezug <span>→</span></a>
+      </div>
+    </div>
+  </div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+(function () {
+  const form = document.getElementById("energy_form");
+  const hint = document.getElementById("energy_hint");
+  const ownExchange = document.getElementById("boersentarif_besitze");
+  const useExchange = document.getElementById("boersentarif_nutzen");
+  const wrapUseExchange = document.getElementById("wrap_boersentarif_nutzen");
+  const inCommunity = document.getElementById("gemeinschaft_bin_mitglied");
+  const useCommunity = document.getElementById("gemeinschaft_nutzen");
+  const wrapUseCommunity = document.getElementById("wrap_gemeinschaft_nutzen");
+
+  function syncDependent() {
+    const canUseExchange = ownExchange.checked;
+    wrapUseExchange.classList.toggle("is-disabled", !canUseExchange);
+    useExchange.disabled = !canUseExchange;
+    if (!canUseExchange) useExchange.checked = false;
+
+    const canUseCommunity = inCommunity.checked;
+    wrapUseCommunity.classList.toggle("is-disabled", !canUseCommunity);
+    useCommunity.disabled = !canUseCommunity;
+    if (!canUseCommunity) useCommunity.checked = false;
+  }
+
+  ownExchange.addEventListener("change", syncDependent);
+  inCommunity.addEventListener("change", syncDependent);
+  syncDependent();
+
+  form.addEventListener("submit", async function (event) {
+    event.preventDefault();
+    const body = new FormData();
+    body.set("boersentarif_besitze", ownExchange.checked ? "1" : "0");
+    body.set("boersentarif_nutzen", useExchange.checked ? "1" : "0");
+    body.set("gemeinschaft_bin_mitglied", inCommunity.checked ? "1" : "0");
+    body.set("gemeinschaft_nutzen", useCommunity.checked ? "1" : "0");
+    body.set("algorithmische_planung", document.getElementById("algorithmische_planung").checked ? "1" : "0");
+    const response = await fetch("/api/energie/settings", {
+      method: "POST",
+      body: body,
+      credentials: "same-origin",
+    });
+    const data = await response.json();
+    hint.textContent = data.message || (data.ok ? "Gespeichert." : "Speichern fehlgeschlagen.");
+    hint.style.color = data.ok ? "#7CFFB2" : "#ff8a80";
+  });
+})();
+</script>
+{% endblock %}
