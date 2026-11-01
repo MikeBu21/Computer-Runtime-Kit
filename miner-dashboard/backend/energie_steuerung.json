@@ -3,6 +3,7 @@
   "boersentarif_nutzen": false,
   "gemeinschaft_bin_mitglied": false,
   "gemeinschaft_nutzen": false,
-  "algorithmische_planung": false,
+  "algorithmische_planung": true,
+  "autopilot": false,
   "soc_target_percent": 65.0
 }

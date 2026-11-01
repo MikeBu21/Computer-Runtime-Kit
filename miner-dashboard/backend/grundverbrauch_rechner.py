@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import math
 import threading
+import time
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -35,6 +36,11 @@ WEEKLY_STEP_SEASON = 0.50
 DAILY_STEP_REL = 0.08
 DAILY_STEP_ABS = 0.15
 MODES = ("continuous", "off")
+WEATHER_FORECAST_DAYS = 7
+WEATHER_CACHE_SEC = 3600
+# Leichte Anhebung des empfohlenen Zukaufs bei schlechter werdender Woche (Anteil × Score).
+WEATHER_BUMP_FRAC = 0.12
+SOC_HOLD_HORIZONS = (24, 48)
 
 
 def _f(value: Any, default: float = 0.0) -> float:
@@ -52,8 +58,23 @@ def _state_path(base_dir: str):
     return energy_file(base_dir, "grundverbrauch_rechner.json")
 
 
+def default_targets() -> Dict[str, Any]:
+    return {
+        "soc_hold_enabled": False,
+        "soc_hold_percent": 5.0,
+        "soc_hold_horizon_hours": 24,
+        "weather_adjust_enabled": True,
+    }
+
+
 def _empty_state() -> Dict[str, Any]:
-    return {"assumptions": {}, "recommendation": {}, "base_archive": []}
+    return {
+        "assumptions": {},
+        "recommendation": {},
+        "base_archive": [],
+        "targets": default_targets(),
+        "weather_cache": {},
+    }
 
 
 def _load_state(path) -> Dict[str, Any]:
@@ -68,6 +89,23 @@ def _load_state(path) -> Dict[str, Any]:
     data.setdefault("assumptions", {})
     data.setdefault("recommendation", {})
     data.setdefault("base_archive", [])
+    data.setdefault("targets", default_targets())
+    data.setdefault("weather_cache", {})
+    targets = dict(default_targets())
+    raw_targets = data.get("targets") if isinstance(data.get("targets"), dict) else {}
+    targets.update({k: raw_targets[k] for k in targets if k in raw_targets})
+    targets["soc_hold_enabled"] = bool(targets.get("soc_hold_enabled"))
+    targets["weather_adjust_enabled"] = bool(targets.get("weather_adjust_enabled", True))
+    try:
+        targets["soc_hold_percent"] = max(1.0, min(95.0, float(targets.get("soc_hold_percent", 5.0))))
+    except (TypeError, ValueError):
+        targets["soc_hold_percent"] = 5.0
+    try:
+        horizon = int(targets.get("soc_hold_horizon_hours", 24))
+    except (TypeError, ValueError):
+        horizon = 24
+    targets["soc_hold_horizon_hours"] = 48 if horizon >= 48 else 24
+    data["targets"] = targets
     return data
 
 
@@ -314,10 +352,18 @@ def build_report_from_parts(
     today: date,
     prev: Optional[Dict[str, Any]] = None,
     algo_enabled: bool = False,
+    weather_bump_kw: float = 0.0,
+    soc_hold_kw: float = 0.0,
+    weather_meta: Optional[Dict[str, Any]] = None,
+    targets: Optional[Dict[str, Any]] = None,
+    soc_live: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Rechnet den Bericht aus vorbereiteten Tagen. Schaltet nichts."""
     prev = dict(prev or {})
     eff = min(1.0, max(0.5, _f(efficiency, 0.95)))
+    weather_meta = dict(weather_meta or {})
+    targets = dict(targets or default_targets())
+    soc_live = dict(soc_live or {})
     miner_out: List[Dict[str, Any]] = []
     normalized_modes: Dict[str, str] = {}
     continuous_kw = 0.0
@@ -416,6 +462,11 @@ def build_report_from_parts(
     raw_kw = None
     if rate_days:
         raw_kw = sum(r["grid_kwh"] for r in rate_days) / (len(rate_days) * HOURS)
+    base_raw_kw = raw_kw
+    weather_bump = max(0.0, _f(weather_bump_kw))
+    soc_extra = max(0.0, _f(soc_hold_kw))
+    if raw_kw is not None:
+        raw_kw = max(0.0, raw_kw + weather_bump + soc_extra)
 
     recent_base = [r["base_kwh"] for r in base_days[-7:]]
     older_base = [r["base_kwh"] for r in base_days[-14:-7]]
@@ -493,6 +544,27 @@ def build_report_from_parts(
         "Diese Seite schaltet keine Miner und ändert keine Steuerung. Die Auswahl ist nur die Annahme für die Rechnung.",
         "Der laufende Tag geht nicht in den Zukauf. Die PV bis zum Abend linear hochzurechnen würde den Wert verfälschen.",
     ]
+    if weather_meta.get("ok") and weather_bump > 0.005:
+        notices.append(
+            f"Wettervorhersage ({WEATHER_FORECAST_DAYS} Tage, rollierend): schlechteres Ende der Woche → "
+            f"Zukauf leicht um {weather_bump:.2f} kW angehoben."
+        )
+    elif weather_meta.get("ok"):
+        notices.append(
+            f"Wettervorhersage ({WEATHER_FORECAST_DAYS} Tage, rollierend) geladen. Keine Anhebung nötig."
+        )
+    elif weather_meta.get("error"):
+        notices.append(f"Wettervorhersage nicht verfügbar: {weather_meta.get('error')}")
+    if targets.get("soc_hold_enabled") and soc_extra > 0.005:
+        notices.append(
+            f"Speicherziel {targets.get('soc_hold_percent')} % über "
+            f"{int(targets.get('soc_hold_horizon_hours') or 24)} h → +{soc_extra:.2f} kW in der Empfehlung."
+        )
+    elif targets.get("soc_hold_enabled"):
+        notices.append(
+            f"Speicherziel {targets.get('soc_hold_percent')} % aktiv "
+            f"({int(targets.get('soc_hold_horizon_hours') or 24)} h). Aktuell kein Mehrzukauf nötig."
+        )
     if len(rate_days) < MIN_PV_DAYS:
         alerts.append(
             f"Erst {len(rate_days)} Tag(e) mit PV und vollständigem Grundverbrauch. "
@@ -555,6 +627,9 @@ def build_report_from_parts(
         "weekly_kw": weekly,
         "daily_kw": locks.get("daily_kw"),
         "raw_kw": locks.get("raw_kw"),
+        "base_raw_kw": round(base_raw_kw, 3) if base_raw_kw is not None else None,
+        "weather_bump_kw": round(weather_bump, 3),
+        "soc_hold_kw": round(soc_extra, 3),
         "weekly_kwh_per_day": round(weekly * HOURS, 1) if weekly is not None else None,
         "month_projected_kwh": round(weekly * HOURS * 30, 0) if weekly is not None else None,
         "week_id": locks.get("week_id"),
@@ -566,6 +641,9 @@ def build_report_from_parts(
         "trend_label": _trend_label(trend),
         "battery_efficiency": eff,
         "continuous_kw": round(continuous_kw, 2),
+        "targets": targets,
+        "weather": weather_meta,
+        "soc_live": soc_live,
         "window": {
             "base_kwh": round(avg_base, 2) if avg_base is not None else None,
             "pv_kwh": round(avg_pv, 2) if avg_pv is not None else None,
@@ -868,6 +946,221 @@ def load_days(base_dir: str, today: Optional[date] = None) -> Tuple[List[Dict[st
     return days, _efficiency(state)
 
 
+def _algo_lat_lon() -> Tuple[Optional[float], Optional[float]]:
+    try:
+        from control_algorithm.config import load_config
+
+        cfg = load_config()
+        lat = cfg.get("lat")
+        lon = cfg.get("lon")
+        if lat is None or lon is None:
+            return None, None
+        return float(lat), float(lon)
+    except Exception:
+        return None, None
+
+
+def _daily_sun_outlook(hourly: Dict[str, Any], today: date) -> List[Dict[str, Any]]:
+    from control_algorithm.weather_scale import hour_relative_sun
+
+    times = list(hourly.get("time") or [])
+    codes = list(hourly.get("weather_code") or [])
+    clouds = list(hourly.get("cloud_cover") or [])
+    shortwave = list(hourly.get("shortwave_radiation") or [])
+    sunshine = list(hourly.get("sunshine_duration") or [])
+    buckets: Dict[str, List[float]] = {}
+    for i, stamp in enumerate(times):
+        try:
+            day = str(stamp)[:10]
+            hour = int(str(stamp)[11:13])
+        except Exception:
+            continue
+        try:
+            day_date = date.fromisoformat(day)
+        except ValueError:
+            continue
+        offset = (day_date - today).days
+        if offset < 0 or offset >= WEATHER_FORECAST_DAYS:
+            continue
+        # Tageslichtfenster: sonst verzerren Nachstunden den Mittelwert.
+        if hour < 8 or hour > 17:
+            continue
+        wc = codes[i] if i < len(codes) else None
+        cc = clouds[i] if i < len(clouds) else None
+        sw = shortwave[i] if i < len(shortwave) else None
+        sd = sunshine[i] if i < len(sunshine) else None
+        try:
+            wc_i = int(wc) if wc is not None else None
+        except (TypeError, ValueError):
+            wc_i = None
+        factor = hour_relative_sun(
+            weather_code=wc_i,
+            cloud_cover=cc,
+            shortwave_radiation=sw,
+            sunshine_duration=sd,
+        )
+        buckets.setdefault(day, []).append(factor)
+    rows: List[Dict[str, Any]] = []
+    for offset in range(WEATHER_FORECAST_DAYS):
+        day = (today + timedelta(days=offset)).isoformat()
+        vals = buckets.get(day) or []
+        mean = round(sum(vals) / len(vals), 3) if vals else None
+        rows.append({"date": day, "offset": offset, "sun_factor": mean, "samples": len(vals)})
+    return rows
+
+
+def weather_worsening_score(days: Sequence[Dict[str, Any]]) -> float:
+    """0 = gleich/besser, 1 = stark schlechter werdend über die Woche."""
+    early = [d["sun_factor"] for d in days[:3] if d.get("sun_factor") is not None]
+    late = [d["sun_factor"] for d in days[4:7] if d.get("sun_factor") is not None]
+    if len(early) < 2 or len(late) < 2:
+        return 0.0
+    early_m = sum(early) / len(early)
+    late_m = sum(late) / len(late)
+    if early_m <= 0.05:
+        return 0.0
+    drop = (early_m - late_m) / early_m
+    return round(max(0.0, min(1.0, drop)), 3)
+
+
+def weather_bump_from_score(base_kw: Optional[float], score: float, enabled: bool) -> float:
+    if not enabled or base_kw is None or score <= 0.02:
+        return 0.0
+    bump = float(base_kw) * WEATHER_BUMP_FRAC * float(score)
+    return round(max(0.0, bump), 3)
+
+
+def fetch_week_weather(
+    state: Dict[str, Any],
+    today: date,
+    *,
+    force: bool = False,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Holt/cached Open-Meteo für 7 rollierende Tage. Gibt (meta, neuer_cache) zurück."""
+    cache = dict(state.get("weather_cache") or {})
+    now = time.time()
+    cached_at = _f(cache.get("fetched_at"), 0.0)
+    if (
+        not force
+        and cache.get("ok")
+        and cache.get("anchor_date") == today.isoformat()
+        and now - cached_at < WEATHER_CACHE_SEC
+        and isinstance(cache.get("days"), list)
+    ):
+        return {
+            "ok": True,
+            "source": "open-meteo",
+            "forecast_days": WEATHER_FORECAST_DAYS,
+            "cached": True,
+            "days": cache.get("days"),
+            "worsening_score": _f(cache.get("worsening_score")),
+            "fetched_at": cache.get("fetched_at_iso"),
+        }, cache
+
+    lat, lon = _algo_lat_lon()
+    if lat is None or lon is None:
+        meta = {"ok": False, "error": "Keine Koordinaten im Steuerungsalgorithmus.", "forecast_days": WEATHER_FORECAST_DAYS}
+        return meta, cache
+    try:
+        from control_algorithm.weather import fetch_forecast
+
+        payload = fetch_forecast(lat, lon, forecast_days=WEATHER_FORECAST_DAYS)
+        days = _daily_sun_outlook(payload.get("hourly") or {}, today)
+        score = weather_worsening_score(days)
+        cache = {
+            "ok": True,
+            "anchor_date": today.isoformat(),
+            "fetched_at": now,
+            "fetched_at_iso": datetime.now().isoformat(timespec="seconds"),
+            "days": days,
+            "worsening_score": score,
+            "lat": lat,
+            "lon": lon,
+        }
+        meta = {
+            "ok": True,
+            "source": "open-meteo",
+            "forecast_days": WEATHER_FORECAST_DAYS,
+            "cached": False,
+            "days": days,
+            "worsening_score": score,
+            "fetched_at": cache["fetched_at_iso"],
+            "lat": lat,
+            "lon": lon,
+        }
+        return meta, cache
+    except Exception as exc:
+        meta = {
+            "ok": False,
+            "error": str(exc) or "Wetterabruf fehlgeschlagen",
+            "forecast_days": WEATHER_FORECAST_DAYS,
+        }
+        return meta, cache
+
+
+def _storage_kwh() -> Optional[float]:
+    try:
+        from control_algorithm.config import load_config
+
+        val = load_config().get("storage_kwh")
+        if val is None:
+            return None
+        return max(1.0, float(val))
+    except Exception:
+        return None
+
+
+def _live_soc_percent() -> Optional[float]:
+    try:
+        from dashboard_battery import load_battery_data
+
+        raw = load_battery_data().get("soc")
+        if raw is None:
+            return None
+        return max(0.0, min(100.0, float(str(raw).replace("%", "").replace(",", "."))))
+    except Exception:
+        return None
+
+
+def soc_hold_extra_kw(
+    targets: Dict[str, Any],
+    *,
+    efficiency: float,
+    current_soc: Optional[float],
+    storage_kwh: Optional[float],
+) -> Tuple[float, Dict[str, Any]]:
+    """Dauer-kW, um den Ziel-SoC im gewählten Fenster zu erreichen/halten."""
+    info: Dict[str, Any] = {
+        "enabled": bool(targets.get("soc_hold_enabled")),
+        "target_percent": targets.get("soc_hold_percent"),
+        "horizon_hours": int(targets.get("soc_hold_horizon_hours") or 24),
+        "current_soc": current_soc,
+        "storage_kwh": storage_kwh,
+        "gap_percent": None,
+        "needed_kwh": None,
+        "extra_kw": 0.0,
+    }
+    if not info["enabled"]:
+        return 0.0, info
+    if current_soc is None or storage_kwh is None:
+        info["note"] = "SoC oder Speicherkapazität fehlt."
+        return 0.0, info
+    target = float(targets.get("soc_hold_percent") or 5.0)
+    horizon = 48 if int(targets.get("soc_hold_horizon_hours") or 24) >= 48 else 24
+    gap = max(0.0, target - float(current_soc))
+    info["gap_percent"] = round(gap, 2)
+    if gap <= 0.05:
+        info["note"] = "Ziel bereits erreicht oder überschritten."
+        return 0.0, info
+    eff = min(1.0, max(0.5, float(efficiency)))
+    needed = (gap / 100.0) * float(storage_kwh) / eff
+    extra = needed / float(horizon)
+    info["needed_kwh"] = round(needed, 3)
+    info["extra_kw"] = round(extra, 3)
+    info["horizon_hours"] = horizon
+    return round(extra, 3), info
+
+
 def get_report(base_dir: str) -> Dict[str, Any]:
     path = _state_path(base_dir)
     today = date.today()
@@ -880,6 +1173,37 @@ def get_report(base_dir: str) -> Dict[str, Any]:
         }
         miners, algo_on = _miner_inputs(base_dir)
         days, eff = load_days(base_dir, today)
+        targets = dict(state.get("targets") or default_targets())
+        weather_meta, weather_cache = fetch_week_weather(state, today)
+        state["weather_cache"] = weather_cache
+        # Vorläufige Historien-Rechnung ohne Bumps, nur für Base-raw.
+        prelim = build_report_from_parts(
+            days,
+            miners,
+            modes,
+            efficiency=eff,
+            today=today,
+            prev=state.get("recommendation") or {},
+            algo_enabled=algo_on,
+            targets=targets,
+        )
+        base_raw = prelim.get("base_raw_kw")
+        if base_raw is None:
+            base_raw = prelim.get("raw_kw")
+        score = _f(weather_meta.get("worsening_score"))
+        weather_bump = weather_bump_from_score(
+            base_raw,
+            score,
+            bool(targets.get("weather_adjust_enabled", True)),
+        )
+        current_soc = _live_soc_percent()
+        storage = _storage_kwh()
+        soc_extra, soc_live = soc_hold_extra_kw(
+            targets,
+            efficiency=eff,
+            current_soc=current_soc,
+            storage_kwh=storage,
+        )
         report = build_report_from_parts(
             days,
             miners,
@@ -888,6 +1212,11 @@ def get_report(base_dir: str) -> Dict[str, Any]:
             today=today,
             prev=state.get("recommendation") or {},
             algo_enabled=algo_on,
+            weather_bump_kw=weather_bump,
+            soc_hold_kw=soc_extra,
+            weather_meta=weather_meta,
+            targets=targets,
+            soc_live=soc_live,
         )
         state["assumptions"] = report.pop("_modes")
         state["recommendation"] = report.pop("_locks")
@@ -920,6 +1249,33 @@ def save_assumptions(base_dir: str, modes: Dict[str, Any]) -> Dict[str, Any]:
         }
         merged.update(clean)
         state["assumptions"] = merged
+        _save_state(path, state)
+    return get_report(base_dir)
+
+
+def save_targets(base_dir: str, updates: Dict[str, Any]) -> Dict[str, Any]:
+    path = _state_path(base_dir)
+    with _lock:
+        state = _load_state(path)
+        targets = dict(state.get("targets") or default_targets())
+        if "soc_hold_enabled" in updates:
+            targets["soc_hold_enabled"] = bool(updates["soc_hold_enabled"])
+        if "weather_adjust_enabled" in updates:
+            targets["weather_adjust_enabled"] = bool(updates["weather_adjust_enabled"])
+        if "soc_hold_percent" in updates:
+            try:
+                targets["soc_hold_percent"] = max(1.0, min(95.0, float(updates["soc_hold_percent"])))
+            except (TypeError, ValueError):
+                raise ValueError("Ungültiges Speicherziel")
+        if "soc_hold_horizon_hours" in updates:
+            try:
+                horizon = int(updates["soc_hold_horizon_hours"])
+            except (TypeError, ValueError):
+                raise ValueError("Ungültiges Zeitfenster")
+            if horizon not in SOC_HOLD_HORIZONS:
+                raise ValueError("Zeitfenster muss 24 oder 48 Stunden sein")
+            targets["soc_hold_horizon_hours"] = horizon
+        state["targets"] = targets
         _save_state(path, state)
     return get_report(base_dir)
 

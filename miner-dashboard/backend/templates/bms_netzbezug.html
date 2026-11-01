@@ -5,7 +5,7 @@
 {% block content %}
   <div class="page-header">
     <h2>🔋 BMS · Netzbezug</h2>
-    <p>Live aus Home Assistant. Mit dem Häkchen geht der Zukauf ins Sollregister. Am dreiphasigen Niedervolt wird dabei die Netzladung freigegeben, der Überschuss lädt die Batterie.</p>
+    <p>Live aus Home Assistant. Mit dem Häkchen hält die Steuerung den Netzbezug auf dem Soll — unabhängig von der Hauslast. Mehr Last: Batterie entlädt (Spitzenkappung). Weniger Last: Netzladung in die Batterie. Die Zeitschaltuhr bleibt an.</p>
   </div>
 
   <div class="panel" style="max-width: none;">
@@ -20,8 +20,12 @@
         <p id="live_battery" style="margin:0; font-size: 1.6rem; font-weight: 700;">–</p>
       </div>
       <div class="stat-card" style="margin:0;">
-        <h5>Netzbezug</h5>
+        <h5>Netz Ist</h5>
         <p id="live_grid" style="margin:0; font-size: 1.6rem; font-weight: 700;">–</p>
+      </div>
+      <div class="stat-card" style="margin:0;">
+        <h5>Hauslast</h5>
+        <p id="live_load" style="margin:0; font-size: 1.6rem; font-weight: 700;">–</p>
       </div>
     </div>
     <p id="live_source" style="color: var(--muted); font-size: 0.82rem; margin: 0.75rem 0 0;"></p>
@@ -44,7 +48,7 @@
           <input id="real_mode" name="real_mode" type="checkbox" value="1" {% if settings.real_mode %}checked{% endif %}>
           Ins Register schreiben
         </label>
-        <div style="color: var(--muted); font-size: 0.78rem; margin-top: 0.3rem;">Ein: Mit Übernehmen werden Soll-Netzbezug und, am Drehstrom-Niedervolt, Netzladung geschrieben. Aus: nur Anzeige. Das Häkchen allein schreibt noch nichts.</div>
+        <div style="color: var(--muted); font-size: 0.78rem; margin-top: 0.3rem;">Ein: Nach Übernehmen wird der Soll-Netzbezug gehalten (Spitzenkappung plus Netzladung, Zeitschaltuhr an). Aus: nur Anzeige, Steuerung gibt frei. Das Häkchen allein schreibt noch nichts.</div>
       </div>
       <div>
         <label class="form-label" for="target_grid_kw">Zukauf/Einspeisung (kW)</label>
@@ -54,6 +58,46 @@
       <div>
         <label class="form-label" for="peak_cap_kw">Spitzenkappung ab (kW)</label>
         <input class="form-control" id="peak_cap_kw" name="peak_cap_kw" type="number" min="0" max="100" step="0.1" value="{{ settings.peak_cap_kw }}" required>
+      </div>
+      <div>
+        <label class="form-label" for="idle_grid_w">Stand nach Ausschalten (W)</label>
+        <input class="form-control" id="idle_grid_w" name="idle_grid_w" type="number" min="1" max="500" step="1" value="{{ settings.idle_grid_w }}" required>
+        <div style="color: var(--muted); font-size: 0.78rem; margin-top: 0.3rem;">Wird ins Zero-Export-Register geschrieben, sobald das Häkchen aus ist. Nie 0.</div>
+      </div>
+      <div>
+        <label class="form-label" for="idle_work_mode">Arbeitsmodus danach</label>
+        <select class="form-control" id="idle_work_mode" name="idle_work_mode">
+          <option value="2" {% if settings.idle_work_mode == 2 %}selected{% endif %}>Zero Export To CT</option>
+          <option value="0" {% if settings.idle_work_mode == 0 %}selected{% endif %}>Export First</option>
+        </select>
+      </div>
+      <div>
+        <label class="form-label" for="idle_energy_pattern">Energiebild danach</label>
+        <select class="form-control" id="idle_energy_pattern" name="idle_energy_pattern">
+          <option value="1" {% if settings.idle_energy_pattern == 1 %}selected{% endif %}>Load First</option>
+          <option value="0" {% if settings.idle_energy_pattern == 0 %}selected{% endif %}>Battery First</option>
+        </select>
+      </div>
+      <div>
+        <label class="form-label" for="idle_peak_w">Spitzenkappung danach (W)</label>
+        <input class="form-control" id="idle_peak_w" name="idle_peak_w" type="number" min="100" max="80000" step="100" value="{{ settings.idle_peak_w }}" required>
+      </div>
+      <div>
+        <label class="form-label" for="idle_tou_soc">ToU-Ziel-SOC danach (%)</label>
+        <input class="form-control" id="idle_tou_soc" name="idle_tou_soc" type="number" min="20" max="100" step="1" value="{{ settings.idle_tou_soc }}" required>
+      </div>
+      <div>
+        <label class="form-label" for="idle_tou_charging">ToU-Laden danach</label>
+        <select class="form-control" id="idle_tou_charging" name="idle_tou_charging">
+          <option value="0" {% if settings.idle_tou_charging == 0 %}selected{% endif %}>Aus</option>
+          <option value="1" {% if settings.idle_tou_charging == 1 %}selected{% endif %}>Netz</option>
+          <option value="2" {% if settings.idle_tou_charging == 2 %}selected{% endif %}>Generator</option>
+          <option value="3" {% if settings.idle_tou_charging == 3 %}selected{% endif %}>Beides</option>
+        </select>
+      </div>
+      <div>
+        <label class="form-label" for="idle_tou_power_w">ToU-Leistung danach (W)</label>
+        <input class="form-control" id="idle_tou_power_w" name="idle_tou_power_w" type="number" min="100" max="12000" step="100" value="{{ settings.idle_tou_power_w }}" required>
       </div>
       <div>
         <label class="form-label" for="modbus_host">Modbus-Host</label>
@@ -77,17 +121,31 @@
 
     <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.75rem;">
       <div class="stat-card" style="margin:0;">
-        <h5>Zukauf/Einspeisung</h5>
+        <h5>Netz Soll</h5>
         <p id="plan_target" style="margin:0; font-size: 1.4rem; font-weight: 700;">–</p>
       </div>
       <div class="stat-card" style="margin:0;">
-        <h5>Batterie-Sollleistung</h5>
-        <p id="plan_battery" style="margin:0; font-size: 1.4rem; font-weight: 700;">–</p>
+        <h5>Abweichung</h5>
+        <p id="plan_error" style="margin:0; font-size: 1.4rem; font-weight: 700;">–</p>
       </div>
       <div class="stat-card" style="margin:0;">
-        <h5>Spitzenkappung</h5>
+        <h5>Kappung bei</h5>
         <p id="plan_peak" style="margin:0; font-size: 1.4rem; font-weight: 700;">–</p>
       </div>
+    </div>
+    <h5 class="panel-title" style="margin-top: 1.2rem;">Register jetzt</h5>
+    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 0.75rem;">
+      <div class="stat-card" style="margin:0;"><h5>Zero Export</h5><p id="reg_zexp" style="margin:0; font-weight:700;">–</p></div>
+      <div class="stat-card" style="margin:0;"><h5>Arbeitsmodus</h5><p id="reg_mode" style="margin:0; font-weight:700;">–</p></div>
+      <div class="stat-card" style="margin:0;"><h5>Energiebild</h5><p id="reg_pattern" style="margin:0; font-weight:700;">–</p></div>
+      <div class="stat-card" style="margin:0;"><h5>Spitzenkappung</h5><p id="reg_peak" style="margin:0; font-weight:700;">–</p></div>
+      <div class="stat-card" style="margin:0;"><h5>Netzladen</h5><p id="reg_charge" style="margin:0; font-weight:700;">–</p></div>
+      <div class="stat-card" style="margin:0;"><h5>ToU-SOC</h5><p id="reg_tou_soc" style="margin:0; font-weight:700;">–</p></div>
+      <div class="stat-card" style="margin:0;"><h5>ToU-Laden</h5><p id="reg_tou_charge" style="margin:0; font-weight:700;">–</p></div>
+      <div class="stat-card" style="margin:0;"><h5>ToU-Leistung</h5><p id="reg_tou_power" style="margin:0; font-weight:700;">–</p></div>
+      <div class="stat-card" style="margin:0;"><h5>Max. Entladen</h5><p id="reg_dchg" style="margin:0; font-weight:700;">–</p></div>
+      <div class="stat-card" style="margin:0;"><h5>Max. Einspeisen</h5><p id="reg_export" style="margin:0; font-weight:700;">–</p></div>
+      <div class="stat-card" style="margin:0;"><h5>Solar Sell</h5><p id="reg_sell" style="margin:0; font-weight:700;">–</p></div>
     </div>
   </div>
 {% endblock %}
@@ -116,6 +174,7 @@
     const battery = live.battery_kw;
     document.getElementById("live_battery").textContent = battery == null ? "–" : (Number(battery).toFixed(1) + " kW " + (battery > 0.05 ? "Laden" : battery < -0.05 ? "Entladen" : ""));
     document.getElementById("live_grid").textContent = kw(live.grid_kw, 1);
+    document.getElementById("live_load").textContent = kw(live.load_kw, 1);
     document.getElementById("live_source").textContent = live.source || "";
     const box = document.getElementById("live_warnings");
     const warnings = (data.assessment && data.assessment.warnings) || [];
@@ -126,11 +185,37 @@
     const plan = data.plan || {};
     const target = plan.target_grid_kw;
     document.getElementById("plan_target").textContent = target == null || Number.isNaN(Number(target)) ? "–" : ((Number(target) > 0 ? "+" : "") + Number(target).toFixed(1) + " kW");
-    document.getElementById("plan_battery").textContent = plan.battery_setpoint_kw == null ? "–" : (Number(plan.battery_setpoint_kw).toFixed(1) + " kW");
-    document.getElementById("plan_peak").textContent = plan.peak_shave_kw == null ? "–" : (Number(plan.peak_shave_kw).toFixed(1) + " kW");
+    const grid = live.grid_kw;
+    const errEl = document.getElementById("plan_error");
+    if (grid == null || target == null || Number.isNaN(Number(grid)) || Number.isNaN(Number(target))) {
+      errEl.textContent = "–";
+    } else {
+      const err = Number(grid) - Number(target);
+      errEl.textContent = (err > 0 ? "+" : "") + err.toFixed(1) + " kW";
+    }
+    const cap = (data.settings && data.settings.peak_cap_kw) != null ? data.settings.peak_cap_kw : plan.target_grid_kw;
+    document.getElementById("plan_peak").textContent = cap == null ? "–" : (Number(cap).toFixed(1) + " kW");
+    const action = plan.action ? " · " + plan.action : "";
+    if (errEl.textContent !== "–") errEl.textContent += action;
     const write = document.getElementById("write_text");
     write.textContent = plan.write_text || "";
     write.style.color = plan.command_sent ? "var(--accent)" : "var(--muted)";
+    const reg = data.registers || {};
+    function shown(value, suffix) {
+      if (value == null || value === "" || value === "unknown" || value === "unavailable") return "–";
+      return suffix ? (value + suffix) : String(value);
+    }
+    document.getElementById("reg_zexp").textContent = shown(reg.zero_export_w, " W");
+    document.getElementById("reg_mode").textContent = shown(reg.work_mode);
+    document.getElementById("reg_pattern").textContent = shown(reg.energy_pattern);
+    document.getElementById("reg_peak").textContent = shown(reg.peak_w, " W");
+    document.getElementById("reg_charge").textContent = shown(reg.grid_charge) + (shown(reg.grid_charge_a) === "–" ? "" : (" / " + shown(reg.grid_charge_a, " A")));
+    document.getElementById("reg_tou_soc").textContent = shown(reg.program_soc, " %");
+    document.getElementById("reg_tou_charge").textContent = shown(reg.program_charging);
+    document.getElementById("reg_tou_power").textContent = shown(reg.program_power, " W");
+    document.getElementById("reg_dchg").textContent = shown(reg.max_discharge_a, " A");
+    document.getElementById("reg_export").textContent = shown(reg.max_export_w, " W");
+    document.getElementById("reg_sell").textContent = shown(reg.solar_sell);
   }
 
   async function refresh() {

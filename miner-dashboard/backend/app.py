@@ -274,6 +274,7 @@ def api_energie_settings():
             "gemeinschaft_bin_mitglied": form.get("gemeinschaft_bin_mitglied") in ("1", "true", "on"),
             "gemeinschaft_nutzen": form.get("gemeinschaft_nutzen") in ("1", "true", "on"),
             "algorithmische_planung": form.get("algorithmische_planung") in ("1", "true", "on"),
+            "autopilot": form.get("autopilot") in ("1", "true", "on"),
         }
     )
     return jsonify({"ok": True, "message": "Gespeichert.", "settings": saved})
@@ -529,6 +530,17 @@ def api_bms_netzbezug_settings():
         updates["target_grid_kw"] = form.get("target_grid_kw") or 0
     if "peak_cap_kw" in form:
         updates["peak_cap_kw"] = form.get("peak_cap_kw") or 0
+    for key in (
+        "idle_grid_w",
+        "idle_work_mode",
+        "idle_energy_pattern",
+        "idle_peak_w",
+        "idle_tou_soc",
+        "idle_tou_charging",
+        "idle_tou_power_w",
+    ):
+        if key in form:
+            updates[key] = form.get(key)
     if "modbus_host" in form:
         updates["modbus_host"] = form.get("modbus_host") or ""
     if "modbus_port" in form:
@@ -1510,6 +1522,32 @@ def api_grundverbrauch_annahmen():
         return jsonify({"ok": False, "error": "modes fehlt"}), 400
     try:
         report = save_assumptions(os.path.dirname(__file__), modes)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    report["ok"] = True
+    return jsonify(report)
+
+
+@app.route('/api/grundverbrauch/ziele', methods=['POST'])
+def api_grundverbrauch_ziele():
+    if not session.get('logged_in'):
+        return jsonify({"ok": False, "error": "nicht angemeldet"}), 401
+    from grundverbrauch_rechner import save_targets
+
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        return jsonify({"ok": False, "error": "Ungültige Anfrage"}), 400
+    updates = {}
+    if "soc_hold_enabled" in payload:
+        updates["soc_hold_enabled"] = payload.get("soc_hold_enabled") in (True, 1, "1", "true", "on")
+    if "weather_adjust_enabled" in payload:
+        updates["weather_adjust_enabled"] = payload.get("weather_adjust_enabled") in (True, 1, "1", "true", "on")
+    if "soc_hold_percent" in payload:
+        updates["soc_hold_percent"] = payload.get("soc_hold_percent")
+    if "soc_hold_horizon_hours" in payload:
+        updates["soc_hold_horizon_hours"] = payload.get("soc_hold_horizon_hours")
+    try:
+        report = save_targets(os.path.dirname(__file__), updates)
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
     report["ok"] = True

@@ -91,6 +91,131 @@
     .energy-tile.tile-exchange { --tile-glow: rgba(255, 196, 72, 0.4); }
     .energy-tile.tile-community { --tile-glow: rgba(90, 180, 255, 0.38); }
     .energy-tile.tile-algo { --tile-glow: rgba(0, 230, 118, 0.42); }
+    .energy-autopilot-bar {
+      position: sticky;
+      top: 0.65rem;
+      z-index: 40;
+      margin: 0 0 1.15rem;
+      padding: 0.7rem 0.95rem;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 0.65rem 1rem;
+      align-items: center;
+      border-radius: 16px;
+      border: 1px solid rgba(160, 210, 190, 0.22);
+      background:
+        linear-gradient(115deg, rgba(14, 48, 36, 0.82) 0%, rgba(10, 28, 34, 0.78) 52%, rgba(18, 26, 40, 0.8) 100%);
+      box-shadow: 0 8px 22px rgba(0, 0, 0, 0.18);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      transition: box-shadow 0.25s ease, border-color 0.25s ease, background 0.25s ease;
+    }
+    .energy-autopilot-bar.is-elevated {
+      border-color: rgba(0, 230, 118, 0.28);
+      box-shadow:
+        0 14px 36px rgba(0, 0, 0, 0.34),
+        0 0 0 1px rgba(0, 230, 118, 0.08);
+      background:
+        linear-gradient(115deg, rgba(12, 54, 40, 0.94) 0%, rgba(8, 26, 32, 0.92) 55%, rgba(16, 24, 38, 0.94) 100%);
+    }
+    .energy-autopilot-bar .energy-switch {
+      padding: 0;
+      border: 0;
+      background: transparent;
+      gap: 1rem;
+    }
+    .energy-autopilot-bar .energy-switch.is-disabled {
+      opacity: 0.5;
+    }
+    .energy-autopilot-title {
+      display: flex;
+      align-items: baseline;
+      gap: 0.55rem;
+      flex-wrap: wrap;
+    }
+    .energy-autopilot-title strong {
+      color: #fff;
+      font-size: 0.98rem;
+      font-weight: 800;
+      letter-spacing: -0.01em;
+    }
+    .energy-autopilot-title span {
+      color: rgba(232, 246, 239, 0.52);
+      font-size: 0.78rem;
+      font-weight: 500;
+    }
+    .energy-autopilot-note {
+      grid-column: 1 / -1;
+      margin: 0;
+      color: rgba(232, 246, 239, 0.48);
+      font-size: 0.76rem;
+      line-height: 1.35;
+      min-height: 1.1em;
+    }
+    @media (max-width: 640px) {
+      .energy-autopilot-bar {
+        grid-template-columns: 1fr;
+        top: 0.4rem;
+      }
+    }
+    .energy-confirm {
+      position: fixed;
+      inset: 0;
+      z-index: 12000;
+      display: grid;
+      place-items: center;
+      padding: 1rem;
+      background: rgba(2, 10, 8, 0.72);
+      backdrop-filter: blur(6px);
+    }
+    .energy-confirm[hidden] { display: none; }
+    .energy-confirm-card {
+      width: min(92vw, 420px);
+      border-radius: 20px;
+      border: 1px solid rgba(120, 220, 170, 0.28);
+      background: linear-gradient(160deg, rgba(12, 36, 28, 0.98), rgba(8, 16, 22, 0.98));
+      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+      padding: 1.35rem 1.35rem 1.2rem;
+      display: grid;
+      gap: 1rem;
+      font-family: "Outfit", "Segoe UI", sans-serif;
+    }
+    .energy-confirm-card h3 {
+      margin: 0;
+      color: #fff;
+      font-size: 1.2rem;
+      font-weight: 800;
+    }
+    .energy-confirm-card p {
+      margin: 0;
+      color: rgba(232, 246, 239, 0.78);
+      line-height: 1.45;
+      font-size: 0.98rem;
+    }
+    .energy-confirm-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.65rem;
+      justify-content: flex-end;
+    }
+    .energy-confirm-actions button {
+      appearance: none;
+      border: 0;
+      cursor: pointer;
+      font-family: inherit;
+      font-weight: 700;
+      border-radius: 999px;
+      padding: 0.7rem 1.15rem;
+    }
+    .energy-confirm-cancel {
+      color: #e8f6ef;
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.12) !important;
+    }
+    .energy-confirm-ok {
+      color: #04140d;
+      background: linear-gradient(120deg, #7CFFB2 0%, #00E676 45%, #00BFA5 100%);
+    }
     .energy-tile-head {
       display: flex;
       align-items: flex-start;
@@ -290,10 +415,26 @@
   <div class="energy-stage">
     <div class="energy-hero">
       <h2 class="brand">Energie</h2>
-      <p>Drei Steuerpunkte für Börse, Gemeinschaft und Speicherplanung. Die Schalter werden gespeichert und greifen erst nach Übernehmen.</p>
+      <p>Steuerpunkte für Börse, Gemeinschaft und Speicherplanung. Autopilot ist vorerst nur Anzeige — die Schalter greifen erst nach Übernehmen.</p>
     </div>
 
     <form id="energy_form">
+      <section class="energy-autopilot-bar" id="autopilot_bar" aria-label="Autopilot">
+        <label class="energy-switch" id="wrap_autopilot">
+          <div class="energy-switch-label">
+            <div class="energy-autopilot-title">
+              <strong>Autopilot</strong>
+              <span>Anzeige · mind. zwei Punkte darunter</span>
+            </div>
+          </div>
+          <span class="energy-toggle">
+            <input type="checkbox" id="autopilot" name="autopilot" value="1" {% if settings.autopilot %}checked{% endif %}>
+            <span class="energy-toggle-track"></span>
+          </span>
+        </label>
+        <p class="energy-autopilot-note" id="autopilot_note"></p>
+      </section>
+
       <div class="energy-grid">
         <section class="energy-tile tile-exchange">
           <div class="energy-tile-head">
@@ -401,6 +542,17 @@
       </div>
     </div>
   </div>
+
+  <div class="energy-confirm" id="autopilot_confirm" hidden>
+    <div class="energy-confirm-card" role="dialog" aria-modal="true" aria-labelledby="autopilot_confirm_title">
+      <h3 id="autopilot_confirm_title">Autopilot</h3>
+      <p>Möchten Sie Autopilot aktivieren? Dieser steuert am effizientesten, je nach Lage.</p>
+      <div class="energy-confirm-actions">
+        <button type="button" class="energy-confirm-cancel" id="autopilot_confirm_cancel">Abbrechen</button>
+        <button type="button" class="energy-confirm-ok" id="autopilot_confirm_ok">Bestätigen</button>
+      </div>
+    </div>
+  </div>
 {% endblock %}
 
 {% block extra_scripts %}
@@ -414,6 +566,34 @@
   const inCommunity = document.getElementById("gemeinschaft_bin_mitglied");
   const useCommunity = document.getElementById("gemeinschaft_nutzen");
   const wrapUseCommunity = document.getElementById("wrap_gemeinschaft_nutzen");
+  const algoPlan = document.getElementById("algorithmische_planung");
+  const autopilot = document.getElementById("autopilot");
+  const wrapAutopilot = document.getElementById("wrap_autopilot");
+  const autopilotNote = document.getElementById("autopilot_note");
+  const confirmBox = document.getElementById("autopilot_confirm");
+  const confirmOk = document.getElementById("autopilot_confirm_ok");
+  const confirmCancel = document.getElementById("autopilot_confirm_cancel");
+  const autopilotBar = document.getElementById("autopilot_bar");
+  let confirmOpen = false;
+
+  function syncAutopilotElevation() {
+    if (!autopilotBar) return;
+    const scroller = document.querySelector(".main-content") || window;
+    const top = scroller === window ? window.scrollY : scroller.scrollTop;
+    autopilotBar.classList.toggle("is-elevated", top > 8);
+  }
+  const scrollRoot = document.querySelector(".main-content") || window;
+  scrollRoot.addEventListener("scroll", syncAutopilotElevation, { passive: true });
+  window.addEventListener("scroll", syncAutopilotElevation, { passive: true });
+  syncAutopilotElevation();
+
+  function pillarCount() {
+    let n = 0;
+    if (useExchange.checked) n += 1;
+    if (useCommunity.checked) n += 1;
+    if (algoPlan.checked) n += 1;
+    return n;
+  }
 
   function syncDependent() {
     const canUseExchange = ownExchange.checked;
@@ -425,26 +605,82 @@
     wrapUseCommunity.classList.toggle("is-disabled", !canUseCommunity);
     useCommunity.disabled = !canUseCommunity;
     if (!canUseCommunity) useCommunity.checked = false;
+
+    const ready = pillarCount() >= 2;
+    wrapAutopilot.classList.toggle("is-disabled", !ready);
+    autopilot.disabled = !ready;
+    if (!ready) {
+      autopilot.checked = false;
+      autopilotNote.textContent = "Mindestens zwei der drei Punkte darunter müssen aktiv sein.";
+    } else {
+      autopilotNote.textContent = "Bereit: Autopilot kann eingeschaltet und gespeichert werden (noch ohne Steuerung).";
+    }
   }
+
+  function closeConfirm(restoreOff) {
+    confirmOpen = false;
+    confirmBox.hidden = true;
+    if (restoreOff) autopilot.checked = false;
+  }
+
+  autopilot.addEventListener("change", function () {
+    if (!autopilot.checked) return;
+    if (pillarCount() < 2) {
+      autopilot.checked = false;
+      syncDependent();
+      return;
+    }
+    // Aktivierung nur nach Bestätigung.
+    autopilot.checked = false;
+    confirmOpen = true;
+    confirmBox.hidden = false;
+  });
+
+  confirmOk.addEventListener("click", function () {
+    if (!confirmOpen) return;
+    closeConfirm(false);
+    if (pillarCount() < 2) {
+      syncDependent();
+      return;
+    }
+    autopilot.checked = true;
+  });
+
+  confirmCancel.addEventListener("click", function () {
+    closeConfirm(true);
+  });
+
+  confirmBox.addEventListener("click", function (event) {
+    if (event.target === confirmBox) closeConfirm(true);
+  });
 
   ownExchange.addEventListener("change", syncDependent);
   inCommunity.addEventListener("change", syncDependent);
+  useExchange.addEventListener("change", syncDependent);
+  useCommunity.addEventListener("change", syncDependent);
+  algoPlan.addEventListener("change", syncDependent);
   syncDependent();
 
   form.addEventListener("submit", async function (event) {
     event.preventDefault();
+    syncDependent();
     const body = new FormData();
     body.set("boersentarif_besitze", ownExchange.checked ? "1" : "0");
     body.set("boersentarif_nutzen", useExchange.checked ? "1" : "0");
     body.set("gemeinschaft_bin_mitglied", inCommunity.checked ? "1" : "0");
     body.set("gemeinschaft_nutzen", useCommunity.checked ? "1" : "0");
-    body.set("algorithmische_planung", document.getElementById("algorithmische_planung").checked ? "1" : "0");
+    body.set("algorithmische_planung", algoPlan.checked ? "1" : "0");
+    body.set("autopilot", autopilot.checked ? "1" : "0");
     const response = await fetch("/api/energie/settings", {
       method: "POST",
       body: body,
       credentials: "same-origin",
     });
     const data = await response.json();
+    if (data.ok && data.settings) {
+      autopilot.checked = Boolean(data.settings.autopilot);
+      syncDependent();
+    }
     hint.textContent = data.message || (data.ok ? "Gespeichert." : "Speichern fehlgeschlagen.");
     hint.style.color = data.ok ? "#7CFFB2" : "#ff8a80";
   });

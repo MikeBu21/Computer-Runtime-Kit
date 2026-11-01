@@ -38,13 +38,19 @@ def geocode_city(city: str, country: str = "") -> Tuple[Optional[float], Optiona
     return lat, lon, display
 
 
-def fetch_forecast(lat: float, lon: float, timezone: str = "Europe/Vienna") -> Dict[str, Any]:
+def fetch_forecast(
+    lat: float,
+    lon: float,
+    timezone: str = "Europe/Vienna",
+    forecast_days: int = 2,
+) -> Dict[str, Any]:
+    days = max(1, min(16, int(forecast_days)))
     params = {
         "latitude": lat,
         "longitude": lon,
         "hourly": "weather_code,cloud_cover,shortwave_radiation,sunshine_duration",
         "timezone": timezone,
-        "forecast_days": 2,
+        "forecast_days": days,
     }
     url = FORECAST_URL + "?" + urllib.parse.urlencode(params)
     return _fetch_json(url)

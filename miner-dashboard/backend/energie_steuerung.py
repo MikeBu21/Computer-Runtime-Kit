@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Energie-Dashboard: Börsentarif, Energiegemeinschaft, algorithmische Planung."""
+"""Energie-Dashboard: Börsentarif, Energiegemeinschaft, algorithmische Planung, Autopilot."""
 from __future__ import annotations
 
 import json
@@ -20,8 +20,32 @@ def default_settings() -> Dict[str, Any]:
         "gemeinschaft_bin_mitglied": False,
         "gemeinschaft_nutzen": False,
         "algorithmische_planung": False,
+        "autopilot": False,
         "soc_target_percent": SOC_TARGET_PERCENT,
     }
+
+
+def active_pillar_count(data: Dict[str, Any]) -> int:
+    """Wie viele der drei Punkte darunter aktiv sind (Nutzen bzw. Planung)."""
+    count = 0
+    if data.get("boersentarif_nutzen"):
+        count += 1
+    if data.get("gemeinschaft_nutzen"):
+        count += 1
+    if data.get("algorithmische_planung"):
+        count += 1
+    return count
+
+
+def _normalize(data: Dict[str, Any]) -> Dict[str, Any]:
+    if not data["boersentarif_besitze"]:
+        data["boersentarif_nutzen"] = False
+    if not data["gemeinschaft_bin_mitglied"]:
+        data["gemeinschaft_nutzen"] = False
+    # Autopilot ist nur Anzeige; Speichern erlaubt nur bei mind. zwei aktiven Punkten.
+    if active_pillar_count(data) < 2:
+        data["autopilot"] = False
+    return data
 
 
 def load_settings() -> Dict[str, Any]:
@@ -42,12 +66,7 @@ def load_settings() -> Dict[str, Any]:
                 data["soc_target_percent"] = max(10.0, min(95.0, target))
             except (TypeError, ValueError):
                 pass
-    # Nutzen nur, wenn Besitz bzw. Mitgliedschaft aktiv ist.
-    if not data["boersentarif_besitze"]:
-        data["boersentarif_nutzen"] = False
-    if not data["gemeinschaft_bin_mitglied"]:
-        data["gemeinschaft_nutzen"] = False
-    return data
+    return _normalize(data)
 
 
 def save_settings(updates: Dict[str, Any]) -> Dict[str, Any]:
@@ -58,6 +77,7 @@ def save_settings(updates: Dict[str, Any]) -> Dict[str, Any]:
         "gemeinschaft_bin_mitglied",
         "gemeinschaft_nutzen",
         "algorithmische_planung",
+        "autopilot",
     ):
         if key in updates:
             data[key] = bool(updates[key])
@@ -66,10 +86,7 @@ def save_settings(updates: Dict[str, Any]) -> Dict[str, Any]:
             data["soc_target_percent"] = max(10.0, min(95.0, float(updates["soc_target_percent"])))
         except (TypeError, ValueError):
             pass
-    if not data["boersentarif_besitze"]:
-        data["boersentarif_nutzen"] = False
-    if not data["gemeinschaft_bin_mitglied"]:
-        data["gemeinschaft_nutzen"] = False
+    data = _normalize(data)
     SETTINGS_FILE.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     return data
 
@@ -79,4 +96,6 @@ def status() -> Dict[str, Any]:
     return {
         "settings": settings,
         "soc_target_percent": settings["soc_target_percent"],
+        "active_pillars": active_pillar_count(settings),
+        "autopilot_ready": active_pillar_count(settings) >= 2,
     }
