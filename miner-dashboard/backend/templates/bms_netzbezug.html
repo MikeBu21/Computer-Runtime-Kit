@@ -2,10 +2,25 @@
 
 {% block title %}BMS Netzbezug{% endblock %}
 
+{% block extra_head %}
+<style>
+  .write-switch { display:inline-flex; align-items:center; gap:0.8rem; padding:0.35rem 0; cursor:pointer; user-select:none; margin-bottom:1.1rem; }
+  .write-switch input { position:absolute; opacity:0; width:0; height:0; }
+  .write-switch .track { position:relative; flex:0 0 auto; width:64px; height:32px; border-radius:16px; background:#555; transition:background 0.2s; }
+  .write-switch .knob { position:absolute; top:3px; left:3px; width:26px; height:26px; border-radius:50%; background:#fff; box-shadow:0 2px 6px rgba(0,0,0,0.4); transition:left 0.2s; }
+  .write-switch input:checked + .track { background:var(--accent, #4caf50); }
+  .write-switch input:checked + .track .knob { left:35px; }
+  .write-switch input:focus-visible + .track { outline:2px solid #fff; outline-offset:2px; }
+  .write-switch .switch-title { font-size:1.1rem; font-weight:700; }
+  .write-switch .switch-state { color:var(--muted); font-size:0.85rem; }
+  .ceiling { font-size:0.72rem; color:#ffb300; margin-left:0.35rem; }
+</style>
+{% endblock %}
+
 {% block content %}
   <div class="page-header">
     <h2>🔋 BMS · Netzbezug</h2>
-    <p>Live aus Home Assistant. Mit dem Häkchen hält die Steuerung den Netzbezug auf dem Soll — unabhängig von der Hauslast. Mehr Last: Batterie entlädt (Spitzenkappung). Weniger Last: Netzladung in die Batterie. Die Zeitschaltuhr bleibt an.</p>
+    <p>Live aus Home Assistant. Mit dem Schalter hält die Steuerung den Netzbezug auf dem Soll — unabhängig von der Hauslast. Mehr Last: Batterie entlädt. Weniger Last: Netzladung in die Batterie. Die Spitzenkappung stellt die Steuerung selbst. Schalter aus: die Elektriker-Werte unten werden zurückgeschrieben.</p>
   </div>
 
   <div class="panel" style="max-width: none;">
@@ -33,6 +48,14 @@
   </div>
 
   <div class="panel" style="max-width: none;">
+    <label class="write-switch" for="real_mode">
+      <input id="real_mode" type="checkbox" role="switch" {% if settings.real_mode %}checked{% endif %}>
+      <span class="track"><span class="knob"></span></span>
+      <span>
+        <span class="switch-title">Ins Register schreiben</span><br>
+        <span id="real_mode_state" class="switch-state">{% if settings.real_mode %}Ein: Soll wird gehalten.{% else %}Aus: Normalbetrieb mit Elektriker-Werten.{% endif %}</span>
+      </span>
+    </label>
     <form id="bms_form" class="field-grid">
       <div>
         <label class="form-label" for="inverter">Wechselrichtertyp</label>
@@ -44,60 +67,9 @@
         <p id="inverter_note" style="color: var(--muted); font-size: 0.82rem; margin: 0.45rem 0 0;"></p>
       </div>
       <div>
-        <label class="form-label" style="display:flex; gap:0.6rem; align-items:center;">
-          <input id="real_mode" name="real_mode" type="checkbox" value="1" {% if settings.real_mode %}checked{% endif %}>
-          Ins Register schreiben
-        </label>
-        <div style="color: var(--muted); font-size: 0.78rem; margin-top: 0.3rem;">Ein: Nach Übernehmen wird der Soll-Netzbezug gehalten (Spitzenkappung plus Netzladung, Zeitschaltuhr an). Aus: nur Anzeige, Steuerung gibt frei. Das Häkchen allein schreibt noch nichts.</div>
-      </div>
-      <div>
         <label class="form-label" for="target_grid_kw">Zukauf/Einspeisung (kW)</label>
         <input class="form-control" id="target_grid_kw" name="target_grid_kw" type="number" min="-100" max="100" step="0.1" value="{{ settings.target_grid_kw }}" required>
         <div style="color: var(--muted); font-size: 0.78rem; margin-top: 0.3rem;">Plus ist Zukauf, Minus ist Einspeisung.</div>
-      </div>
-      <div>
-        <label class="form-label" for="peak_cap_kw">Spitzenkappung ab (kW)</label>
-        <input class="form-control" id="peak_cap_kw" name="peak_cap_kw" type="number" min="0" max="100" step="0.1" value="{{ settings.peak_cap_kw }}" required>
-      </div>
-      <div>
-        <label class="form-label" for="idle_grid_w">Stand nach Ausschalten (W)</label>
-        <input class="form-control" id="idle_grid_w" name="idle_grid_w" type="number" min="1" max="500" step="1" value="{{ settings.idle_grid_w }}" required>
-        <div style="color: var(--muted); font-size: 0.78rem; margin-top: 0.3rem;">Wird ins Zero-Export-Register geschrieben, sobald das Häkchen aus ist. Nie 0.</div>
-      </div>
-      <div>
-        <label class="form-label" for="idle_work_mode">Arbeitsmodus danach</label>
-        <select class="form-control" id="idle_work_mode" name="idle_work_mode">
-          <option value="2" {% if settings.idle_work_mode == 2 %}selected{% endif %}>Zero Export To CT</option>
-          <option value="0" {% if settings.idle_work_mode == 0 %}selected{% endif %}>Export First</option>
-        </select>
-      </div>
-      <div>
-        <label class="form-label" for="idle_energy_pattern">Energiebild danach</label>
-        <select class="form-control" id="idle_energy_pattern" name="idle_energy_pattern">
-          <option value="1" {% if settings.idle_energy_pattern == 1 %}selected{% endif %}>Load First</option>
-          <option value="0" {% if settings.idle_energy_pattern == 0 %}selected{% endif %}>Battery First</option>
-        </select>
-      </div>
-      <div>
-        <label class="form-label" for="idle_peak_w">Spitzenkappung danach (W)</label>
-        <input class="form-control" id="idle_peak_w" name="idle_peak_w" type="number" min="100" max="80000" step="100" value="{{ settings.idle_peak_w }}" required>
-      </div>
-      <div>
-        <label class="form-label" for="idle_tou_soc">ToU-Ziel-SOC danach (%)</label>
-        <input class="form-control" id="idle_tou_soc" name="idle_tou_soc" type="number" min="20" max="100" step="1" value="{{ settings.idle_tou_soc }}" required>
-      </div>
-      <div>
-        <label class="form-label" for="idle_tou_charging">ToU-Laden danach</label>
-        <select class="form-control" id="idle_tou_charging" name="idle_tou_charging">
-          <option value="0" {% if settings.idle_tou_charging == 0 %}selected{% endif %}>Aus</option>
-          <option value="1" {% if settings.idle_tou_charging == 1 %}selected{% endif %}>Netz</option>
-          <option value="2" {% if settings.idle_tou_charging == 2 %}selected{% endif %}>Generator</option>
-          <option value="3" {% if settings.idle_tou_charging == 3 %}selected{% endif %}>Beides</option>
-        </select>
-      </div>
-      <div>
-        <label class="form-label" for="idle_tou_power_w">ToU-Leistung danach (W)</label>
-        <input class="form-control" id="idle_tou_power_w" name="idle_tou_power_w" type="number" min="100" max="12000" step="100" value="{{ settings.idle_tou_power_w }}" required>
       </div>
       <div>
         <label class="form-label" for="modbus_host">Modbus-Host</label>
@@ -148,6 +120,85 @@
       <div class="stat-card" style="margin:0;"><h5>Solar Sell</h5><p id="reg_sell" style="margin:0; font-weight:700;">–</p></div>
     </div>
   </div>
+
+  <div class="panel" style="max-width: none;">
+    <h5 class="panel-title">Elektriker-Werte (Normalbetrieb)</h5>
+    <p style="color: var(--muted); font-size: 0.82rem; margin: 0 0 0.9rem;">So hat der Elektriker den Wechselrichter eingestellt. Diese Werte werden zurückgeschrieben, sobald „Ins Register schreiben“ aus ist. Die mit <span class="ceiling" style="margin:0;">Obergrenze</span> markierten Werte überschreitet die Steuerung nie.</p>
+    <form id="installer_form" class="field-grid">
+      <div>
+        <label class="form-label" for="install_max_charge_a">Max. Laden (A)<span class="ceiling">Obergrenze</span></label>
+        <input class="form-control" id="install_max_charge_a" name="install_max_charge_a" type="number" min="0" max="350" step="1" value="{{ settings.install_max_charge_a }}" required>
+      </div>
+      <div>
+        <label class="form-label" for="install_max_discharge_a">Max. Entladen (A)<span class="ceiling">Obergrenze</span></label>
+        <input class="form-control" id="install_max_discharge_a" name="install_max_discharge_a" type="number" min="0" max="350" step="1" value="{{ settings.install_max_discharge_a }}" required>
+      </div>
+      <div>
+        <label class="form-label" for="install_max_sell_w">Max. Einspeisen (W)<span class="ceiling">Obergrenze</span></label>
+        <input class="form-control" id="install_max_sell_w" name="install_max_sell_w" type="number" min="0" max="24000" step="10" value="{{ settings.install_max_sell_w }}" required>
+      </div>
+      <div>
+        <label class="form-label" for="install_max_import_w">Max. Netzbezug (W)<span class="ceiling">Obergrenze</span></label>
+        <input class="form-control" id="install_max_import_w" name="install_max_import_w" type="number" min="0" max="80000" step="10" value="{{ settings.install_max_import_w }}" required>
+      </div>
+      <div>
+        <label class="form-label" for="idle_grid_w">Zero Export (W)</label>
+        <input class="form-control" id="idle_grid_w" name="idle_grid_w" type="number" min="1" max="500" step="1" value="{{ settings.idle_grid_w }}" required>
+        <div style="color: var(--muted); font-size: 0.78rem; margin-top: 0.3rem;">Nie 0.</div>
+      </div>
+      <div>
+        <label class="form-label" for="install_shutdown_soc">Entladen bis, Abschalt-SOC (%)</label>
+        <input class="form-control" id="install_shutdown_soc" name="install_shutdown_soc" type="number" min="0" max="100" step="1" value="{{ settings.install_shutdown_soc }}" required>
+      </div>
+      <div>
+        <label class="form-label" for="install_restart_soc">Wiederanlauf-SOC (%)</label>
+        <input class="form-control" id="install_restart_soc" name="install_restart_soc" type="number" min="0" max="100" step="1" value="{{ settings.install_restart_soc }}" required>
+      </div>
+      <div>
+        <label class="form-label" for="install_low_soc">Batterie-niedrig-SOC (%)</label>
+        <input class="form-control" id="install_low_soc" name="install_low_soc" type="number" min="0" max="100" step="1" value="{{ settings.install_low_soc }}" required>
+      </div>
+      <div>
+        <label class="form-label" for="idle_work_mode">Arbeitsmodus</label>
+        <select class="form-control" id="idle_work_mode" name="idle_work_mode">
+          <option value="2" {% if settings.idle_work_mode == 2 %}selected{% endif %}>Zero Export To CT</option>
+          <option value="0" {% if settings.idle_work_mode == 0 %}selected{% endif %}>Export First</option>
+        </select>
+      </div>
+      <div>
+        <label class="form-label" for="idle_energy_pattern">Energiebild</label>
+        <select class="form-control" id="idle_energy_pattern" name="idle_energy_pattern">
+          <option value="1" {% if settings.idle_energy_pattern == 1 %}selected{% endif %}>Load First</option>
+          <option value="0" {% if settings.idle_energy_pattern == 0 %}selected{% endif %}>Battery First</option>
+        </select>
+      </div>
+      <div>
+        <label class="form-label" for="idle_peak_w">Spitzenkappung (W)</label>
+        <input class="form-control" id="idle_peak_w" name="idle_peak_w" type="number" min="100" max="80000" step="100" value="{{ settings.idle_peak_w }}" required>
+      </div>
+      <div>
+        <label class="form-label" for="idle_tou_soc">ToU-Ziel-SOC (%)</label>
+        <input class="form-control" id="idle_tou_soc" name="idle_tou_soc" type="number" min="20" max="100" step="1" value="{{ settings.idle_tou_soc }}" required>
+      </div>
+      <div>
+        <label class="form-label" for="idle_tou_charging">ToU-Laden</label>
+        <select class="form-control" id="idle_tou_charging" name="idle_tou_charging">
+          <option value="0" {% if settings.idle_tou_charging == 0 %}selected{% endif %}>Aus</option>
+          <option value="1" {% if settings.idle_tou_charging == 1 %}selected{% endif %}>Netz</option>
+          <option value="2" {% if settings.idle_tou_charging == 2 %}selected{% endif %}>Generator</option>
+          <option value="3" {% if settings.idle_tou_charging == 3 %}selected{% endif %}>Beides</option>
+        </select>
+      </div>
+      <div>
+        <label class="form-label" for="idle_tou_power_w">ToU-Leistung (W)</label>
+        <input class="form-control" id="idle_tou_power_w" name="idle_tou_power_w" type="number" min="100" max="12000" step="100" value="{{ settings.idle_tou_power_w }}" required>
+      </div>
+    </form>
+    <div class="action-row">
+      <button type="submit" form="installer_form" class="btn-primary-custom">Elektriker-Werte speichern</button>
+    </div>
+    <p id="installer_hint" style="color: var(--muted); min-height: 1.2rem;"></p>
+  </div>
 {% endblock %}
 
 {% block extra_scripts %}
@@ -197,6 +248,10 @@
     document.getElementById("plan_peak").textContent = cap == null ? "–" : (Number(cap).toFixed(1) + " kW");
     const action = plan.action ? " · " + plan.action : "";
     if (errEl.textContent !== "–") errEl.textContent += action;
+    if (data.settings && typeof data.settings.real_mode === "boolean" && writeSwitch.checked !== data.settings.real_mode) {
+      writeSwitch.checked = data.settings.real_mode;
+      paintSwitch();
+    }
     const write = document.getElementById("write_text");
     write.textContent = plan.write_text || "";
     write.style.color = plan.command_sent ? "var(--accent)" : "var(--muted)";
@@ -224,15 +279,40 @@
     if (data.ok) paint(data);
   }
 
-  form.addEventListener("submit", async function (event) {
-    event.preventDefault();
-    const body = new FormData(form);
-    if (!document.getElementById("real_mode").checked) body.set("real_mode", "0");
+  async function post(body, target) {
     const response = await fetch("/api/bms-netzbezug/settings", { method: "POST", body: body, credentials: "same-origin" });
     const data = await response.json();
-    hint.textContent = data.message || (data.ok ? "Gespeichert." : "Speichern fehlgeschlagen.");
-    hint.style.color = data.ok ? "var(--accent)" : "#f44336";
+    target.textContent = data.message || (data.ok ? "Gespeichert." : "Speichern fehlgeschlagen.");
+    target.style.color = data.ok ? "var(--accent)" : "#f44336";
     if (data.ok) refresh();
+    return data;
+  }
+
+  form.addEventListener("submit", function (event) {
+    event.preventDefault();
+    post(new FormData(form), hint);
+  });
+
+  const installerForm = document.getElementById("installer_form");
+  installerForm.addEventListener("submit", function (event) {
+    event.preventDefault();
+    post(new FormData(installerForm), document.getElementById("installer_hint"));
+  });
+
+  const writeSwitch = document.getElementById("real_mode");
+  const writeState = document.getElementById("real_mode_state");
+  function paintSwitch() {
+    writeState.textContent = writeSwitch.checked ? "Ein: Soll wird gehalten." : "Aus: Normalbetrieb mit Elektriker-Werten.";
+  }
+  writeSwitch.addEventListener("change", async function () {
+    paintSwitch();
+    const body = new FormData();
+    body.set("real_mode", writeSwitch.checked ? "1" : "0");
+    const data = await post(body, hint);
+    if (!data.ok) {
+      writeSwitch.checked = !writeSwitch.checked;
+      paintSwitch();
+    }
   });
 
   select.addEventListener("change", paintNote);

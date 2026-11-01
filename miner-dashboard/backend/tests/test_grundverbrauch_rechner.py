@@ -208,6 +208,22 @@ class LockTests(unittest.TestCase):
         self.assertEqual(jumped["weekly_kw"], 2.5)
         self.assertEqual(jumped["daily_kw"], 2.5)
 
+    def test_daily_refreshes_after_ten_hours(self):
+        from datetime import datetime, timedelta
+
+        today = date(2026, 9, 29)
+        first = apply_recommendation_locks(
+            {}, 1.0, today, season_shift=False, fingerprint="a"
+        )
+        stale = dict(first)
+        stale["daily_updated_at"] = (datetime.now() - timedelta(hours=11)).isoformat(timespec="seconds")
+        nxt = apply_recommendation_locks(
+            stale, 2.0, today, season_shift=False, fingerprint="a"
+        )
+        self.assertTrue(nxt["daily_updated"])
+        self.assertGreater(nxt["daily_kw"], 1.0)
+        self.assertLess(nxt["daily_kw"], 1.3)
+
     def test_zero_anchor_can_reach_new_raw_next_week(self):
         first = apply_recommendation_locks(
             {}, 0.0, date(2026, 9, 28), season_shift=False, fingerprint="a"

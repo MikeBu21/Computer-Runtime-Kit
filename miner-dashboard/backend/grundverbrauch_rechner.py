@@ -35,6 +35,9 @@ WEEKLY_STEP = 0.25
 WEEKLY_STEP_SEASON = 0.50
 DAILY_STEP_REL = 0.08
 DAILY_STEP_ABS = 0.15
+# Der Tageswert bleibt stehen und wird höchstens alle 10 Stunden nachgezogen,
+# zusätzlich beim Kalendertag. So folgt der Zukauf Wetter und Speicher, ohne zu zittern.
+DAILY_REFRESH = timedelta(hours=10)
 MODES = ("continuous", "off")
 WEATHER_FORECAST_DAYS = 7
 WEATHER_CACHE_SEC = 3600
@@ -308,15 +311,26 @@ def apply_recommendation_locks(
         weekly = round(weekly_prev, 3)
         weekly_updated = False
 
-    if assumption_changed or daily_prev is None:
-        daily = round(raw_kw, 3)
-        daily_updated = True
-    elif prev.get("daily_id") != daily_id:
-        daily = _clamp_step(daily_prev, raw_kw, DAILY_STEP_REL, DAILY_STEP_ABS)
-        daily_updated = True
-    else:
+    now = datetime.now()
+    refreshed_at = _parsed_stamp(prev.get("daily_updated_at"))
+    daily_due = (
+        assumption_changed
+        or daily_prev is None
+        or prev.get("daily_id") != daily_id
+        or (refreshed_at is not None and now - refreshed_at >= DAILY_REFRESH)
+    )
+    if not daily_due:
         daily = round(daily_prev, 3)
         daily_updated = False
+        daily_updated_at = prev.get("daily_updated_at")
+    elif assumption_changed or daily_prev is None:
+        daily = round(raw_kw, 3)
+        daily_updated = True
+        daily_updated_at = now.isoformat(timespec="seconds")
+    else:
+        daily = _clamp_step(daily_prev, raw_kw, DAILY_STEP_REL, DAILY_STEP_ABS)
+        daily_updated = True
+        daily_updated_at = now.isoformat(timespec="seconds")
 
     return {
         "weekly_kw": weekly,
@@ -328,8 +342,18 @@ def apply_recommendation_locks(
         "season_shift": season_shift,
         "weekly_updated": weekly_updated,
         "daily_updated": daily_updated,
-        "updated_at": datetime.now().isoformat(timespec="seconds"),
+        "daily_updated_at": daily_updated_at,
+        "updated_at": now.isoformat(timespec="seconds"),
     }
+
+
+def _parsed_stamp(raw: Any) -> Optional[datetime]:
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(str(raw))
+    except (TypeError, ValueError):
+        return None
 
 
 def _avg_base(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -1278,6 +1302,20 @@ def save_targets(base_dir: str, updates: Dict[str, Any]) -> Dict[str, Any]:
         state["targets"] = targets
         _save_state(path, state)
     return get_report(base_dir)
+
+
+def recommended_import_kw(base_dir: str) -> Optional[float]:
+    """Gespeicherter empfohlener Zukauf in kW, ohne neue Rechnung."""
+    path = _state_path(base_dir)
+    with _lock:
+        rec = _load_state(path).get("recommendation") or {}
+    raw = rec.get("daily_kw")
+    if raw is None:
+        raw = rec.get("weekly_kw")
+    try:
+        return round(max(0.0, float(raw)), 3)
+    except (TypeError, ValueError):
+        return None
 
 
 def tick(base_dir: str) -> None:

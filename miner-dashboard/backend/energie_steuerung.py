@@ -37,7 +37,29 @@ def active_pillar_count(data: Dict[str, Any]) -> int:
     return count
 
 
-def _normalize(data: Dict[str, Any]) -> Dict[str, Any]:
+def site_has_pv() -> bool:
+    """True, wenn am Standort eine PV-Anlage konfiguriert ist."""
+    try:
+        from control_algorithm.config import load_config
+
+        config = load_config()
+    except Exception:
+        return False
+    if config.get("has_pv"):
+        return True
+    try:
+        return float(config.get("pv_kwp") or 0) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _normalize(data: Dict[str, Any], has_pv: bool | None = None) -> Dict[str, Any]:
+    if has_pv is None:
+        has_pv = site_has_pv()
+    # Mit PV bleibt die Energiegemeinschaft aus. Dafür gelten Planung und Autopilot.
+    if has_pv:
+        data["gemeinschaft_bin_mitglied"] = False
+        data["gemeinschaft_nutzen"] = False
     if not data["boersentarif_besitze"]:
         data["boersentarif_nutzen"] = False
     if not data["gemeinschaft_bin_mitglied"]:
@@ -88,7 +110,23 @@ def save_settings(updates: Dict[str, Any]) -> Dict[str, Any]:
             pass
     data = _normalize(data)
     SETTINGS_FILE.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    try:
+        from bms_seite import apply_community_hold, apply_exchange_hold, apply_planning_hold
+
+        held = apply_community_hold()
+        if not held.get("community_hold"):
+            held = apply_exchange_hold(held)
+        if not held.get("community_hold") and not held.get("exchange_hold"):
+            apply_planning_hold(held)
+    except Exception:
+        pass
     return data
+
+
+def boersenhandel_aktiv(data: Dict[str, Any] | None = None) -> bool:
+    """Oben auf Börsenhandel nur, wenn Besitz und Nutzen beide an sind."""
+    settings = load_settings() if data is None else data
+    return bool(settings.get("boersentarif_besitze") and settings.get("boersentarif_nutzen"))
 
 
 def status() -> Dict[str, Any]:
@@ -98,4 +136,5 @@ def status() -> Dict[str, Any]:
         "soc_target_percent": settings["soc_target_percent"],
         "active_pillars": active_pillar_count(settings),
         "autopilot_ready": active_pillar_count(settings) >= 2,
+        "has_pv": site_has_pv(),
     }

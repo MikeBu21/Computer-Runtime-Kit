@@ -21,7 +21,9 @@ from typing import Any, Dict, List, Optional, Tuple
 from energiegemeinschaft import BACKEND_DIR, SETTINGS_FILE, load_settings as load_page_settings
 
 LISTEN_PORT = 8765
-TICK_SEC = 60
+# Gleicher Takt wie die BMS-Schleife (SAMPLE_GAP_SEC): Einspeisung der Mitglieder
+# wird alle 6 s ausgetauscht und im selben Takt ins Register geschrieben.
+TICK_SEC = 6
 FRESH_SEC = 90
 _ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
 _lock = threading.Lock()
@@ -470,6 +472,42 @@ def is_community_counterpart(item: Dict[str, Any], self_name: str, self_ip: str)
 
 def member_is_feeding(feed: Any, fresh: bool) -> bool:
     return bool(fresh and isinstance(feed, (int, float)) and float(feed) > 0)
+
+
+def peer_feed_rows() -> List[Dict[str, Any]]:
+    """Einspeisung der anderen Mitglieder. Das eigene Haus zählt nicht mit."""
+    data = mesh_settings()
+    now = time.time()
+    self_names = {socket.gethostname().split(".")[0]}
+    stored = str(data.get("display_name") or "")
+    if stored:
+        self_names.add(stored)
+    rows: List[Dict[str, Any]] = []
+    for item in (data.get("members") or {}).values():
+        if not isinstance(item, dict) or not item.get("seen"):
+            continue
+        if item.get("name") in self_names:
+            continue
+        seen = float(item.get("seen") or 0)
+        rows.append(
+            {
+                "name": item.get("name") or "",
+                "alias": item.get("alias") or "",
+                "feed_in_kw": item.get("feed_in_kw"),
+                "fresh": (now - seen) <= FRESH_SEC,
+            }
+        )
+    return rows
+
+
+def peer_surplus_kw(rows: Optional[List[Dict[str, Any]]] = None) -> float:
+    """Summe der frischen Einspeisung, in kW. Veraltete Meldungen zählen nicht."""
+    total = 0.0
+    for row in rows if rows is not None else peer_feed_rows():
+        feed = row.get("feed_in_kw")
+        if row.get("fresh") and isinstance(feed, (int, float)) and float(feed) > 0:
+            total += float(feed)
+    return round(total, 3)
 
 
 def update_member_field(name: str, field: str, raw: str) -> None:

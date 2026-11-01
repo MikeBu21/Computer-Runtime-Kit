@@ -259,6 +259,7 @@ def energie_page():
         "energie.html",
         settings=payload["settings"],
         soc_target_percent=payload["soc_target_percent"],
+        has_pv=payload["has_pv"],
     )
 
 
@@ -282,14 +283,24 @@ def api_energie_settings():
 
 @app.route('/boersenhandel')
 def boersenhandel_page():
+    from bms_seite import install_caps_kw
     from boersenhandel import EXCHANGES, load_settings
+    from energie_steuerung import boersenhandel_aktiv
 
     settings = load_settings()
+    caps = install_caps_kw()
     exchanges = [
         {"id": key, "label": spec["label"], "group": spec.get("group") or "Börsen"}
         for key, spec in EXCHANGES.items()
     ]
-    return render_template("boersenhandel.html", settings=settings, exchanges=exchanges)
+    return render_template(
+        "boersenhandel.html",
+        settings=settings,
+        exchanges=exchanges,
+        import_cap_kw=caps["import_kw"],
+        sell_cap_kw=caps["sell_kw"],
+        trade_active=boersenhandel_aktiv(),
+    )
 
 
 @app.route('/api/boersenhandel/prices')
@@ -303,7 +314,9 @@ def api_boersenhandel_prices():
         payload = price_view(exchange, range_mode, settings)
     except Exception as exc:
         return jsonify({"ok": False, "message": str(exc) or "Börsenpreis nicht erreichbar."}), 502
-    return jsonify({"ok": True, **payload})
+    from energie_steuerung import boersenhandel_aktiv
+
+    return jsonify({"ok": True, "boersenhandel_aktiv": boersenhandel_aktiv(), **payload})
 
 
 @app.route('/api/boersenhandel/year')
@@ -333,15 +346,19 @@ def api_boersenhandel_sparkline():
 
 @app.route('/api/boersenhandel/settings', methods=['POST'])
 def api_boersenhandel_settings():
-    from boersenhandel import save_settings
+    from boersenhandel import load_settings, save_settings
 
+    current = load_settings()
+    apply_raw = request.form.get("apply_bms")
+    apply_bms = current.get("apply_bms") if apply_raw is None else apply_raw in ("1", "true", "on")
     try:
         saved = save_settings(
-            (request.form.get("exchange") or "").strip(),
-            request.form.get("buy_ct_kwh") or request.form.get("lower_ct_kwh") or 0,
-            request.form.get("stop_ct_kwh") or request.form.get("upper_ct_kwh") or 0,
-            request.form.get("sell_ct_kwh") or 25,
-            request.form.get("apply_bms") in ("1", "true", "on"),
+            (request.form.get("exchange") or current.get("exchange") or "").strip(),
+            request.form.get("buy_ct_kwh") or request.form.get("lower_ct_kwh") or current.get("buy_ct_kwh") or 0,
+            request.form.get("sell_ct_kwh") or current.get("sell_ct_kwh") or 25,
+            apply_bms,
+            buy_kw=request.form.get("buy_kw") if "buy_kw" in request.form else None,
+            sell_kw=request.form.get("sell_kw") if "sell_kw" in request.form else None,
         )
     except ValueError as exc:
         return jsonify({"ok": False, "message": str(exc)}), 400
@@ -528,8 +545,6 @@ def api_bms_netzbezug_settings():
         updates["real_mode"] = form.get("real_mode") in ("1", "true", "on")
     if "target_grid_kw" in form:
         updates["target_grid_kw"] = form.get("target_grid_kw") or 0
-    if "peak_cap_kw" in form:
-        updates["peak_cap_kw"] = form.get("peak_cap_kw") or 0
     for key in (
         "idle_grid_w",
         "idle_work_mode",
@@ -538,6 +553,13 @@ def api_bms_netzbezug_settings():
         "idle_tou_soc",
         "idle_tou_charging",
         "idle_tou_power_w",
+        "install_max_charge_a",
+        "install_max_discharge_a",
+        "install_max_sell_w",
+        "install_max_import_w",
+        "install_shutdown_soc",
+        "install_restart_soc",
+        "install_low_soc",
     ):
         if key in form:
             updates[key] = form.get(key)

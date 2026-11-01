@@ -104,6 +104,8 @@ _YEAR_CACHE_SEC = 6 * 3600
 
 _cache: Dict[str, Any] = {}
 _CACHE_SEC = 60
+# Kerzenchart: vier Tage zurück ab Mitternacht, plus den schon veröffentlichten Folgetag.
+CHART_HISTORY_DAYS = 4
 _YEAR_DISK = Path("/dev/shm/minersteuerung/boersen_year_cache.json")
 _net_lock = threading.Lock()
 _last_energy_charts = 0.0
@@ -116,11 +118,45 @@ def _markup(spec: Dict[str, str]) -> float:
         return 0.0
 
 
-def _ordered_thresholds(buy: float, stop: float, sell: float) -> tuple:
+def _ordered_thresholds(buy: float, sell: float) -> tuple:
     buy_v = round(float(buy), 3)
-    stop_v = round(max(float(stop), buy_v), 3)
-    sell_v = round(max(float(sell), stop_v), 3)
-    return buy_v, stop_v, sell_v
+    sell_v = round(max(float(sell), buy_v), 3)
+    return buy_v, sell_v
+
+
+def clamp_power_kw(raw: Any, cap_kw: float) -> float:
+    """Leistung zwischen 0 und der aktuellen Obergrenze, in kW."""
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = 0.0
+    cap = max(0.0, float(cap_kw))
+    return round(min(cap, max(0.0, value)), 2)
+
+
+def tariff_grid_kw(
+    price_ct: Optional[float],
+    buy_ct: float,
+    sell_ct: float,
+    buy_kw: float,
+    sell_kw: float,
+    import_cap_kw: float,
+    sell_cap_kw: float,
+) -> Optional[float]:
+    """Voller Buy- oder Sell-Betrag, sobald die Preislinie gerissen wird.
+
+    Unter Buy der eingegebene Kauf in einem Schritt, nie über dem aktuellen
+    Max. Netzbezug. Über Sell der eingegebene Verkauf in einem Schritt.
+    Dazwischen None, dann wird nichts erzwungen.
+    """
+    if price_ct is None:
+        return None
+    price = float(price_ct)
+    if price < float(buy_ct):
+        return clamp_power_kw(buy_kw, import_cap_kw)
+    if price > float(sell_ct):
+        return -clamp_power_kw(sell_kw, sell_cap_kw)
+    return None
 
 
 def default_settings() -> Dict[str, Any]:
@@ -131,6 +167,8 @@ def default_settings() -> Dict[str, Any]:
         "sell_ct_kwh": 25.0,
         "lower_ct_kwh": 5.0,
         "upper_ct_kwh": 15.0,
+        "buy_kw": 0.0,
+        "sell_kw": 0.0,
         "apply_bms": False,
     }
 
@@ -150,16 +188,17 @@ def load_settings() -> Dict[str, Any]:
         data["exchange"] = "awattar_at"
     try:
         buy = float(data["buy_ct_kwh"] if "buy_ct_kwh" in raw else data.get("lower_ct_kwh"))
-        stop = float(data["stop_ct_kwh"] if "stop_ct_kwh" in raw else data.get("upper_ct_kwh"))
         sell = float(data.get("sell_ct_kwh", 25.0))
     except (TypeError, ValueError):
-        buy, stop, sell = 5.0, 15.0, 25.0
-    buy, stop, sell = _ordered_thresholds(buy, stop, sell)
+        buy, sell = 5.0, 25.0
+    buy, sell = _ordered_thresholds(buy, sell)
     data["buy_ct_kwh"] = buy
-    data["stop_ct_kwh"] = stop
     data["sell_ct_kwh"] = sell
     data["lower_ct_kwh"] = buy
-    data["upper_ct_kwh"] = stop
+    data["stop_ct_kwh"] = buy
+    data["upper_ct_kwh"] = buy
+    data["buy_kw"] = clamp_power_kw(data.get("buy_kw"), 1000.0)
+    data["sell_kw"] = clamp_power_kw(data.get("sell_kw"), 1000.0)
     data["apply_bms"] = bool(data.get("apply_bms"))
     return data
 
@@ -167,20 +206,27 @@ def load_settings() -> Dict[str, Any]:
 def save_settings(
     exchange: str,
     buy_ct_kwh: float,
-    stop_ct_kwh: float,
     sell_ct_kwh: float,
     apply_bms: bool = False,
+    buy_kw: Any = None,
+    sell_kw: Any = None,
+    import_cap_kw: Optional[float] = None,
+    sell_cap_kw: Optional[float] = None,
 ) -> Dict[str, Any]:
+    del import_cap_kw, sell_cap_kw
     if exchange not in EXCHANGES:
         raise ValueError("Unbekannte Börse.")
-    buy, stop, sell = _ordered_thresholds(buy_ct_kwh, stop_ct_kwh, sell_ct_kwh)
+    current = load_settings()
+    buy, sell = _ordered_thresholds(buy_ct_kwh, sell_ct_kwh)
     payload = {
         "exchange": exchange,
         "buy_ct_kwh": buy,
-        "stop_ct_kwh": stop,
+        "stop_ct_kwh": buy,
         "sell_ct_kwh": sell,
         "lower_ct_kwh": buy,
-        "upper_ct_kwh": stop,
+        "upper_ct_kwh": buy,
+        "buy_kw": clamp_power_kw(current.get("buy_kw") if buy_kw is None else buy_kw, 1000.0),
+        "sell_kw": clamp_power_kw(current.get("sell_kw") if sell_kw is None else sell_kw, 1000.0),
         "apply_bms": bool(apply_bms),
     }
     SETTINGS_FILE.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
@@ -236,24 +282,56 @@ def _http_json(url: str) -> Dict[str, Any]:
     raise RuntimeError(last_error)
 
 
+def chart_window(now: datetime) -> tuple:
+    """Vier Kalendertage ab Mitternacht, Ende am übernächsten Mitternacht (Folgetag inklusive)."""
+    start = (now - timedelta(days=CHART_HISTORY_DAYS - 1)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    end = (now + timedelta(days=2)).replace(hour=0, minute=0, second=0, microsecond=0)
+    return start, end
+
+
+def slots_for_chart(slots: List[Dict[str, Any]], now: datetime, range_mode: str) -> List[Dict[str, Any]]:
+    """Heute allein, oder die Vier-Tage-Spanne. Vergangene Stunden bleiben sichtbar."""
+    if range_mode == "day":
+        today = now.strftime("%Y-%m-%d")
+        return [slot for slot in slots if slot["day"] == today]
+    start, end = chart_window(now)
+    start_ms = int(start.timestamp() * 1000)
+    end_ms = int(end.timestamp() * 1000)
+    shown = [slot for slot in slots if slot["end_ms"] > start_ms and slot["start_ms"] < end_ms]
+    return shown or list(slots)
+
+
 def _fetch_slots(exchange: str) -> List[Dict[str, Any]]:
     now = time.time()
+    moment = datetime.now(TZ)
+    start_dt, end_dt = chart_window(moment)
     spec = EXCHANGES[exchange]
-    base_key = f"slots:{spec['kind']}:{spec.get('url') or spec['bzn']}"
+    base_key = f"slots:{spec['kind']}:{spec.get('url') or spec['bzn']}:{start_dt.date()}:{end_dt.date()}"
     cached = _cache.get(base_key)
     if not (cached and now - cached["fetched"] < _CACHE_SEC):
         slots: List[Dict[str, Any]] = []
         if spec["kind"] == "awattar":
-            body = _http_json(spec["url"])
+            query = urllib.parse.urlencode(
+                {
+                    "start": int(start_dt.timestamp() * 1000),
+                    "end": int(end_dt.timestamp() * 1000),
+                }
+            )
+            body = _http_json(f"{spec['url']}?{query}")
             for row in body.get("data") or []:
                 start_ms = int(row["start_timestamp"])
                 end_ms = int(row["end_timestamp"])
                 slots.append(_slot(start_ms, end_ms, float(row["marketprice"]) / 10.0))
         else:
-            moment = datetime.now(TZ)
-            start = (moment - timedelta(hours=12)).isoformat()
-            end = (moment + timedelta(hours=36)).isoformat()
-            query = urllib.parse.urlencode({"bzn": spec["bzn"], "start": start, "end": end})
+            query = urllib.parse.urlencode(
+                {
+                    "bzn": spec["bzn"],
+                    "start": start_dt.date().isoformat(),
+                    "end": end_dt.date().isoformat(),
+                }
+            )
             body = _http_json(f"https://api.energy-charts.info/price?{query}")
             times = body.get("unix_seconds") or []
             prices = body.get("price") or []
@@ -296,17 +374,15 @@ def _monthly_averages(bzn: str, start: datetime, end: datetime) -> Dict[str, flo
     }
 
 
-def charge_action(price_ct: Optional[float], buy: float, stop: float, sell: float) -> str:
-    """Unter der Kauflinie kaufen, über der Stopplinie nicht mehr, über der Verkaufslinie verkaufen."""
+def charge_action(price_ct: Optional[float], buy: float, sell: float) -> str:
+    """Unter der Buy-Linie kaufen, über der Sell-Linie verkaufen. Dazwischen kein Eingriff."""
     if price_ct is None:
         return "unbekannt"
-    if price_ct >= sell:
-        return "verkaufen"
-    if price_ct > stop:
-        return "nicht_kaufen"
-    if price_ct <= buy:
+    if float(price_ct) < float(buy):
         return "kaufen"
-    return "halten"
+    if float(price_ct) > float(sell):
+        return "verkaufen"
+    return "warten"
 
 
 def price_view(exchange: str, range_mode: str, settings: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -314,35 +390,31 @@ def price_view(exchange: str, range_mode: str, settings: Optional[Dict[str, Any]
     if exchange not in EXCHANGES:
         exchange = settings["exchange"]
     slots = _fetch_slots(exchange)
-    now_ms = int(time.time() * 1000)
-    today = datetime.now(TZ).strftime("%Y-%m-%d")
+    moment = datetime.now(TZ)
+    now_ms = int(moment.timestamp() * 1000)
+    today = moment.strftime("%Y-%m-%d")
     current = next((s for s in slots if s["start_ms"] <= now_ms < s["end_ms"]), None)
-    if range_mode == "day":
-        shown = [s for s in slots if s["day"] == today]
-    else:
-        horizon = now_ms + 24 * 3600 * 1000
-        shown = [s for s in slots if s["end_ms"] > now_ms and s["start_ms"] < horizon]
-        if not shown:
-            shown = slots[:24]
+    shown = slots_for_chart(slots, moment, "day" if range_mode == "day" else "4d")
     price = current["ct_kwh"] if current else None
     buy = float(settings["buy_ct_kwh"])
-    stop = float(settings["stop_ct_kwh"])
     sell = float(settings["sell_ct_kwh"])
     return {
         "exchange": exchange,
         "exchange_label": EXCHANGES[exchange]["label"],
         "goe_awc": EXCHANGES[exchange].get("goe_awc", ""),
-        "range": "day" if range_mode == "day" else "24h",
+        "range": "day" if range_mode == "day" else "4d",
+        "today": today,
         "unit": "ct/kWh",
         "updated_at": datetime.now(TZ).isoformat(timespec="seconds"),
         "current_ct_kwh": price,
         "current_hour": current["hour"] if current else None,
         "buy_ct_kwh": buy,
-        "stop_ct_kwh": stop,
         "sell_ct_kwh": sell,
+        "buy_kw": settings.get("buy_kw"),
+        "sell_kw": settings.get("sell_kw"),
         "lower_ct_kwh": buy,
-        "upper_ct_kwh": stop,
-        "action": charge_action(price, buy, stop, sell),
+        "upper_ct_kwh": sell,
+        "action": charge_action(price, buy, sell),
         "points": [
             {
                 "hour": s["hour"],

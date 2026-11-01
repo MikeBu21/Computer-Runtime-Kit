@@ -246,6 +246,30 @@ GRID_PEAK_ENABLE_BIT = 4
 MAX_DISCHARGE_AMPS = 240
 TOU_HOLD_SOC = 20
 TOU_HOLD_POWER_W = 12000
+# Werte des Elektrikers bei der Installation (am SG04LP3 gelesen). Sie werden beim
+# Ausschalten zurückgeschrieben; Ströme und Leistungen sind zugleich Obergrenzen.
+INSTALL_DEFAULTS = {
+    "install_max_charge_a": 240,
+    "install_max_discharge_a": 240,
+    "install_max_sell_w": 13180,
+    "install_max_import_w": 8000,
+    "install_shutdown_soc": 9,
+    "install_restart_soc": 10,
+    "install_low_soc": 11,
+}
+INSTALL_RANGES = {
+    "install_max_charge_a": (0, 350),
+    "install_max_discharge_a": (0, 350),
+    "install_max_sell_w": (0, 24000),
+    "install_max_import_w": (0, 80000),
+    "install_shutdown_soc": (0, 100),
+    "install_restart_soc": (0, 100),
+    "install_low_soc": (0, 100),
+}
+REG_MAX_CHARGE = 0x006C
+REG_SHUTDOWN_SOC = 0x0073
+REG_RESTART_SOC = 0x0074
+REG_LOW_SOC = 0x0075
 
 
 def inverter_choices(selected: str = "") -> List[Dict[str, Any]]:
@@ -285,10 +309,20 @@ def default_settings() -> Dict[str, Any]:
         "idle_tou_soc": 20,
         "idle_tou_charging": 1,
         "idle_tou_power_w": TOU_HOLD_POWER_W,
+        "install_max_charge_a": INSTALL_DEFAULTS["install_max_charge_a"],
+        "install_max_discharge_a": INSTALL_DEFAULTS["install_max_discharge_a"],
+        "install_max_sell_w": INSTALL_DEFAULTS["install_max_sell_w"],
+        "install_max_import_w": INSTALL_DEFAULTS["install_max_import_w"],
+        "install_shutdown_soc": INSTALL_DEFAULTS["install_shutdown_soc"],
+        "install_restart_soc": INSTALL_DEFAULTS["install_restart_soc"],
+        "install_low_soc": INSTALL_DEFAULTS["install_low_soc"],
         "modbus_host": "",
         "modbus_port": 502,
         "modbus_unit": 1,
         "release_pending": False,
+        "planning_hold": False,
+        "community_hold": False,
+        "exchange_hold": False,
     }
 
 
@@ -376,6 +410,50 @@ def _idle_tou_power_w(settings: Optional[Dict[str, Any]] = None) -> int:
     except (TypeError, ValueError):
         value = TOU_HOLD_POWER_W
     return max(100, min(12000, value))
+
+
+def _install_value(settings: Optional[Dict[str, Any]], key: str) -> int:
+    raw = INSTALL_DEFAULTS[key]
+    if settings is not None and settings.get(key) not in (None, ""):
+        raw = settings.get(key)
+    try:
+        value = int(round(float(str(raw).replace(",", ".").strip())))
+    except (TypeError, ValueError):
+        value = INSTALL_DEFAULTS[key]
+    lowest, highest = INSTALL_RANGES[key]
+    return max(lowest, min(highest, value))
+
+
+def install_caps_kw(settings: Optional[Dict[str, Any]] = None) -> Dict[str, float]:
+    """Aktuelle Elektriker-Obergrenzen in kW, jedes Mal aus der Netzbezug-Einstellung."""
+    if settings is None:
+        settings = load_settings()
+    return {
+        "import_kw": _install_value(settings, "install_max_import_w") / 1000.0,
+        "sell_kw": _install_value(settings, "install_max_sell_w") / 1000.0,
+    }
+
+
+def _install_caps(settings: Optional[Dict[str, Any]]) -> Dict[int, int]:
+    """Obergrenzen je Register aus den Elektriker-Werten. Die Steuerung schreibt nie darüber."""
+    charge_a = _install_value(settings, "install_max_charge_a")
+    import_w = _install_value(settings, "install_max_import_w")
+    return {
+        REG_MAX_CHARGE: charge_a,
+        0x0080: charge_a,
+        0x006D: _install_value(settings, "install_max_discharge_a"),
+        0x008F: _install_value(settings, "install_max_sell_w"),
+        0x00BF: import_w,
+        0x00E9: import_w // 10,
+    }
+
+
+def _cap_rows(rows: List[tuple], settings: Optional[Dict[str, Any]]) -> List[tuple]:
+    caps = _install_caps(settings)
+    return [
+        (address, name, min(int(value), caps[address]) if address in caps else value)
+        for address, name, value in rows
+    ]
 
 
 def _port(value: Any) -> int:
@@ -648,12 +726,16 @@ def _persist_settings(data: Dict[str, Any]) -> None:
         "idle_tou_soc": data["idle_tou_soc"],
         "idle_tou_charging": data["idle_tou_charging"],
         "idle_tou_power_w": data["idle_tou_power_w"],
+        **{key: data[key] for key in INSTALL_DEFAULTS},
         "modbus_host": data["modbus_host"],
         "modbus_port": data["modbus_port"],
         "modbus_unit": data["modbus_unit"],
         "modbus_source": data.get("modbus_source") or "",
         "known_entry_ids": data.get("known_entry_ids") or [],
         "release_pending": bool(data.get("release_pending")),
+        "planning_hold": bool(data.get("planning_hold")),
+        "community_hold": bool(data.get("community_hold")),
+        "exchange_hold": bool(data.get("exchange_hold")),
     }
     SETTINGS_FILE.write_text(json.dumps(stored, indent=2) + "\n", encoding="utf-8")
 
@@ -681,6 +763,13 @@ def _apply_ha_link(data: Dict[str, Any]) -> Dict[str, Any]:
     return data
 
 
+def _auto_peak_kw(data: Dict[str, Any]) -> float:
+    """Spitzenkappung stellt die Steuerung selbst: beim Zukauf auf den Soll, sonst Standwert."""
+    if float(data.get("target_grid_kw") or 0) > 0:
+        return round(float(data["target_grid_kw"]), 2)
+    return round(_idle_peak_w(data) / 1000.0, 2)
+
+
 def load_settings() -> Dict[str, Any]:
     data = default_settings()
     if SETTINGS_FILE.is_file():
@@ -702,6 +791,9 @@ def load_settings() -> Dict[str, Any]:
     data["idle_tou_soc"] = _idle_tou_soc({"idle_tou_soc": data.get("idle_tou_soc")})
     data["idle_tou_charging"] = _idle_tou_charging({"idle_tou_charging": data.get("idle_tou_charging")})
     data["idle_tou_power_w"] = _idle_tou_power_w({"idle_tou_power_w": data.get("idle_tou_power_w")})
+    for key in INSTALL_DEFAULTS:
+        data[key] = _install_value(data, key)
+    data["peak_cap_kw"] = _auto_peak_kw(data)
     data["modbus_host"] = _host(data.get("modbus_host"))
     data["modbus_port"] = _port(data.get("modbus_port"))
     data["modbus_unit"] = _unit(data.get("modbus_unit"))
@@ -709,6 +801,9 @@ def load_settings() -> Dict[str, Any]:
         data["known_entry_ids"] = []
     data["modbus_source"] = str(data.get("modbus_source") or "")
     data["release_pending"] = bool(data.get("release_pending"))
+    data["planning_hold"] = bool(data.get("planning_hold"))
+    data["community_hold"] = bool(data.get("community_hold"))
+    data["exchange_hold"] = bool(data.get("exchange_hold"))
     return _apply_ha_link(data)
 
 
@@ -725,10 +820,12 @@ def save_settings(updates: Dict[str, Any]) -> Dict[str, Any]:
         data["real_mode"] = wanted
     if "target_grid_kw" in updates:
         data["target_grid_kw"] = _kw(updates["target_grid_kw"], data["target_grid_kw"], lowest=-100.0)
-    if "peak_cap_kw" in updates:
-        data["peak_cap_kw"] = _kw(updates["peak_cap_kw"], data["peak_cap_kw"])
-    if data["target_grid_kw"] > 0:
-        data["peak_cap_kw"] = data["target_grid_kw"]
+    if "planning_hold" in updates:
+        data["planning_hold"] = bool(updates["planning_hold"])
+    if "community_hold" in updates:
+        data["community_hold"] = bool(updates["community_hold"])
+    if "exchange_hold" in updates:
+        data["exchange_hold"] = bool(updates["exchange_hold"])
     if "idle_grid_w" in updates:
         data["idle_grid_w"] = _idle_grid_w({"idle_grid_w": updates["idle_grid_w"]})
     if "idle_work_mode" in updates:
@@ -743,6 +840,10 @@ def save_settings(updates: Dict[str, Any]) -> Dict[str, Any]:
         data["idle_tou_charging"] = _idle_tou_charging({"idle_tou_charging": updates["idle_tou_charging"]})
     if "idle_tou_power_w" in updates:
         data["idle_tou_power_w"] = _idle_tou_power_w({"idle_tou_power_w": updates["idle_tou_power_w"]})
+    for key in INSTALL_DEFAULTS:
+        if key in updates:
+            data[key] = _install_value(updates, key)
+    data["peak_cap_kw"] = _auto_peak_kw(data)
     if "modbus_host" in updates and not data.get("modbus_host"):
         data["modbus_host"] = _host(updates["modbus_host"])
     if "modbus_port" in updates and not data.get("modbus_port"):
@@ -1151,14 +1252,16 @@ AMP_STEP_DOWN = 10
 PEAK_TRIM_MIN_W = -300
 PEAK_TRIM_MAX_W = 400
 PEAK_TRIM_GAIN = 0.5
-# Gleiche Rolle für die Einspeisung: Export Surplus Power deckelt, der Entladestrom hat Reserve.
-DISCHARGE_HEADROOM_W = 800
+# Home Assistant liefert den Netzzähler nur alle 5–30 s. Öfter nachgeführt, zählt die
+# Nachführung denselben alten Wert mehrfach und schwingt über.
+PEAK_TRIM_EVERY_SEC = 30
 DISCHARGE_GAIN = 0.5
 MODE_SWITCH_W = 150
 GRID_DEADBAND_W = 250
 SELL_POWER_MAX_W = 12000
-# Stand vor den Einspeise-Tests (Home Assistant: Export Surplus Power 13180 W).
-SELL_POWER_IDLE_W = 13180
+# Programm-Modus 0x00AC–0x00B1: Bit 0–1 Laden (Netz/Generator), Bit 5 Verkaufen.
+# Ohne Bit 5 entlädt Export First die Batterie nur ins Haus, nie ins Netz.
+TOU_SELL_BIT = 1 << 5
 _commanded_amps = 0
 _discharge_amps = MAX_DISCHARGE_AMPS
 # "charge": Netz deckt Haus plus Netzladung, Kappung hält den Soll.
@@ -1167,6 +1270,7 @@ _discharge_amps = MAX_DISCHARGE_AMPS
 _hold_mode: Optional[str] = None
 _hold_target_w: Optional[int] = None
 _peak_trim_w = 0
+_peak_trim_at = 0.0
 
 
 def _hold_deadband_w(soll_kw: float) -> int:
@@ -1176,12 +1280,13 @@ def _hold_deadband_w(soll_kw: float) -> int:
 
 
 def _reset_hold(target_w: Optional[int]) -> None:
-    global _commanded_amps, _discharge_amps, _hold_mode, _hold_target_w, _peak_trim_w, _tou_hold_applied, _tou_soc_applied
+    global _commanded_amps, _discharge_amps, _hold_mode, _hold_target_w, _peak_trim_w, _peak_trim_at, _tou_hold_applied, _tou_soc_applied
     _commanded_amps = 0
     _discharge_amps = MAX_DISCHARGE_AMPS
     _hold_mode = None
     _hold_target_w = target_w
     _peak_trim_w = 0
+    _peak_trim_at = time.monotonic()
     _tou_hold_applied = False
     _tou_soc_applied = None
 
@@ -1229,13 +1334,22 @@ def _needed_charge_amps(target_w: int, live: Optional[Dict[str, Any]]) -> int:
     return _commanded_amps
 
 
+def _trim_due() -> bool:
+    global _peak_trim_at
+    now = time.monotonic()
+    if now - _peak_trim_at < PEAK_TRIM_EVERY_SEC:
+        return False
+    _peak_trim_at = now
+    return True
+
+
 def _track_peak_trim(target_w: int, live: Optional[Dict[str, Any]]) -> None:
     global _peak_trim_w
     grid = _grid_w(live)
     if grid is None:
         return
     error = target_w - grid
-    if abs(error) > 400 or abs(error) <= 25:
+    if abs(error) > 400 or abs(error) <= 25 or not _trim_due():
         return
     _peak_trim_w = max(PEAK_TRIM_MIN_W, min(PEAK_TRIM_MAX_W, _peak_trim_w + int(round(error * PEAK_TRIM_GAIN))))
 
@@ -1247,7 +1361,7 @@ def _discharge_limit_amps(target_w: int, live: Optional[Dict[str, Any]]) -> int:
     if grid is None:
         return _discharge_amps
     error = grid - target_w
-    if abs(error) > _hold_deadband_w(target_w / 1000.0):
+    if abs(error) > max(30, min(GRID_DEADBAND_W, abs(target_w) // 10)):
         step = int(round(error * DISCHARGE_GAIN / PACK_VOLT)) or (1 if error > 0 else -1)
         _discharge_amps = max(0, min(MAX_DISCHARGE_AMPS, _discharge_amps + step))
     return _discharge_amps
@@ -1283,12 +1397,22 @@ def _house_load_kw(live: Optional[Dict[str, Any]]) -> Optional[float]:
     return round(float(grid) - float(battery), 3)
 
 
-def _peak_enable_row(item: Dict[str, Any], peak_flags: Optional[int]) -> List[tuple]:
-    """0x00B2 ist ein 16-Bit-Feld mit weiteren Schaltern. Nur Bit 4 dazunehmen, nie überschreiben."""
+def _peak_enable_row(item: Dict[str, Any], peak_flags: Optional[int], enabled: bool = True) -> List[tuple]:
+    """0x00B2 ist ein 16-Bit-Feld mit weiteren Schaltern. Nur Bit 4 ändern, nie überschreiben.
+
+    Bei der Einspeisung muss die Spitzenkappung aus: mit gesetztem Bit 4 verkauft der
+    SG04LP3 in Export First keine Batterieleistung (Firmware-Fehler, am Gerät bestätigt:
+    Bit 4 gelöscht, sofort 1 kW Einspeisung ohne PV).
+    """
     register = item.get("grid_peak_enable_register")
-    if register is None or peak_flags is None or (int(peak_flags) >> GRID_PEAK_ENABLE_BIT) & 1:
+    if register is None or peak_flags is None:
         return []
-    return [(int(register), "Grid Peak shaving enable", int(peak_flags) | (1 << GRID_PEAK_ENABLE_BIT))]
+    mask = 1 << GRID_PEAK_ENABLE_BIT
+    current = bool(int(peak_flags) & mask)
+    if current == enabled:
+        return []
+    value = int(peak_flags) | mask if enabled else int(peak_flags) & ~mask
+    return [(int(register), "Grid Peak shaving enable", value)]
 
 
 def _import_writes(
@@ -1296,16 +1420,34 @@ def _import_writes(
     target_w: int,
     live: Optional[Dict[str, Any]],
     peak_flags: Optional[int],
+    immediate: bool = False,
 ) -> tuple:
-    """Fester Netzbezug. Liefert (Registerzeilen, TOU-SOC, TOU-Laden)."""
+    """Fester Netzbezug. Liefert (Registerzeilen, TOU-SOC, TOU-Laden).
+
+    immediate: Börsentarif. Der eingegebene Buy-Betrag geht sofort als Netzladung
+    in die Batterie, ohne Nachführung. Die Spitzenkappung lässt dafür Haus plus
+    diesen Betrag zu und wird später auf das Max. Netzbezug begrenzt.
+    """
+    global _commanded_amps, _hold_mode, _peak_trim_w
     enable = item.get("grid_charge_register")
     current = item.get("grid_charge_current_register")
     if enable is None or current is None:
         return [], TOU_HOLD_SOC, 1
-    mode = _choose_import_mode(target_w, live)
-    if mode == "charge":
-        _track_peak_trim(target_w, live)
-    peak_w = max(0, target_w + _peak_trim_w)
+    if immediate:
+        house = _house_load_kw(live)
+        house_w = 0 if house is None else max(0, int(round(house * 1000)))
+        charge_w = max(0, int(target_w))
+        peak_w = charge_w + house_w
+        amps = _grid_charge_amps(charge_w)
+        _commanded_amps = amps
+        _hold_mode = "charge"
+        _peak_trim_w = 0
+    else:
+        mode = _choose_import_mode(target_w, live)
+        if mode == "charge":
+            _track_peak_trim(target_w, live)
+        peak_w = max(0, target_w + _peak_trim_w)
+        amps = None
     rows: List[tuple] = []
     if item.get("work_mode_register") is not None:
         rows.append((int(item["work_mode_register"]), "Work Mode", WORK_MODE_ZERO_EXPORT_CT))
@@ -1315,15 +1457,17 @@ def _import_writes(
         rows.append((int(item["solar_sell_register"]), "Solar Sell", SOLAR_SELL_OFF))
     if item.get("max_import_register") is not None:
         # Scale 10, nur lose Obergrenze. Den Soll hält die Spitzenkappung.
-        loose = min(800, (target_w + PEAK_TRIM_MAX_W + 500 + 9) // 10)
+        basis = peak_w if immediate else target_w + PEAK_TRIM_MAX_W + 500
+        loose = min(800, max(1, (basis + 9) // 10))
         rows.append((int(item["max_import_register"]), "Grid Max Import power", loose))
     if item.get("time_of_use_register") is not None:
         rows.append((int(item["time_of_use_register"]), "Time of Use", TOU_WEEK_ENABLED))
     if item.get("grid_peak_power_register") is not None:
         rows.append((int(item["grid_peak_power_register"]), "Grid Peak shaving", peak_w))
     rows.extend(_peak_enable_row(item, peak_flags))
-    if mode == "charge":
-        amps = _needed_charge_amps(target_w, live)
+    if immediate or mode == "charge":
+        if not immediate:
+            amps = _needed_charge_amps(target_w, live)
         if item.get("max_discharge_register") is not None:
             rows.append((int(item["max_discharge_register"]), "Battery Max Discharging Current", MAX_DISCHARGE_AMPS))
         rows.append((int(current), "Battery Grid Charging Current", amps))
@@ -1338,33 +1482,18 @@ def _import_writes(
 
 
 def _needed_discharge_amps(export_w: int, live: Optional[Dict[str, Any]]) -> int:
-    """Entladestrom für die Einspeisung, mit Reserve. Steigt sofort, fällt in kleinen Schritten."""
+    """Entladestrom für die Einspeisung: voll offen, die Exportgrenze 0x008F regelt.
+
+    Ein knapper Entladestrom bindet, sobald im Haus ein Verbraucher anläuft, und die
+    Einspeisung bricht ein, bis der 6-s-Takt mit den trägen HA-Werten nachgezogen hat.
+    """
     global _discharge_amps
     soc = None if not live else live.get("soc_percent")
     if soc is not None and float(soc) <= SOC_EMPTY:
         _discharge_amps = 0
         return 0
-    need = _battery_need_w(-export_w, live)
-    if need is None:
-        goal = _amps_for(export_w + DISCHARGE_HEADROOM_W, MAX_DISCHARGE_AMPS)
-    else:
-        goal = _amps_for(-need + DISCHARGE_HEADROOM_W, MAX_DISCHARGE_AMPS)
-    if goal >= _discharge_amps:
-        _discharge_amps = goal
-    else:
-        _discharge_amps = max(goal, _discharge_amps - AMP_STEP_DOWN)
+    _discharge_amps = MAX_DISCHARGE_AMPS
     return _discharge_amps
-
-
-def _track_sell_trim(export_w: int, live: Optional[Dict[str, Any]]) -> None:
-    global _peak_trim_w
-    grid = _grid_w(live)
-    if grid is None:
-        return
-    error = -grid - export_w
-    if abs(error) > 400 or abs(error) <= 25:
-        return
-    _peak_trim_w = max(PEAK_TRIM_MIN_W, min(PEAK_TRIM_MAX_W, _peak_trim_w - int(round(error * PEAK_TRIM_GAIN))))
 
 
 def _feed_writes(
@@ -1372,6 +1501,7 @@ def _feed_writes(
     export_w: int,
     live: Optional[Dict[str, Any]],
     settings: Dict[str, Any],
+    peak_flags: Optional[int] = None,
 ) -> tuple:
     """Feste Einspeisung: Export First, Batterie entlädt über die Zeitschaltuhr,
     Export Surplus Power deckelt auf den Soll. Liefert (Registerzeilen, TOU-SOC, TOU-Laden)."""
@@ -1382,8 +1512,10 @@ def _feed_writes(
     enable = item.get("grid_charge_register")
     if item.get("sell_power_register") is None or item.get("work_mode_register") is None:
         return rows, TOU_HOLD_SOC, 0
-    _track_sell_trim(export_w, live)
-    sell_w = max(0, min(SELL_POWER_MAX_W, export_w + _peak_trim_w))
+    # Export Surplus Power hält am SG04LP3 auf ±30 W genau. Jede Absenkung des Registers
+    # lässt den Export für 20 s bis an den Entladestrom hochlaufen (gemessen: 3045 -> 3030 W
+    # ergab 5,5 kW Einspeisung). Darum fest auf den Soll, keine Nachführung.
+    sell_w = max(0, min(SELL_POWER_MAX_W, export_w))
     if current is not None:
         rows.append((int(current), "Battery Grid Charging Current", 0))
     if enable is not None:
@@ -1398,6 +1530,7 @@ def _feed_writes(
         rows.append((int(item["time_of_use_register"]), "Time of Use", TOU_WEEK_ENABLED))
     if item.get("grid_peak_power_register") is not None:
         rows.append((int(item["grid_peak_power_register"]), "Grid Peak shaving", _idle_peak_w(settings)))
+    rows.extend(_peak_enable_row(item, peak_flags, enabled=False))
     if item.get("max_import_register") is not None:
         rows.append((int(item["max_import_register"]), "Grid Max Import power", (_idle_peak_w(settings) + 9) // 10))
     if item.get("max_discharge_register") is not None:
@@ -1408,7 +1541,7 @@ def _feed_writes(
                 _needed_discharge_amps(export_w, live),
             )
         )
-    return rows, TOU_HOLD_SOC, 0
+    return rows, TOU_HOLD_SOC, TOU_SELL_BIT
 
 
 def _tou_program_writes(item: Dict[str, Any], tou_soc: int, charging: int, with_power: bool) -> List[tuple]:
@@ -1420,7 +1553,7 @@ def _tou_program_writes(item: Dict[str, Any], tou_soc: int, charging: int, with_
         if with_power:
             rows.append((0x009A + index, f"Program {index + 1} Power", TOU_HOLD_POWER_W))
         rows.append((0x00A6 + index, f"Program {index + 1} SOC", value))
-        rows.append((0x00AC + index, f"Program {index + 1} Charging", int(charging)))
+        rows.append((0x00AC + index, f"Program {index + 1} Mode", int(charging)))
     return rows
 
 
@@ -1491,15 +1624,33 @@ def _release_writes(item: Dict[str, Any], settings: Optional[Dict[str, Any]] = N
     if enable is not None:
         rows.append((int(enable), "Battery Grid Charging", 0))
     if item.get("max_discharge_register") is not None:
-        rows.append((int(item["max_discharge_register"]), "Battery Max Discharging Current", MAX_DISCHARGE_AMPS))
+        rows.append((REG_MAX_CHARGE, "Battery Max Charging Current", _install_value(settings, "install_max_charge_a")))
+        rows.append(
+            (
+                int(item["max_discharge_register"]),
+                "Battery Max Discharging Current",
+                _install_value(settings, "install_max_discharge_a"),
+            )
+        )
+        rows.append((REG_SHUTDOWN_SOC, "Battery Shutdown SOC", _install_value(settings, "install_shutdown_soc")))
+        rows.append((REG_RESTART_SOC, "Battery Restart SOC", _install_value(settings, "install_restart_soc")))
+        rows.append((REG_LOW_SOC, "Battery Low SOC", _install_value(settings, "install_low_soc")))
     if item.get("grid_peak_power_register") is not None:
         rows.append((int(item["grid_peak_power_register"]), "Grid Peak shaving", peak_w))
     if item.get("max_import_register") is not None:
-        rows.append((int(item["max_import_register"]), "Grid Max Import power", min(800, (peak_w + 9) // 10)))
+        rows.append(
+            (
+                int(item["max_import_register"]),
+                "Grid Max Import power",
+                _install_value(settings, "install_max_import_w") // 10,
+            )
+        )
     if item.get("solar_sell_register") is not None:
         rows.append((int(item["solar_sell_register"]), "Solar Sell", SOLAR_SELL_OFF))
     if item.get("sell_power_register") is not None:
-        rows.append((int(item["sell_power_register"]), "Export Surplus Power", SELL_POWER_IDLE_W))
+        rows.append(
+            (int(item["sell_power_register"]), "Export Surplus Power", _install_value(settings, "install_max_sell_w"))
+        )
     schedule = item.get("time_of_use_register")
     if schedule is not None:
         rows.append((int(schedule), "Time of Use", TOU_WEEK_ENABLED))
@@ -1529,6 +1680,73 @@ def _send_rows(settings: Dict[str, Any], serial: int, writes: List[tuple], raw: 
     return _write_result(True, "Geschrieben: " + "; ".join(done) + ".", raw)
 
 
+def _read_peak_flags(item: Dict[str, Any], settings: Dict[str, Any], serial: int) -> Optional[int]:
+    register = item.get("grid_peak_enable_register")
+    if register is None or not serial:
+        return None
+    for _attempt in range(3):
+        try:
+            return read_solarman_holding(
+                settings["modbus_host"], settings["modbus_port"], settings["modbus_unit"], serial, int(register)
+            )
+        except OSError:
+            time.sleep(0.3)
+    return None
+
+
+# Vom Wechselrichter zurückgelesene Haltewerte. Der SG04LP3 bestätigt Schreibbefehle auch,
+# wenn er sie bei vielen Befehlen hintereinander verwirft (gesehen bei den TOU-Programmen).
+# Darum wird jeder Wert zurückgelesen und nur Geändertes neu geschrieben.
+CONFIRM_REFRESH_SEC = 60
+_confirmed: Dict[int, int] = {}
+_confirmed_at = 0.0
+
+
+def _forget_confirmed() -> None:
+    global _confirmed_at
+    _confirmed.clear()
+    _confirmed_at = 0.0
+
+
+def _send_verified(settings: Dict[str, Any], serial: int, writes: List[tuple], raw: Optional[int]) -> Dict[str, Any]:
+    global _confirmed_at
+    now = time.monotonic()
+    if now - _confirmed_at > CONFIRM_REFRESH_SEC:
+        _confirmed.clear()
+        _confirmed_at = now
+    host, port, unit = settings["modbus_host"], settings["modbus_port"], settings["modbus_unit"]
+    writes = _cap_rows(writes, settings)
+    pending = [row for row in writes if _confirmed.get(int(row[0])) != _u16(row[2])]
+    if not pending:
+        return _write_result(True, "Alle Haltewerte bestätigt, nichts neu geschrieben.", raw)
+    done: List[str] = []
+    missed: List[str] = []
+    for address, name, value in pending:
+        wanted = _u16(value)
+        ok = False
+        for _attempt in range(2):
+            try:
+                _send_holding(host, port, unit, serial, address, value)
+                if not serial:
+                    ok = True
+                    break
+                ok = read_solarman_holding(host, port, unit, serial, address) == wanted
+            except OSError:
+                ok = False
+            if ok:
+                break
+        if ok:
+            _confirmed[int(address)] = wanted
+            done.append(_phrase(address, name, value))
+        else:
+            _confirmed.pop(int(address), None)
+            missed.append(_phrase(address, name, value))
+    text = "Geschrieben und zurückgelesen: " + ("; ".join(done) if done else "nichts") + "."
+    if missed:
+        text += " Nicht übernommen, nächster Durchlauf: " + "; ".join(missed) + "."
+    return _write_result(bool(done) or not missed, text, raw)
+
+
 def apply_write(
     settings: Dict[str, Any],
     plan: Dict[str, Any],
@@ -1556,15 +1774,18 @@ def apply_write(
             _clear_release_pending(settings)
             return _write_result(False, "Aus. Es wird nichts geschrieben.")
         serial = int(link.get("serial") or 0) if link else 0
+        writes = writes + _peak_enable_row(item, _read_peak_flags(item, settings, serial), enabled=True)
         with _lock:
             if _release_sent or not _release_due(settings):
                 return _write_result(False, "Aus. Es wird nichts geschrieben.")
-            result = _send_rows(settings, serial, writes, _idle_grid_w(settings))
+            _forget_confirmed()
+            result = _send_verified(settings, serial, writes, _idle_grid_w(settings))
             _reset_hold(None)
+            _forget_confirmed()
             _last_write["at"] = time.monotonic()
             _last_write["signature"] = ("release",)
             _last_write["result"] = result
-            if result.get("command_sent"):
+            if result.get("command_sent") and "Nicht übernommen" not in result.get("write_text", ""):
                 _release_sent = True
                 _needs_release = False
                 _clear_release_pending(settings)
@@ -1585,26 +1806,16 @@ def apply_write(
     if target_w != _hold_target_w:
         _reset_hold(target_w)
     writes = [(int(item["register"]), item.get("register_name") or "Soll", int(raw))]
+    peak_flags = _read_peak_flags(item, settings, serial)
     if target_w < 0:
-        rows, tou_soc, tou_charging = _feed_writes(item, -target_w, live, settings)
+        rows, tou_soc, tou_charging = _feed_writes(item, -target_w, live, settings, peak_flags)
     else:
-        peak_flags = None
-        if item.get("grid_peak_enable_register") is not None and serial:
-            try:
-                peak_flags = read_solarman_holding(
-                    host,
-                    settings["modbus_port"],
-                    settings["modbus_unit"],
-                    serial,
-                    int(item["grid_peak_enable_register"]),
-                )
-            except OSError:
-                peak_flags = None
-        rows, tou_soc, tou_charging = _import_writes(item, target_w, live, peak_flags)
+        rows, tou_soc, tou_charging = _import_writes(
+            item, target_w, live, peak_flags, immediate=bool(settings.get("exchange_hold"))
+        )
     writes.extend(rows)
     tou_state = (tou_soc, tou_charging)
-    if not _tou_hold_applied or tou_state != _tou_soc_applied:
-        writes.extend(_tou_program_writes(item, tou_soc, tou_charging, with_power=not _tou_hold_applied))
+    writes.extend(_tou_program_writes(item, tou_soc, tou_charging, with_power=True))
     signature = (
         item["id"],
         tuple((address, value) for address, _name, value in writes),
@@ -1617,19 +1828,12 @@ def apply_write(
         _needs_release = True
         _release_sent = False
         _mark_release_pending(settings)
-        if signature == _last_write["signature"] and now - float(_last_write["at"]) < SAMPLE_GAP_SEC:
-            previous = _last_write["result"] or _write_result(False, "unverändert")
-            return previous
-        result = _send_rows(settings, serial, writes, raw)
+        result = _send_verified(settings, serial, writes, raw)
         _last_write["at"] = now
         _last_write["signature"] = signature
         _last_write["result"] = result
-        if result.get("command_sent"):
-            _tou_hold_applied = True
-            _tou_soc_applied = tou_state
-        else:
-            # Ein abgebrochener Durchlauf kann die Programme halb geschrieben haben.
-            _tou_hold_applied = False
+        _tou_hold_applied = True
+        _tou_soc_applied = tou_state
         return result
 
 
@@ -1723,6 +1927,165 @@ def _remember(live: Dict[str, Any], plan: Dict[str, Any], write: Dict[str, Any],
     return log
 
 
+# Unter diesem Zukauf schreibt die Planung nichts ins Register. 0,02 kW wäre nur Rauschen.
+PLANNING_MIN_KW = 0.2
+
+
+def planning_write_kw(raw: Optional[float]) -> Optional[float]:
+    """Zukauf, der ins Register darf. Darunter None, es wird nichts geschrieben."""
+    try:
+        kw = round(float(raw), 2)
+    except (TypeError, ValueError):
+        return None
+    if kw < PLANNING_MIN_KW:
+        return None
+    return kw
+
+
+def apply_planning_hold(settings: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Planung, keine Netzspitzen: empfohlener Zukauf ab 0,2 kW ins BMS-Register.
+
+    Liegt die Empfehlung darunter, bleibt das Register unangetastet. Hielt die Planung
+    vorher einen Wert, wird er freigegeben, damit 0,02 kW nicht stehen bleibt.
+    """
+    if settings is None:
+        settings = load_settings()
+    if settings.get("community_hold") or settings.get("exchange_hold"):
+        return settings
+    try:
+        from energie_steuerung import load_settings as energy_settings
+
+        planning_on = bool(energy_settings().get("algorithmische_planung"))
+    except Exception:
+        return settings
+    holding = bool(settings.get("planning_hold"))
+    if not planning_on:
+        if holding:
+            return save_settings({"real_mode": False, "planning_hold": False})
+        return settings
+    try:
+        from grundverbrauch_rechner import recommended_import_kw
+
+        kw = planning_write_kw(recommended_import_kw(str(BACKEND_DIR)))
+    except Exception:
+        kw = None
+    if kw is None:
+        if holding:
+            return save_settings({"real_mode": False, "planning_hold": False})
+        return settings
+    if (
+        holding
+        and settings.get("real_mode")
+        and abs(float(settings.get("target_grid_kw") or 0) - kw) < 0.01
+    ):
+        return settings
+    return save_settings({"real_mode": True, "target_grid_kw": kw, "planning_hold": True})
+
+
+def apply_community_hold(settings: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Energiegemeinschaft ohne PV: frische Einspeisung der Mitglieder als Zukauf.
+
+    Haus Martin, Ludwig und weitere Mitglieder werden addiert. Unter 0,2 kW wird
+    nichts geschrieben. Mit PV-Anlage ist der Schalter aus, dann passiert hier nichts.
+    """
+    if settings is None:
+        settings = load_settings()
+    try:
+        from energie_steuerung import load_settings as energy_settings
+
+        use_community = bool(energy_settings().get("gemeinschaft_nutzen"))
+    except Exception:
+        return settings
+    holding = bool(settings.get("community_hold"))
+    if not use_community:
+        if holding:
+            updates: Dict[str, Any] = {"community_hold": False}
+            if not settings.get("planning_hold") and not settings.get("exchange_hold"):
+                updates["real_mode"] = False
+            return save_settings(updates)
+        return settings
+    try:
+        from energiegemeinschaft_mesh import peer_surplus_kw
+
+        kw = planning_write_kw(peer_surplus_kw())
+    except Exception:
+        kw = None
+    if kw is None:
+        if holding:
+            updates = {"community_hold": False}
+            if not settings.get("planning_hold") and not settings.get("exchange_hold"):
+                updates["real_mode"] = False
+            return save_settings(updates)
+        return settings
+    if (
+        holding
+        and settings.get("real_mode")
+        and abs(float(settings.get("target_grid_kw") or 0) - kw) < 0.01
+    ):
+        return settings
+    return save_settings({"real_mode": True, "target_grid_kw": kw, "community_hold": True})
+
+
+def apply_exchange_hold(settings: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Börsentarif: Buy nur unter der Preislinie, Sell nur darüber.
+
+    Die kW kommen jedes Mal von den Schiebern. Der Zukauf wird auf das aktuelle
+    Max. Netzbezug begrenzt. Zwischen den Linien wird nichts erzwungen.
+    """
+    if settings is None:
+        settings = load_settings()
+    if settings.get("community_hold"):
+        return settings
+    try:
+        from energie_steuerung import load_settings as energy_settings
+
+        use_tariff = bool(energy_settings().get("boersentarif_nutzen"))
+    except Exception:
+        return settings
+    holding = bool(settings.get("exchange_hold"))
+    if not use_tariff:
+        if holding:
+            updates: Dict[str, Any] = {"exchange_hold": False}
+            if not settings.get("planning_hold"):
+                updates["real_mode"] = False
+            return save_settings(updates)
+        return settings
+    try:
+        from boersenhandel import load_settings as trade_settings
+        from boersenhandel import price_view, tariff_grid_kw
+
+        trade = trade_settings()
+        price = price_view(trade["exchange"], "24h", trade).get("current_ct_kwh")
+    except Exception:
+        return settings
+    if price is None:
+        return settings
+    caps = install_caps_kw(settings)
+    kw = tariff_grid_kw(
+        price,
+        trade["buy_ct_kwh"],
+        trade["sell_ct_kwh"],
+        trade.get("buy_kw"),
+        trade.get("sell_kw"),
+        caps["import_kw"],
+        caps["sell_kw"],
+    )
+    if kw is None:
+        if holding:
+            updates = {"exchange_hold": False}
+            if not settings.get("planning_hold"):
+                updates["real_mode"] = False
+            return save_settings(updates)
+        return settings
+    if (
+        holding
+        and settings.get("real_mode")
+        and abs(float(settings.get("target_grid_kw") or 0) - kw) < 0.01
+    ):
+        return settings
+    return save_settings({"real_mode": True, "target_grid_kw": kw, "exchange_hold": True})
+
+
 def _ensure_writer() -> None:
     global _writer_started
     if _writer_started:
@@ -1732,7 +2095,11 @@ def _ensure_writer() -> None:
     def loop() -> None:
         while True:
             try:
-                settings = load_settings()
+                settings = apply_community_hold(load_settings())
+                if not settings.get("community_hold"):
+                    settings = apply_exchange_hold(settings)
+                if not settings.get("community_hold") and not settings.get("exchange_hold"):
+                    settings = apply_planning_hold(settings)
                 if settings.get("real_mode"):
                     reapply_dauerzukauf_test()
                 live = read_live()
@@ -1770,7 +2137,7 @@ def read_register_state() -> Dict[str, Any]:
         "program_soc": read_ha_entity_state("number.192_168_1_176_program_5_soc"),
         "program_charging": read_ha_entity_state("select.192_168_1_176_program_5_charging"),
         "program_power": read_ha_entity_state("number.192_168_1_176_program_5_power"),
-        "max_export_w": read_ha_entity_state("number.192_168_1_176_grid_max_export_power"),
+        "max_export_w": read_ha_entity_state("number.192_168_1_176_export_surplus_power"),
         "solar_sell": read_ha_entity_state("switch.192_168_1_176_export_surplus"),
     }
 

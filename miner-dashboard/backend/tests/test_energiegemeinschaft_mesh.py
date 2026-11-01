@@ -189,5 +189,45 @@ class TestEnergiegemeinschaftMesh(unittest.TestCase):
             path.unlink(missing_ok=True)
 
 
+class TestCommunitySurplus(unittest.TestCase):
+    def test_fresh_member_exports_add_up(self):
+        from energiegemeinschaft_mesh import peer_surplus_kw
+
+        rows = [
+            {"alias": "Haus Martin", "feed_in_kw": 0.007, "fresh": True},
+            {"alias": "Ludwig", "feed_in_kw": 0.326, "fresh": True},
+            {"alias": "veraltet", "feed_in_kw": 2.0, "fresh": False},
+        ]
+        self.assertEqual(peer_surplus_kw(rows), 0.333)
+
+    def test_pv_site_cannot_enable_community(self):
+        from energie_steuerung import _normalize
+
+        data = {
+            "boersentarif_besitze": False,
+            "boersentarif_nutzen": False,
+            "gemeinschaft_bin_mitglied": True,
+            "gemeinschaft_nutzen": True,
+            "algorithmische_planung": True,
+            "autopilot": True,
+        }
+        out = _normalize(dict(data), has_pv=True)
+        self.assertFalse(out["gemeinschaft_bin_mitglied"])
+        self.assertFalse(out["gemeinschaft_nutzen"])
+        self.assertFalse(out["autopilot"])
+        kept = _normalize(dict(data), has_pv=False)
+        self.assertTrue(kept["gemeinschaft_nutzen"])
+
+
+class TestBoersenhandelLabel(unittest.TestCase):
+    def test_label_needs_both_switches(self):
+        from energie_steuerung import boersenhandel_aktiv
+
+        self.assertFalse(boersenhandel_aktiv({"boersentarif_besitze": False, "boersentarif_nutzen": False}))
+        self.assertFalse(boersenhandel_aktiv({"boersentarif_besitze": True, "boersentarif_nutzen": False}))
+        self.assertFalse(boersenhandel_aktiv({"boersentarif_besitze": False, "boersentarif_nutzen": True}))
+        self.assertTrue(boersenhandel_aktiv({"boersentarif_besitze": True, "boersentarif_nutzen": True}))
+
+
 if __name__ == "__main__":
     unittest.main()
