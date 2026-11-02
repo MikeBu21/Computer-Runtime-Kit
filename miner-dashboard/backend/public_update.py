@@ -19,7 +19,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Set, Tuple
 
 BACKEND_DIR = Path(__file__).resolve().parent
 REPO_ROOT = BACKEND_DIR.parent.parent
@@ -1316,6 +1316,414 @@ def _ensure_soft_download_scan_file(path: Optional[Path] = None) -> None:
         target.write_text(text, encoding="utf-8")
 
 
+class _HaLayout(NamedTuple):
+    root: Path
+    venv_dir: Path
+    hass_bin: Path
+    config_dir: Path
+    tz: str
+
+
+HA_DOCKER_IMAGE = "ghcr.io/home-assistant/home-assistant"
+HA_DOCKER_CONTAINER = "homeassistant"
+HA_POLL_URL = "http://127.0.0.1:8123/"
+_HA_VERSION_RE = re.compile(r"^\d{4}\.\d{1,2}\.\d{1,2}$")
+_PY_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
+_DOCKER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+_VERSION_OPS = (">=", "<=", "==", "!=", ">", "<")
+
+
+def _sh_quote(value: str) -> str:
+    return "'" + value.replace("'", "'\"'\"'") + "'"
+
+
+def _parse_version_tuple(text: str) -> Tuple[int, ...]:
+    parts: List[int] = []
+    for piece in text.strip().split("."):
+        number = ""
+        for char in piece:
+            if char.isdigit():
+                number += char
+            else:
+                break
+        if not number:
+            break
+        parts.append(int(number))
+    return tuple(parts)
+
+
+def _cmp_version(left: str, right: str) -> int:
+    a = _parse_version_tuple(left)
+    b = _parse_version_tuple(right)
+    width = max(len(a), len(b))
+    a = a + (0,) * (width - len(a))
+    b = b + (0,) * (width - len(b))
+    if a < b:
+        return -1
+    if a > b:
+        return 1
+    return 0
+
+
+def _python_satisfies(py_version: str, requires: str) -> bool:
+    """True only when py_version matches a known Requires-Python specifier."""
+    requires = (requires or "").strip()
+    if not requires:
+        return False
+    for raw in requires.split(","):
+        part = raw.strip()
+        if not part:
+            continue
+        op = next((item for item in _VERSION_OPS if part.startswith(item)), "")
+        if not op:
+            return False
+        cmp = _cmp_version(py_version, part[len(op):].strip())
+        ok = (
+            (op == ">=" and cmp >= 0)
+            or (op == "<=" and cmp <= 0)
+            or (op == ">" and cmp > 0)
+            or (op == "<" and cmp < 0)
+            or (op == "==" and cmp == 0)
+            or (op == "!=" and cmp != 0)
+        )
+        if not ok:
+            return False
+    return True
+
+
+def _hass_ready(path: Path) -> bool:
+    """Ausführbares, nicht leeres venv/bin/hass. Fehlende Datei wird nicht angelegt."""
+    try:
+        return path.is_file() and path.stat().st_size > 0 and os.access(path, os.X_OK)
+    except OSError:
+        return False
+
+
+def _resolve_ha_layout() -> _HaLayout:
+    """Pfade aus der bestehenden User-Unit, sonst ~/homeassistant."""
+    candidates = (
+        Path.home() / ".config/systemd/user/home-assistant.service",
+        REPO_ROOT / "miner-dashboard/docs/systemd-user/home-assistant.service",
+    )
+    text = ""
+    for path in candidates:
+        if path.is_file():
+            text = path.read_text(encoding="utf-8", errors="replace")
+            break
+    work: Optional[Path] = None
+    hass: Optional[Path] = None
+    config: Optional[Path] = None
+    tz = "Europe/Vienna"
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("WorkingDirectory="):
+            work = Path(line.split("=", 1)[1].strip())
+        elif line.startswith("Environment=") and line.split("=", 1)[1].strip().startswith("TZ="):
+            tz = line.split("=", 1)[1].strip().split("=", 1)[1].strip() or tz
+        elif line.startswith("ExecStart="):
+            parts = line.split("=", 1)[1].strip().split()
+            if parts:
+                hass = Path(parts[0])
+            if "-c" in parts:
+                index = parts.index("-c")
+                if index + 1 < len(parts):
+                    config = Path(parts[index + 1])
+    if hass is None:
+        root = work or (Path.home() / "homeassistant")
+        hass = root / "venv" / "bin" / "hass"
+    root = work or hass.parent.parent.parent
+    if config is None:
+        config = root / "config"
+    return _HaLayout(
+        root=root,
+        venv_dir=hass.parent.parent,
+        hass_bin=hass,
+        config_dir=config,
+        tz=tz,
+    )
+
+
+def _read_ha_version(config_dir: Path) -> str:
+    text = (config_dir / ".HA_VERSION").read_text(encoding="utf-8").strip()
+    if not _HA_VERSION_RE.fullmatch(text):
+        raise RuntimeError("config/.HA_VERSION ist keine Home-Assistant-Version.")
+    return text
+
+
+def _venv_python(venv_dir: Path) -> Optional[Path]:
+    for name in ("python3", "python"):
+        candidate = venv_dir / "bin" / name
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+def _run_cmd(args: List[str], timeout: int = 120) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        args,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=timeout,
+    )
+
+
+def _check_cmd(args: List[str], timeout: int = 120) -> subprocess.CompletedProcess:
+    proc = _run_cmd(args, timeout=timeout)
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip().splitlines()
+        tail = detail[-1] if detail else "Exit " + str(proc.returncode)
+        raise RuntimeError(tail[:200])
+    return proc
+
+
+def _venv_python_version(python: Path) -> Optional[str]:
+    proc = _run_cmd(
+        [str(python), "-c", "import sys; print('%d.%d.%d' % sys.version_info[:3])"],
+        timeout=30,
+    )
+    if proc.returncode != 0:
+        return None
+    text = (proc.stdout or "").strip()
+    if not _PY_VERSION_RE.fullmatch(text):
+        return None
+    return text
+
+
+def _requires_python(version: str) -> str:
+    request = urllib.request.Request(
+        f"https://pypi.org/pypi/homeassistant/{version}/json",
+        headers={"User-Agent": "piminer-standard"},
+    )
+    with urllib.request.urlopen(request, timeout=20) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    requires = str((payload.get("info") or {}).get("requires_python") or "").strip()
+    if not requires:
+        raise RuntimeError("Requires-Python fehlt.")
+    return requires
+
+
+def _docker_image_present(image: str) -> bool:
+    proc = _run_cmd(["docker", "image", "inspect", "--type", "image", image], timeout=30)
+    return proc.returncode == 0
+
+
+def _container_using_config(config_dir: Path) -> Optional[Tuple[str, bool]]:
+    """Name und ob er läuft. Gleicher Config-Mount zählt, damit kein zweiter Container entsteht."""
+    proc = _run_cmd(["docker", "ps", "-a", "--format", "{{.Names}}\t{{.Status}}"], timeout=30)
+    if proc.returncode != 0:
+        return None
+    needle = str(config_dir)
+    for line in (proc.stdout or "").splitlines():
+        if "\t" not in line:
+            continue
+        name, status = line.split("\t", 1)
+        name = name.strip()
+        if not _DOCKER_NAME_RE.fullmatch(name):
+            continue
+        inspected = _run_cmd(
+            ["docker", "inspect", "--format", "{{range .Mounts}}{{.Source}}\n{{end}}", name],
+            timeout=30,
+        )
+        sources = [item.strip() for item in (inspected.stdout or "").splitlines() if item.strip()]
+        if needle in sources:
+            return name, status.lower().startswith("up")
+    return None
+
+
+def _write_docker_hass_wrapper(layout: _HaLayout, image: str, container: str) -> None:
+    """Wrapper, den home-assistant.service als `hass -c CONFIG` ausführt."""
+    hass = layout.hass_bin
+    config_dir = layout.config_dir.resolve()
+    hass.parent.mkdir(parents=True, exist_ok=True)
+    destination = hass.resolve() if hass.exists() else hass.parent.resolve() / hass.name
+    if destination == config_dir or config_dir in destination.parents:
+        raise RuntimeError("hass-Wrapper darf nicht in der HA-Config liegen.")
+    lines = [
+        "#!/bin/sh",
+        "# home-assistant.service startet: hass -c CONFIG",
+        "# Nutzt den Container dieser Config und legt keinen zweiten an.",
+        "set -eu",
+        "DEFAULT_CONFIG=" + _sh_quote(str(layout.config_dir)),
+        "NAME=" + _sh_quote(container),
+        "IMAGE=" + _sh_quote(image),
+        "TZ=" + _sh_quote(layout.tz or "Europe/Vienna"),
+        'CONFIG="$DEFAULT_CONFIG"',
+        'prev=""',
+        'for arg in "$@"; do',
+        '  if [ "$prev" = "-c" ] || [ "$prev" = "--config" ]; then',
+        '    CONFIG="$arg"',
+        "  fi",
+        '  prev="$arg"',
+        "done",
+        'if docker ps -q --filter "name=^/${NAME}$" | grep -q .; then',
+        '  exec docker logs -f "$NAME"',
+        "fi",
+        'if docker ps -aq --filter "name=^/${NAME}$" | grep -q .; then',
+        '  docker start "$NAME" >/dev/null',
+        '  exec docker logs -f "$NAME"',
+        "fi",
+        'exec docker run --name "$NAME" --network=host -e "TZ=$TZ" -v "$CONFIG:/config" "$IMAGE"',
+        "",
+    ]
+    hass.write_text("\n".join(lines), encoding="utf-8")
+    hass.chmod(hass.stat().st_mode | 0o111)
+
+
+def _restart_ha_services() -> str:
+    proc = _run_cmd(
+        ["systemctl", "--user", "restart", "home-assistant.service", "ha-data-bridge.service"],
+        timeout=120,
+    )
+    if proc.returncode == 0:
+        return ""
+    detail = (proc.stderr or proc.stdout or "").strip().splitlines()
+    tail = detail[-1][:180] if detail else "Exit " + str(proc.returncode)
+    return " Dienst-Neustart fehlgeschlagen (" + tail + ")."
+
+
+def _poll_home_assistant(url: str = HA_POLL_URL, attempts: int = 8) -> bool:
+    for index in range(attempts):
+        status = 0
+        try:
+            request = urllib.request.Request(url, headers={"User-Agent": "piminer-standard"})
+            with urllib.request.urlopen(request, timeout=3) as response:
+                status = int(response.status)
+        except urllib.error.HTTPError as exc:
+            status = int(exc.code)
+        except Exception:
+            status = 0
+        if 200 <= status < 600:
+            return True
+        if index + 1 < attempts:
+            time.sleep(2)
+    return False
+
+
+def _finish_ha_repair() -> str:
+    restart_note = _restart_ha_services()
+    try:
+        up = _poll_home_assistant()
+    except Exception:
+        up = False
+    if up:
+        return restart_note + " Port 8123 antwortet."
+    return restart_note + " Port 8123 antwortet nicht. Das Update wird nicht abgebrochen."
+
+
+def _repair_home_assistant() -> str:
+    layout = _resolve_ha_layout()
+    if layout.hass_bin.is_file() and not os.access(layout.hass_bin, os.X_OK):
+        try:
+            if layout.hass_bin.stat().st_size > 0:
+                layout.hass_bin.chmod(layout.hass_bin.stat().st_mode | 0o111)
+        except OSError:
+            pass
+        if _hass_ready(layout.hass_bin):
+            return (
+                "Warnung: venv/bin/hass war nicht ausführbar und wurde ausführbar gesetzt."
+                + _finish_ha_repair()
+            )
+    if _hass_ready(layout.hass_bin):
+        return "Home Assistant: venv/bin/hass ist ausführbar."
+    version = _read_ha_version(layout.config_dir)
+    image = HA_DOCKER_IMAGE + ":" + version
+    python = _venv_python(layout.venv_dir)
+    py_version = _venv_python_version(python) if python is not None else None
+    requires = ""
+    if py_version:
+        try:
+            requires = _requires_python(version)
+        except Exception:
+            requires = ""
+    pip_note = ""
+    if python is not None and py_version and requires and _python_satisfies(py_version, requires):
+        try:
+            _check_cmd(
+                [str(python), "-m", "pip", "install", "homeassistant==" + version],
+                timeout=900,
+            )
+        except Exception as exc:
+            detail = str(exc).strip().splitlines()
+            pip_note = (detail[-1] if detail else "pip fehlgeschlagen")[:180]
+        if _hass_ready(layout.hass_bin):
+            return (
+                "Warnung: Home Assistant-Paket fehlte und wurde mit pip installiert (homeassistant=="
+                + version
+                + ")."
+                + _finish_ha_repair()
+            )
+        if not pip_note:
+            pip_note = "hass fehlt nach pip install"
+    present = _docker_image_present(image)
+    if not present:
+        _check_cmd(["docker", "pull", image], timeout=900)
+    existing = _container_using_config(layout.config_dir)
+    if existing is not None:
+        container, running = existing
+        if not running:
+            _check_cmd(["docker", "start", container], timeout=120)
+        image_note = "bestehender Container " + container
+    else:
+        container = HA_DOCKER_CONTAINER
+        _check_cmd(
+            [
+                "docker",
+                "run",
+                "-d",
+                "--name",
+                container,
+                "--network=host",
+                "-e",
+                "TZ=" + (layout.tz or "Europe/Vienna"),
+                "-v",
+                str(layout.config_dir) + ":/config",
+                image,
+            ],
+            timeout=180,
+        )
+        if present:
+            image_note = "lokales Image " + image
+        else:
+            image_note = "Image " + image + " wurde gezogen"
+    _write_docker_hass_wrapper(layout, image, container)
+    if not _hass_ready(layout.hass_bin):
+        raise RuntimeError("venv/bin/hass ist nach der Reparatur nicht ausführbar.")
+    if pip_note:
+        reason = "pip install fehlgeschlagen (" + pip_note + ")"
+    elif requires and py_version:
+        reason = "Python " + py_version + " erfüllt Requires-Python (" + requires + ") nicht"
+    else:
+        reason = "Python " + (py_version or "unbekannt") + " erfüllt Requires-Python nicht oder es ist nicht prüfbar"
+    return (
+        "Warnung: Home Assistant-venv war leer (hass fehlte). "
+        + reason
+        + ". Docker ("
+        + image_note
+        + ")."
+        + _finish_ha_repair()
+    )
+
+
+def ensure_home_assistant() -> str:
+    """Prüft Home Assistant nach dem Code-Apply.
+
+    Update-Button und automatisches Update laufen beide über `_download_worker`.
+    Eine fehlende oder leere venv wird nachinstalliert. Die Funktion bricht nie ab;
+    der Text wird an job.message angehängt.
+    """
+    try:
+        return _repair_home_assistant()
+    except Exception as exc:
+        detail = str(exc).strip().splitlines()
+        text = (detail[-1] if detail else "unbekannter Fehler").replace("\n", " ")[:200]
+        return (
+            "Warnung: Home Assistant konnte nicht repariert werden ("
+            + text
+            + "). Das Update wird nicht abgebrochen."
+        )
+
+
 def _download_worker() -> None:
     try:
         _write_job(downloading=True, phase="fetch", message="Öffentliche Version wird geladen.")
@@ -1344,6 +1752,8 @@ def _download_worker() -> None:
         _write_job(phase="apply", message=f"Version {version}: nur Programmcode wird übernommen.")
         _copy_download(DOWNLOAD_DIR)
         _ensure_soft_download_scan_file()
+        _write_job(phase="setup", message="Home Assistant wird geprüft.")
+        ha_note = ensure_home_assistant()
         _write_job(phase="setup", message="Auto-Start und Anzeige werden eingerichtet.")
         setup_notes = apply_runtime_setup(REPO_ROOT)
         state = load_state()
@@ -1359,8 +1769,9 @@ def _download_worker() -> None:
             message=(
                 f"Version {version} geladen. Code aktualisiert, Auto-Start eingerichtet ({note}). "
                 "Software-Dienste werden neu gestartet (kein Reboot). "
-                "Persönliche Daten unverändert."
-            ),
+                "Persönliche Daten unverändert. "
+            )
+            + ha_note,
         )
         restart_control_services_soon()
     except Exception as exc:

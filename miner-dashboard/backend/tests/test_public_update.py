@@ -1,7 +1,13 @@
 # -*- coding: utf-8 -*-
+import inspect
 import json
+import os
+import subprocess
 import sys
+import tempfile
+import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 BACKEND = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND))
@@ -255,3 +261,217 @@ def test_default_fields_have_empty_entity_ids():
 
     for name, field in _default_fields().items():
         assert field.get("entity_id") == "", name
+
+
+class HaRepairTests(unittest.TestCase):
+    """Leere Home-Assistant-venv nach dem Code-Apply reparieren, Update nicht abbrechen."""
+
+    def _layout(self, root: Path, *, hass: bool) -> pu._HaLayout:
+        venv_bin = root / "venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        python = venv_bin / "python3"
+        python.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        python.chmod(0o755)
+        config = root / "config"
+        config.mkdir()
+        (config / ".HA_VERSION").write_text("2026.2.3\n", encoding="utf-8")
+        hass_bin = venv_bin / "hass"
+        if hass:
+            hass_bin.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            hass_bin.chmod(0o755)
+        return pu._HaLayout(
+            root=root,
+            venv_dir=root / "venv",
+            hass_bin=hass_bin,
+            config_dir=config,
+            tz="Europe/Vienna",
+        )
+
+    def test_executable_hass_skips_repair(self):
+        self.assertFalse(pu._python_satisfies("3.11.2", ">=3.13.2"))
+        self.assertTrue(pu._python_satisfies("3.13.2", ">=3.13.2"))
+        self.assertTrue(pu._python_satisfies("3.13.5", ">=3.13.2"))
+        with tempfile.TemporaryDirectory() as tmp:
+            layout = self._layout(Path(tmp), hass=True)
+            original = layout.hass_bin.read_text(encoding="utf-8")
+            config_before = sorted(path.name for path in layout.config_dir.iterdir())
+
+            def forbid_commands(args, timeout=120):
+                raise AssertionError("Reparatur darf bei ausführbarem hass nicht laufen")
+
+            with patch.object(pu, "_resolve_ha_layout", lambda: layout), patch.object(
+                pu, "_run_cmd", forbid_commands
+            ), patch.object(
+                pu, "_poll_home_assistant", lambda *a, **k: (_ for _ in ()).throw(AssertionError("kein Poll"))
+            ):
+                message = pu.ensure_home_assistant()
+
+            self.assertIn("ausführbar", message)
+            self.assertNotIn("Warnung:", message)
+            self.assertEqual(layout.hass_bin.read_text(encoding="utf-8"), original)
+            self.assertEqual(sorted(path.name for path in layout.config_dir.iterdir()), config_before)
+            self.assertEqual((layout.config_dir / ".HA_VERSION").read_text(encoding="utf-8"), "2026.2.3\n")
+
+    def test_old_python_missing_hass_uses_docker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            layout = self._layout(root, hass=False)
+            calls = []
+
+            def fake_run(args, timeout=120):
+                args = [str(item) for item in args]
+                calls.append(args)
+                if args[:3] == ["docker", "image", "inspect"]:
+                    return subprocess.CompletedProcess(args, 1, "", "missing")
+                if args[:2] == ["docker", "pull"]:
+                    return subprocess.CompletedProcess(args, 0, "", "")
+                if args[:2] == ["docker", "ps"]:
+                    return subprocess.CompletedProcess(args, 0, "", "")
+                if args[:2] == ["docker", "run"]:
+                    return subprocess.CompletedProcess(args, 0, "", "")
+                if args[:1] == ["systemctl"]:
+                    return subprocess.CompletedProcess(args, 0, "", "")
+                if "pip" in args:
+                    raise AssertionError("pip darf bei zu altem Python nicht laufen")
+                raise AssertionError("unerwartet: " + " ".join(args))
+
+            with patch.object(pu, "_resolve_ha_layout", lambda: layout), patch.object(
+                pu, "_venv_python_version", lambda python: "3.11.2"
+            ), patch.object(pu, "_requires_python", lambda version: ">=3.13.2"), patch.object(
+                pu, "_run_cmd", fake_run
+            ), patch.object(pu, "_poll_home_assistant", lambda *a, **k: True):
+                message = pu.ensure_home_assistant()
+
+            self.assertNotIn("pip", " ".join(" ".join(cmd) for cmd in calls))
+            self.assertIn(
+                ["docker", "pull", "ghcr.io/home-assistant/home-assistant:2026.2.3"],
+                calls,
+            )
+            run_cmds = [cmd for cmd in calls if cmd[:2] == ["docker", "run"]]
+            self.assertEqual(len(run_cmds), 1)
+            self.assertIn("--network=host", run_cmds[0])
+            self.assertIn(str(layout.config_dir) + ":/config", run_cmds[0])
+            self.assertIn("ghcr.io/home-assistant/home-assistant:2026.2.3", run_cmds[0])
+            self.assertIn("--name", run_cmds[0])
+            self.assertIn("homeassistant", run_cmds[0])
+            self.assertIn(
+                ["systemctl", "--user", "restart", "home-assistant.service", "ha-data-bridge.service"],
+                calls,
+            )
+            self.assertTrue(layout.hass_bin.is_file())
+            self.assertTrue(os.access(layout.hass_bin, os.X_OK))
+            wrapper = layout.hass_bin.read_text(encoding="utf-8")
+            self.assertIn("--network=host", wrapper)
+            self.assertIn("ghcr.io/home-assistant/home-assistant:2026.2.3", wrapper)
+            self.assertIn(str(layout.config_dir), wrapper)
+            self.assertNotIn(str(layout.hass_bin), str(layout.config_dir))
+            self.assertEqual(sorted(path.name for path in layout.config_dir.iterdir()), [".HA_VERSION"])
+            self.assertEqual((layout.config_dir / ".HA_VERSION").read_text(encoding="utf-8"), "2026.2.3\n")
+            self.assertIn("Warnung:", message)
+            self.assertIn("3.11.2", message)
+            self.assertIn(">=3.13.2", message)
+            self.assertIn("wurde gezogen", message)
+            self.assertIn("Port 8123 antwortet", message)
+
+    def test_existing_container_is_not_started_again(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            layout = self._layout(Path(tmp), hass=False)
+            calls = []
+
+            def fake_run(args, timeout=120):
+                args = [str(item) for item in args]
+                calls.append(args)
+                if args[:3] == ["docker", "image", "inspect"]:
+                    return subprocess.CompletedProcess(args, 0, "", "")
+                if args[:2] == ["docker", "ps"]:
+                    return subprocess.CompletedProcess(args, 0, "ha-core\tUp 2 hours\n", "")
+                if args[:2] == ["docker", "inspect"]:
+                    return subprocess.CompletedProcess(args, 0, str(layout.config_dir) + "\n", "")
+                if args[:2] in (["docker", "run"], ["docker", "pull"], ["docker", "start"]):
+                    raise AssertionError("kein zweiter Container: " + " ".join(args))
+                if args[:1] == ["systemctl"]:
+                    return subprocess.CompletedProcess(args, 0, "", "")
+                raise AssertionError("unerwartet: " + " ".join(args))
+
+            with patch.object(pu, "_resolve_ha_layout", lambda: layout), patch.object(
+                pu, "_venv_python_version", lambda python: "3.11.2"
+            ), patch.object(pu, "_requires_python", lambda version: ">=3.13.2"), patch.object(
+                pu, "_run_cmd", fake_run
+            ), patch.object(pu, "_poll_home_assistant", lambda *a, **k: True):
+                message = pu.ensure_home_assistant()
+
+            self.assertIn("bestehender Container ha-core", message)
+            wrapper = layout.hass_bin.read_text(encoding="utf-8")
+            self.assertIn("ha-core", wrapper)
+            self.assertNotIn("docker run", " ".join(" ".join(cmd) for cmd in calls))
+
+    def test_repair_failure_is_warning_and_update_completes(self):
+        source = inspect.getsource(pu._download_worker)
+        self.assertLess(source.index("_copy_download(DOWNLOAD_DIR)"), source.index("ensure_home_assistant()"))
+        self.assertIn("_download_worker", inspect.getsource(pu.start_download))
+        self.assertIn("start_download", inspect.getsource(pu.pull_if_newer))
+        worker_file = Path(pu.__file__).read_text(encoding="utf-8")
+        self.assertIn(
+            "_copy_download(DOWNLOAD_DIR)\n        _ensure_soft_download_scan_file()",
+            worker_file,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            layout = self._layout(root / "ha", hass=False)
+            download = root / "download"
+            repo = root / "repo"
+            repo.mkdir()
+            jobs = []
+            saved = {}
+
+            def fake_git(args, cwd):
+                dest = Path(args[-1])
+                backend = dest / "miner-dashboard" / "backend"
+                backend.mkdir(parents=True, exist_ok=True)
+                (backend / "app.py").write_text("print(1)\n", encoding="utf-8")
+                (dest / "standard_release.json").write_text(
+                    json.dumps({"version": 21, "notes": "n"}),
+                    encoding="utf-8",
+                )
+
+            def fake_run(args, timeout=120):
+                args = [str(item) for item in args]
+                if args[:3] == ["docker", "image", "inspect"]:
+                    return subprocess.CompletedProcess(args, 1, "", "missing")
+                if args[:2] == ["docker", "pull"]:
+                    return subprocess.CompletedProcess(args, 1, "", "pull blocked in test")
+                raise AssertionError("unerwartet: " + " ".join(args))
+
+            with patch.object(pu, "_run_git", fake_git), patch.object(
+                pu, "DOWNLOAD_DIR", download
+            ), patch.object(pu, "REPO_ROOT", repo), patch.object(
+                pu, "_write_job", lambda **fields: jobs.append(dict(fields))
+            ), patch.object(pu, "_ensure_soft_download_scan_file", lambda path=None: None), patch.object(
+                pu, "apply_runtime_setup", lambda dest_root=None: ["ok"]
+            ), patch.object(pu, "restart_control_services_soon", lambda: None), patch.object(
+                pu, "save_state", lambda state: saved.update(state)
+            ), patch.object(pu, "load_state", lambda: {"local_version": 1}), patch.object(
+                pu, "_resolve_ha_layout", lambda: layout
+            ), patch.object(pu, "_venv_python_version", lambda python: "3.11.2"), patch.object(
+                pu, "_requires_python", lambda version: ">=3.13.2"
+            ), patch.object(pu, "_run_cmd", fake_run), patch.object(
+                pu, "_poll_home_assistant", lambda *a, **k: True
+            ):
+                pu._download_worker()
+
+            self.assertTrue(jobs)
+            done = jobs[-1]
+            self.assertEqual(done.get("phase"), "done")
+            self.assertIs(done.get("downloading"), False)
+            self.assertIn("Version 21 geladen", done["message"])
+            self.assertIn("Persönliche Daten unverändert.", done["message"])
+            self.assertLess(
+                done["message"].index("Persönliche Daten unverändert."),
+                done["message"].index("Warnung:"),
+            )
+            self.assertIn("pull blocked in test", done["message"])
+            self.assertIn("nicht abgebrochen", done["message"])
+            self.assertEqual(saved.get("local_version"), 21)
+            self.assertTrue(any("Home Assistant wird geprüft" in str(item.get("message")) for item in jobs))
+            self.assertFalse((layout.config_dir / ".storage").exists())
+            self.assertEqual((layout.config_dir / ".HA_VERSION").read_text(encoding="utf-8"), "2026.2.3\n")
