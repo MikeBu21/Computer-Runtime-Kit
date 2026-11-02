@@ -146,6 +146,7 @@ def mesh_settings() -> Dict[str, Any]:
         "node_name": str(raw.get("node_name") or ""),
         "auth_key_set": bool(str(raw.get("tailscale_auth_key") or "").strip()),
         "members": raw.get("members") if isinstance(raw.get("members"), dict) else {},
+        "member_admin": raw.get("member_admin") if isinstance(raw.get("member_admin"), dict) else {},
         "removed_members": raw.get("removed_members") if isinstance(raw.get("removed_members"), list) else [],
         "commands": raw.get("commands") if isinstance(raw.get("commands"), list) else [],
     }
@@ -350,6 +351,110 @@ def outlook_line(balance_kwh: Any) -> str:
         )
     sign = "+" if value > 0 else ""
     return f"Nachbar kommt über die Nacht, die Bilanz ist {sign}{shown} kWh."
+
+
+def balance_lamp(balance_kwh: Any) -> Optional[Dict[str, str]]:
+    """Ampel zur gespeicherten Tagesbilanz in kWh.
+
+    Grün über +1, orange von −1 bis +1 einschließlich, rot unter −1.
+    """
+    if isinstance(balance_kwh, bool) or not isinstance(balance_kwh, (int, float)):
+        return None
+    value = float(balance_kwh)
+    if value > 1:
+        return {"level": "green", "word": "Gut"}
+    if value >= -1:
+        return {"level": "orange", "word": "Unsicher"}
+    return {"level": "red", "word": "Reicht nicht"}
+
+
+_REPORTED_CHOICES = {
+    "neighbor_trade": ("buy", "sell", "both"),
+    "neighbor_storage": ("yes", "no"),
+    "neighbor_pv": ("yes", "no"),
+}
+_REPORTED_KW = ("max_zukauf_kw", "max_verkauf_kw")
+_REPORTED_FLAGS = ("share_without_production", "only_if_enough_tomorrow")
+
+
+def reported_member_settings(item: Dict[str, Any]) -> Dict[str, Any]:
+    """Nur das, was dieses Mitglied selbst mitgeschickt hat. Sonst leer."""
+    out: Dict[str, Any] = {}
+    for key, allowed in _REPORTED_CHOICES.items():
+        if key not in item:
+            out[key] = None
+            continue
+        text = str(item.get(key) or "").strip()
+        out[key] = text if text in allowed else None
+    for key in _REPORTED_KW:
+        raw = item.get(key) if key in item else None
+        out[key] = None if isinstance(raw, bool) or not isinstance(raw, (int, float)) else round(float(raw), 3)
+    for key in _REPORTED_FLAGS:
+        raw = item.get(key) if key in item else None
+        out[key] = raw if isinstance(raw, bool) else None
+    raw_balance = item.get("balance_kwh") if "balance_kwh" in item else None
+    if isinstance(raw_balance, bool) or not isinstance(raw_balance, (int, float)):
+        out["balance_kwh"] = None
+    else:
+        out["balance_kwh"] = round(float(raw_balance), 3)
+    return out
+
+
+def _clean_choice(raw: Any, allowed: set) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    if text not in allowed:
+        raise ValueError("Unbekannte Auswahl.")
+    return text
+
+
+def _clean_kw(raw: Any) -> Optional[float]:
+    if raw is None:
+        return None
+    text = str(raw).strip().replace(",", ".")
+    if not text:
+        return None
+    try:
+        value = float(text)
+    except ValueError:
+        raise ValueError("Bitte eine Zahl in kW eintragen.") from None
+    if value < 0 or value > 1000:
+        raise ValueError("Leistung liegt außerhalb.")
+    return round(value, 3)
+
+
+def _clean_flag(raw: Any) -> bool:
+    return str(raw or "").strip().lower() in {"1", "true", "on", "yes"}
+
+
+def clean_member_admin(raw: Any) -> Dict[str, Any]:
+    """Admin-Werte für eine Person. Leer bleibt leer, nichts wird aus einer Vorlage gefüllt."""
+    getter = getattr(raw, "get", None)
+
+    def pick(key: str) -> Any:
+        if not callable(getter):
+            return None
+        return getter(key)
+
+    return {
+        "neighbor_trade": _clean_choice(pick("neighbor_trade"), {"buy", "sell", "both"}),
+        "max_zukauf_kw": _clean_kw(pick("max_zukauf_kw")),
+        "max_verkauf_kw": _clean_kw(pick("max_verkauf_kw")),
+        "share_without_production": _clean_flag(pick("share_without_production")),
+        "neighbor_night_kw": _clean_kw(pick("neighbor_night_kw")),
+        "neighbor_storage": _clean_choice(pick("neighbor_storage"), {"yes", "no"}),
+        "neighbor_pv": _clean_choice(pick("neighbor_pv"), {"yes", "no"}),
+        "only_if_enough_tomorrow": _clean_flag(pick("only_if_enough_tomorrow")),
+    }
+
+
+def stored_member_admin(store: Any, name: str) -> Dict[str, Any]:
+    raw = store.get(name) if isinstance(store, dict) else None
+    try:
+        return clean_member_admin(raw if isinstance(raw, dict) else {})
+    except ValueError:
+        return clean_member_admin({})
 
 
 def local_name(snapshot: Optional[Dict[str, Any]] = None) -> str:
@@ -706,6 +811,29 @@ def update_member_field(name: str, field: str, raw: str) -> None:
     _update(mutate)
 
 
+def save_member_admin(name: str, raw: Any) -> Dict[str, Any]:
+    """Einstellungen des Admins für genau dieses Mitglied. Nicht die Meldung des Nachbarn."""
+    peer = name.strip()
+    if not peer:
+        raise ValueError("Steuerung fehlt.")
+    if peer == local_name():
+        raise ValueError("Einstellungen gelten für die anderen Geräte.")
+    cleaned = clean_member_admin(raw)
+
+    def mutate(data: Dict[str, Any]) -> None:
+        members = data.get("members")
+        if not isinstance(members, dict) or not isinstance(members.get(peer), dict):
+            raise ValueError("Mitglied ist nicht in der Gemeinschaft.")
+        store = data.get("member_admin")
+        if not isinstance(store, dict):
+            store = {}
+        store[peer] = cleaned
+        data["member_admin"] = store
+
+    _update(mutate)
+    return cleaned
+
+
 def remove_member(name: str) -> None:
     """Mitglied aus der Gemeinschaft nehmen. Es kommt mit dem nächsten Paket nicht zurück."""
     peer = name.strip()
@@ -726,6 +854,10 @@ def remove_member(name: str) -> None:
         if peer not in removed:
             removed.append(peer)
         data["removed_members"] = removed[-50:]
+        store = data.get("member_admin")
+        if isinstance(store, dict):
+            store.pop(peer, None)
+            data["member_admin"] = store
 
     _update(mutate)
 
@@ -1008,6 +1140,9 @@ def public_status() -> Dict[str, Any]:
                 "feed_in_kwh": item.get("feed_in_kwh"),
                 "balance_kwh": item.get("balance_kwh"),
                 "outlook_text": outlook_line(item.get("balance_kwh")),
+                "outlook_lamp": balance_lamp(item.get("balance_kwh")),
+                "reported": reported_member_settings(item if isinstance(item, dict) else {}),
+                "admin": stored_member_admin(settings.get("member_admin"), str(item.get("name") or "")),
                 "connected_kwh": item.get("connected_kwh") or 0,
                 "soc_percent": item.get("soc_percent"),
                 "age_sec": age,

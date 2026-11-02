@@ -489,6 +489,20 @@ def api_energiegemeinschaft_member():
     return jsonify({"ok": True})
 
 
+@app.route('/api/energiegemeinschaft/member/settings', methods=['POST'])
+def api_energiegemeinschaft_member_settings():
+    denied = _eg_login()
+    if denied:
+        return denied
+    from energiegemeinschaft_mesh import save_member_admin
+
+    try:
+        saved = save_member_admin((request.form.get("name") or "").strip(), request.form)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({"ok": True, "admin": saved, "inverter_write": False})
+
+
 @app.route('/api/energiegemeinschaft/member/delete', methods=['POST'])
 def api_energiegemeinschaft_member_delete():
     denied = _eg_login()

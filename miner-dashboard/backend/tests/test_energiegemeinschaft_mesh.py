@@ -14,6 +14,7 @@ from energiegemeinschaft_mesh import (
     feed_packet,
     generate_invite_code,
     merge_invite_codes,
+    balance_lamp,
     night_balance_kwh_from_state,
     outlook_line,
     verify_any,
@@ -263,6 +264,70 @@ class TestEnergiegemeinschaftMesh(unittest.TestCase):
             "Nachbar kommt über die Nacht, die Bilanz ist +10,69 kWh.",
         )
         self.assertNotIn("3 kW", outlook_line(None))
+
+    def test_balance_lamp_uses_one_kwh_band(self):
+        self.assertIsNone(balance_lamp(None))
+        self.assertIsNone(balance_lamp("fehlt"))
+        green = balance_lamp(1.01)
+        self.assertEqual(green["level"], "green")
+        self.assertEqual(green["word"], "Gut")
+        self.assertEqual(balance_lamp(10.69)["level"], "green")
+        orange_top = balance_lamp(1)
+        self.assertEqual(orange_top["level"], "orange")
+        self.assertEqual(orange_top["word"], "Unsicher")
+        self.assertEqual(balance_lamp(0)["level"], "orange")
+        self.assertEqual(balance_lamp(-1)["level"], "orange")
+        red = balance_lamp(-1.01)
+        self.assertEqual(red["level"], "red")
+        self.assertEqual(red["word"], "Reicht nicht")
+        self.assertEqual(balance_lamp(-3.66)["level"], "red")
+
+    def test_admin_settings_stay_on_one_member(self):
+        import tempfile
+        from pathlib import Path
+
+        import energiegemeinschaft_mesh as mesh
+
+        path = Path(tempfile.mkstemp(suffix=".json")[1])
+        path.write_text("{}", encoding="utf-8")
+        try:
+            with patch.object(mesh, "SETTINGS_FILE", path), patch.object(mesh, "local_name", return_value="hier"):
+                mesh._remember_member("raspberrypi2-1", "100.1.1.2", 0.1, 20, 1, 8.97)
+                mesh._remember_member("raspberrypi2", "100.1.1.3", 0.2, 30, 1, 14.73)
+                mesh.save_member_admin("raspberrypi2", {
+                    "neighbor_trade": "sell",
+                    "max_zukauf_kw": "2,5",
+                    "neighbor_night_kw": "4",
+                    "neighbor_storage": "yes",
+                    "neighbor_pv": "no",
+                    "share_without_production": "1",
+                    "only_if_enough_tomorrow": "0",
+                })
+                mesh.save_member_admin("raspberrypi2-1", {"neighbor_trade": "buy"})
+                mesh._remember_member("raspberrypi2", "100.1.1.3", 0.3, 31, 1, 14.73)
+                snap = {"ok": True, "error": "", "self_ip": "100.9.9.9", "self_name": "hier", "peers": []}
+                with patch.object(mesh, "tailscale_snapshot", return_value=snap):
+                    status = mesh.public_status()
+            by_name = {row["name"]: row for row in status["members"]}
+            ludwig = by_name["raspberrypi2"]
+            martin = by_name["raspberrypi2-1"]
+            self.assertEqual(ludwig["admin"]["neighbor_trade"], "sell")
+            self.assertEqual(ludwig["admin"]["max_zukauf_kw"], 2.5)
+            self.assertEqual(ludwig["admin"]["neighbor_night_kw"], 4.0)
+            self.assertTrue(ludwig["admin"]["share_without_production"])
+            self.assertFalse(ludwig["admin"]["only_if_enough_tomorrow"])
+            self.assertEqual(ludwig["admin"]["neighbor_storage"], "yes")
+            self.assertEqual(martin["admin"]["neighbor_trade"], "buy")
+            self.assertIsNone(martin["admin"]["max_zukauf_kw"])
+            self.assertIsNone(martin["admin"]["neighbor_night_kw"])
+            self.assertIsNone(ludwig["reported"]["neighbor_trade"])
+            self.assertIsNone(ludwig["reported"]["neighbor_night_kw"] if "neighbor_night_kw" in ludwig["reported"] else None)
+            self.assertEqual(ludwig["reported"]["balance_kwh"], 14.73)
+            self.assertEqual(ludwig["outlook_lamp"]["level"], "green")
+            self.assertEqual(ludwig["outlook_lamp"]["word"], "Gut")
+            self.assertNotEqual(ludwig["admin"]["neighbor_night_kw"], ludwig["balance_kwh"])
+        finally:
+            path.unlink(missing_ok=True)
 
     def test_balance_survives_the_next_packet_and_reaches_the_card(self):
         import tempfile
