@@ -268,14 +268,17 @@
   const livePriceLine = { day: null, trade: null };
 
   function addCandleSeries(chart) {
+    // Körper von Open bis Close, Docht für High und Low.
+    // Die letzte Kerze ist das Tagesende bzw. der Folgetag, nicht der aktuelle Slot.
     return chart.addCandlestickSeries({
       upColor: "#00ff4a",
       downColor: "#ff2438",
+      borderVisible: true,
       borderUpColor: "#00ff4a",
       borderDownColor: "#ff2438",
+      wickVisible: true,
       wickUpColor: "#00ff4a",
       wickDownColor: "#ff2438",
-      // Die letzte Kerze ist das Tagesende bzw. der Folgetag, nicht der aktuelle Slot.
       priceLineVisible: false,
       lastValueVisible: false
     });
@@ -364,40 +367,38 @@
 
   const CANDLE_GREEN = "#00ff4a";
   const CANDLE_RED = "#ff2438";
-  const CANDLE_BLUE = "#3aa0ff";
 
   function candlesFrom(points) {
     const rows = [];
-    let previous = null;
+    let previousClose = null;
     points.forEach(function (point) {
-      const price = Number(point.ct_kwh);
+      const close = Number(point.close != null ? point.close : point.ct_kwh);
       const time = Number(point.time);
-      if (!Number.isFinite(price) || !Number.isFinite(time)) return;
-      const delta = previous == null ? 0 : price - previous;
-      rows.push({ time: time, price: price, delta: delta });
-      previous = price;
+      if (!Number.isFinite(close) || !Number.isFinite(time)) return;
+      let open = Number(point.open);
+      if (!Number.isFinite(open)) open = previousClose == null ? close : previousClose;
+      let high = Number(point.high);
+      let low = Number(point.low);
+      if (!Number.isFinite(high)) high = Math.max(open, close);
+      if (!Number.isFinite(low)) low = Math.min(open, close);
+      high = Math.max(high, open, close);
+      low = Math.min(low, open, close);
+      rows.push({ time: time, open: open, high: high, low: low, close: close });
+      previousClose = close;
     });
     const unique = [];
     rows.forEach(function (row) {
       if (unique.length && unique[unique.length - 1].time === row.time) unique[unique.length - 1] = row;
       else if (!unique.length || row.time > unique[unique.length - 1].time) unique.push(row);
     });
-    const moves = unique.map(function (row) { return Math.abs(row.delta); }).filter(function (value) { return value > 0; }).sort(function (a, b) { return a - b; });
-    const typical = moves.length ? moves[Math.floor(moves.length / 2)] : 0;
-    const flat = Math.max(0.04, typical * 0.45);
     return unique.map(function (row) {
-      const body = Math.abs(row.delta);
-      let color = CANDLE_BLUE;
-      if (body > flat && row.delta > 0) color = CANDLE_GREEN;
-      else if (body > flat && row.delta < 0) color = CANDLE_RED;
-      // Ein Viertel hat einen Preis. Der Körper darf nicht den vorigen Slot
-      // oder einen gestreckten Fantasiewert zeigen.
+      const color = row.close >= row.open ? CANDLE_GREEN : CANDLE_RED;
       return {
         time: row.time,
-        open: row.price,
-        high: row.price,
-        low: row.price,
-        close: row.price,
+        open: row.open,
+        high: row.high,
+        low: row.low,
+        close: row.close,
         color: color,
         borderColor: color,
         wickColor: color
@@ -409,9 +410,20 @@
     if (!chart || !count) return false;
     const width = chart.timeScale().width();
     if (!width) return false;
-    const spacing = Math.max(0.8, Math.min(12, (width * 0.97) / count));
-    chart.timeScale().applyOptions({ barSpacing: spacing, minBarSpacing: 0.5, rightOffset: 2 });
-    chart.timeScale().fitContent();
+    // Unter etwa 6 px wird der Körper zum Strich. Dann lieber die letzten
+    // Kerzen groß zeigen; die restlichen vier Tage bleiben per Scroll erreichbar.
+    const fitSpacing = (width * 0.97) / count;
+    const spacing = Math.max(7, Math.min(12, fitSpacing));
+    chart.timeScale().applyOptions({ barSpacing: spacing, minBarSpacing: 6, rightOffset: 2 });
+    if (fitSpacing >= 6) {
+      chart.timeScale().fitContent();
+      return true;
+    }
+    const visible = Math.max(24, Math.floor((width * 0.97) / spacing));
+    chart.timeScale().setVisibleLogicalRange({
+      from: Math.max(0, count - visible),
+      to: count + 1
+    });
     return true;
   }
 
@@ -493,7 +505,7 @@
       if (row.time <= nowSec) marked = row;
     });
     const shown = marked || candles[candles.length - 1];
-    if (shown) priceEl.style.color = shown.color || CANDLE_BLUE;
+    if (shown) priceEl.style.color = shown.color || CANDLE_GREEN;
     placeTags();
   }
 

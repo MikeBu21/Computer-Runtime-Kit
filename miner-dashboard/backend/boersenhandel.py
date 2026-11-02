@@ -233,9 +233,14 @@ def save_settings(
     return payload
 
 
-def _slot(start_ms: int, end_ms: int, ct: float) -> Dict[str, Any]:
+def _slot(
+    start_ms: int,
+    end_ms: int,
+    ct: float,
+    ohlc: Optional[Dict[str, float]] = None,
+) -> Dict[str, Any]:
     start = datetime.fromtimestamp(start_ms / 1000, TZ)
-    return {
+    slot: Dict[str, Any] = {
         "start": start.isoformat(),
         "end": datetime.fromtimestamp(end_ms / 1000, TZ).isoformat(),
         "start_ms": start_ms,
@@ -244,6 +249,19 @@ def _slot(start_ms: int, end_ms: int, ct: float) -> Dict[str, Any]:
         "day": start.strftime("%Y-%m-%d"),
         "ct_kwh": round(ct, 3),
     }
+    if ohlc:
+        slot["ohlc"] = {key: round(float(ohlc[key]), 3) for key in ("open", "high", "low", "close")}
+    return slot
+
+
+def _ohlc_ct_from_eur_mwh(values: Dict[str, Any]) -> Optional[Dict[str, float]]:
+    """Echte Open/High/Low/Close, falls die Börse sie liefert. Einheit wie der Slot: ct/kWh."""
+    if any(values.get(key) is None for key in ("open", "high", "low", "close")):
+        return None
+    try:
+        return {key: float(values[key]) / 10.0 for key in ("open", "high", "low", "close")}
+    except (TypeError, ValueError):
+        return None
 
 
 def _http_json(url: str) -> Dict[str, Any]:
@@ -308,14 +326,57 @@ def slots_for_chart(slots: List[Dict[str, Any]], now: datetime, range_mode: str)
     return shown or list(slots)
 
 
-def candle_ohlc(ct_kwh: float) -> Dict[str, float]:
-    """Ein Börsenslot ist ein Preis, keine Spanne.
+def candle_for_slot(slot: Dict[str, Any], previous_close: Optional[float]) -> Dict[str, float]:
+    """Kerze eines Viertelstunden-Slots.
 
-    Open, High, Low und Close müssen derselbe ct/kWh-Wert sein. Sonst zeichnet
-    die Kerze den vorigen Slot oder einen gestreckten Wert, der nie notiert wurde.
+    Close ist immer der Preis dieses Slots. Hat die Quelle Open/High/Low, bleiben
+    die erhalten. Sonst ist Open der vorige Slot und High/Low nur das Maximum
+    und Minimum dieser beiden Notierungen — kein erfundener Docht.
     """
-    price = float(ct_kwh)
-    return {"open": price, "high": price, "low": price, "close": price}
+    close = round(float(slot["ct_kwh"]), 3)
+    explicit = slot.get("ohlc")
+    if isinstance(explicit, dict) and all(key in explicit for key in ("open", "high", "low")):
+        try:
+            open_ = round(float(explicit["open"]), 3)
+            high = round(float(explicit["high"]), 3)
+            low = round(float(explicit["low"]), 3)
+        except (TypeError, ValueError):
+            open_ = high = low = None
+        else:
+            return {
+                "open": open_,
+                "high": max(high, open_, close),
+                "low": min(low, open_, close),
+                "close": close,
+            }
+    open_ = close if previous_close is None else round(float(previous_close), 3)
+    return {
+        "open": open_,
+        "high": max(open_, close),
+        "low": min(open_, close),
+        "close": close,
+    }
+
+
+def chart_points(slots: List[Dict[str, Any]], shown: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Kerzen der sichtbaren Slots. Open darf vom Slot direkt vor dem Fenster kommen."""
+    shown_ids = {slot["start_ms"] for slot in shown}
+    previous: Optional[float] = None
+    points: List[Dict[str, Any]] = []
+    for slot in sorted(slots, key=lambda item: item["start_ms"]):
+        candle = candle_for_slot(slot, previous)
+        if slot["start_ms"] in shown_ids:
+            points.append(
+                {
+                    "hour": slot["hour"],
+                    "day": slot["day"],
+                    "ct_kwh": slot["ct_kwh"],
+                    "time": int(slot["start_ms"] / 1000),
+                    **candle,
+                }
+            )
+        previous = float(slot["ct_kwh"])
+    return points
 
 
 def _fetch_slots(exchange: str) -> List[Dict[str, Any]]:
@@ -338,7 +399,8 @@ def _fetch_slots(exchange: str) -> List[Dict[str, Any]]:
             for row in body.get("data") or []:
                 start_ms = int(row["start_timestamp"])
                 end_ms = int(row["end_timestamp"])
-                slots.append(_slot(start_ms, end_ms, float(row["marketprice"]) / 10.0))
+                price_ct = float(row["marketprice"]) / 10.0
+                slots.append(_slot(start_ms, end_ms, price_ct, _ohlc_ct_from_eur_mwh(row)))
         else:
             query = urllib.parse.urlencode(
                 {
@@ -350,6 +412,16 @@ def _fetch_slots(exchange: str) -> List[Dict[str, Any]]:
             body = _http_json(f"https://api.energy-charts.info/price?{query}")
             times = body.get("unix_seconds") or []
             prices = body.get("price") or []
+            opens = body.get("open")
+            highs = body.get("high")
+            lows = body.get("low")
+            closes = body.get("close")
+
+            def _at(series: Any, index: int) -> Any:
+                if not isinstance(series, list) or index >= len(series):
+                    return None
+                return series[index]
+
             for index, (ts, price) in enumerate(zip(times, prices)):
                 if price is None:
                     continue
@@ -358,7 +430,15 @@ def _fetch_slots(exchange: str) -> List[Dict[str, Any]]:
                     end_ms = int(times[index + 1]) * 1000
                 else:
                     end_ms = start_ms + 15 * 60 * 1000
-                slots.append(_slot(start_ms, end_ms, float(price) / 10.0))
+                ohlc = _ohlc_ct_from_eur_mwh(
+                    {
+                        "open": _at(opens, index),
+                        "high": _at(highs, index),
+                        "low": _at(lows, index),
+                        "close": _at(closes, index),
+                    }
+                )
+                slots.append(_slot(start_ms, end_ms, float(price) / 10.0, ohlc))
         slots.sort(key=lambda item: item["start_ms"])
         _cache[base_key] = {"fetched": now, "slots": slots}
         cached = _cache[base_key]
@@ -369,6 +449,11 @@ def _fetch_slots(exchange: str) -> List[Dict[str, Any]]:
     for slot in cached["slots"]:
         copy = dict(slot)
         copy["ct_kwh"] = round(float(slot["ct_kwh"]) + extra, 3)
+        if isinstance(slot.get("ohlc"), dict):
+            copy["ohlc"] = {
+                key: round(float(value) + extra, 3)
+                for key, value in slot["ohlc"].items()
+            }
         shifted.append(copy)
     return shifted
 
@@ -430,16 +515,7 @@ def price_view(exchange: str, range_mode: str, settings: Optional[Dict[str, Any]
         "lower_ct_kwh": buy,
         "upper_ct_kwh": sell,
         "action": charge_action(price, buy, sell),
-        "points": [
-            {
-                "hour": s["hour"],
-                "day": s["day"],
-                "ct_kwh": s["ct_kwh"],
-                "time": int(s["start_ms"] / 1000),
-                **candle_ohlc(s["ct_kwh"]),
-            }
-            for s in shown
-        ],
+        "points": chart_points(slots, shown),
         "exchanges": [
             {"id": key, "label": spec["label"], "group": spec.get("group") or "Börsen"}
             for key, spec in EXCHANGES.items()

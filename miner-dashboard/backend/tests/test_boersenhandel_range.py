@@ -86,7 +86,7 @@ class ChartWindowTests(unittest.TestCase):
         self.assertEqual(slots_for_chart(slots, now, "day")[-1]["ct_kwh"], 21.862)
         self.assertEqual(slots_for_chart(slots, now, "4d")[-1]["ct_kwh"], 24.439)
 
-    def test_live_quarter_candle_equals_headline_price(self):
+    def test_live_quarter_close_matches_headline_and_open_is_previous(self):
         now = datetime(2026, 11, 2, 15, 40, tzinfo=TZ)
         slots = [
             _quarter("2026-11-02", 15, 15, 33.908),
@@ -112,28 +112,81 @@ class ChartWindowTests(unittest.TestCase):
                 live = next(point for point in points if point["day"] == "2026-11-02" and point["hour"] == "15:30")
                 previous = next(point for point in points if point["hour"] == "15:15")
                 following = next(point for point in points if point["hour"] == "16:00")
-                for field in ("open", "high", "low", "close"):
-                    self.assertEqual(live[field], view["current_ct_kwh"])
-                    self.assertEqual(live[field], live["ct_kwh"])
-                    self.assertNotEqual(live[field], previous["ct_kwh"])
-                    self.assertNotEqual(live[field], following["ct_kwh"])
-                    self.assertNotEqual(live[field], last_ct)
+                self.assertEqual(live["close"], view["current_ct_kwh"])
+                self.assertEqual(live["close"], live["ct_kwh"])
+                self.assertEqual(live["open"], previous["ct_kwh"])
+                self.assertNotEqual(live["open"], live["close"])
+                self.assertNotEqual(live["close"], following["ct_kwh"])
+                self.assertEqual(live["high"], max(live["open"], live["close"]))
+                self.assertEqual(live["low"], min(live["open"], live["close"]))
+                self.assertFalse(live["open"] == live["high"] == live["low"] == live["close"])
                 for index, point in enumerate(points):
-                    for field in ("open", "high", "low", "close"):
-                        self.assertEqual(point[field], point["ct_kwh"])
-                    if index:
-                        neighbor = points[index - 1]["ct_kwh"]
-                        if neighbor != point["ct_kwh"]:
-                            self.assertNotEqual(point["open"], neighbor)
-                            self.assertNotEqual(point["low"], neighbor)
-                    if index + 1 < len(points):
-                        neighbor = points[index + 1]["ct_kwh"]
-                        if neighbor != point["ct_kwh"]:
-                            self.assertNotEqual(point["close"], neighbor)
-                            self.assertNotEqual(point["high"], neighbor)
+                    self.assertEqual(point["close"], point["ct_kwh"])
+                    if index == 0:
+                        self.assertEqual(point["open"], point["close"])
+                    else:
+                        self.assertEqual(point["open"], points[index - 1]["ct_kwh"])
+                    self.assertEqual(point["high"], max(point["open"], point["close"]))
+                    self.assertEqual(point["low"], min(point["open"], point["close"]))
+                    if point["open"] != point["close"]:
+                        self.assertNotEqual(point["high"], point["low"])
+                        self.assertFalse(point["open"] == point["high"] == point["low"] == point["close"])
                 self.assertEqual(points[-1]["ct_kwh"], last_ct)
-                self.assertEqual(points[-1]["open"], last_ct)
                 self.assertEqual(points[-1]["close"], last_ct)
+                self.assertNotEqual(points[-1]["open"], points[-1]["close"])
+
+    def test_day_candle_opens_on_the_previous_slot_outside_today(self):
+        now = datetime(2026, 11, 2, 0, 10, tzinfo=TZ)
+        slots = [
+            _quarter("2026-11-01", 23, 45, 20.0),
+            _quarter("2026-11-02", 0, 0, 22.5),
+        ]
+
+        class _Clock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return now if tz is None else now.astimezone(tz)
+
+        settings = {"buy_ct_kwh": 17.0, "sell_ct_kwh": 58.8, "buy_kw": 0.0, "sell_kw": 0.0}
+        with patch.object(boersenhandel, "_fetch_slots", return_value=slots), patch.object(
+            boersenhandel, "datetime", _Clock
+        ):
+            view = price_view("eag_energieag", "day", settings)
+        self.assertEqual(view["current_ct_kwh"], 22.5)
+        self.assertEqual(len(view["points"]), 1)
+        point = view["points"][0]
+        self.assertEqual(point["close"], 22.5)
+        self.assertEqual(point["open"], 20.0)
+        self.assertEqual(point["high"], 22.5)
+        self.assertEqual(point["low"], 20.0)
+        self.assertNotEqual(point["open"], point["close"])
+
+    def test_source_ohlc_is_kept_and_close_stays_the_slot_price(self):
+        now = datetime(2026, 11, 2, 15, 40, tzinfo=TZ)
+        slots = [
+            _quarter("2026-11-02", 15, 15, 30.0),
+            _quarter("2026-11-02", 15, 30, 34.675),
+        ]
+        slots[1]["ohlc"] = {"open": 31.0, "high": 40.0, "low": 29.5, "close": 99.0}
+
+        class _Clock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return now if tz is None else now.astimezone(tz)
+
+        settings = {"buy_ct_kwh": 17.0, "sell_ct_kwh": 58.8, "buy_kw": 0.0, "sell_kw": 0.0}
+        with patch.object(boersenhandel, "_fetch_slots", return_value=slots), patch.object(
+            boersenhandel, "datetime", _Clock
+        ):
+            view = price_view("eag_energieag", "day", settings)
+        live = next(point for point in view["points"] if point["hour"] == "15:30")
+        self.assertEqual(view["current_ct_kwh"], 34.675)
+        self.assertEqual(live["close"], 34.675)
+        self.assertEqual(live["open"], 31.0)
+        self.assertNotEqual(live["open"], live["close"])
+        self.assertNotEqual(live["open"], 30.0)
+        self.assertEqual(live["high"], 40.0)
+        self.assertEqual(live["low"], 29.5)
 
     def test_charts_mark_the_live_quarter_not_the_last_bar(self):
         text = Path(__file__).resolve().parents[1].joinpath("templates", "boersenhandel.html").read_text(encoding="utf-8")
@@ -142,12 +195,18 @@ class ChartWindowTests(unittest.TestCase):
         self.assertNotIn("priceLineVisible: true", text)
         self.assertIn("syncLivePriceLine", text)
         self.assertIn("data.current_ct_kwh", text)
-        self.assertIn("open: row.price", text)
-        self.assertIn("high: row.price", text)
-        self.assertIn("low: row.price", text)
-        self.assertIn("close: row.price", text)
-        self.assertNotIn("previous == null ? close : previous", text)
+        self.assertIn("addCandlestickSeries", text)
+        self.assertNotIn("addHistogramSeries", text)
+        self.assertIn("open: row.open", text)
+        self.assertIn("high: row.high", text)
+        self.assertIn("low: row.low", text)
+        self.assertIn("close: row.close", text)
+        self.assertIn("row.close >= row.open", text)
+        self.assertNotIn("open: row.price", text)
+        self.assertNotIn("value: row.price", text)
         self.assertNotIn("row.close - direction", text)
+        self.assertNotIn("row.price +", text)
+        self.assertNotIn("row.close +", text)
 
 
 if __name__ == "__main__":
