@@ -92,6 +92,7 @@ def feed_packet(
     soc_percent: Optional[float],
     code: str,
     energy_kwh: Optional[float] = None,
+    balance_kwh: Optional[float] = None,
 ) -> Dict[str, Any]:
     payload: Dict[str, Any] = {
         "v": 1,
@@ -104,6 +105,8 @@ def feed_packet(
         payload["soc_percent"] = round(float(soc_percent), 1)
     if energy_kwh is not None:
         payload["feed_in_kwh"] = round(float(energy_kwh), 3)
+    if balance_kwh is not None:
+        payload["balance_kwh"] = round(float(balance_kwh), 3)
     return sign_packet(payload, code)
 
 
@@ -295,6 +298,60 @@ def local_reading() -> Tuple[float, Optional[float], Optional[float]]:
         return 0.0, None, None
 
 
+def night_balance_kwh_from_state(state: Dict[str, Any]) -> Optional[float]:
+    """Schon gerechnete Tagesbilanz in kWh.
+
+    Der Steuerungsalgorithmus speichert Produktion, Tagesverbrauch und die
+    Differenz in energy_budget_snapshots[0].day_balance.balance_kwh.
+    Negativ ist die Fehlmenge, null oder positiv heißt die Bilanz reicht.
+    """
+    if not isinstance(state, dict):
+        return None
+    snaps = state.get("energy_budget_snapshots")
+    if not isinstance(snaps, list) or not snaps or not isinstance(snaps[0], dict):
+        return None
+    day = snaps[0].get("day_balance")
+    if not isinstance(day, dict):
+        return None
+    raw = day.get("balance_kwh")
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    return round(float(raw), 3)
+
+
+def local_night_balance_kwh() -> Optional[float]:
+    """Liest nur das gespeicherte Ergebnis. Die Bilanz wird hier nicht neu gerechnet."""
+    try:
+        from control_algorithm.config import STATE_PATH
+
+        raw = json.loads(STATE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return None
+    return night_balance_kwh_from_state(raw if isinstance(raw, dict) else {})
+
+
+def _de_kwh(value: float) -> str:
+    text = f"{abs(float(value)):.3f}".rstrip("0").rstrip(".")
+    if text in ("", "-"):
+        text = "0"
+    return text.replace(".", ",")
+
+
+def outlook_line(balance_kwh: Any) -> str:
+    """Statuszeile zur gespeicherten Tagesbilanz. Ohne Zahl kein erfundener Bedarf."""
+    if isinstance(balance_kwh, bool) or not isinstance(balance_kwh, (int, float)):
+        return "Nachbar hat noch keinen Wert gemeldet."
+    value = round(float(balance_kwh), 3)
+    shown = _de_kwh(value)
+    if value < 0:
+        return (
+            "Nachbar wird nicht über die Nacht kommen, er würde "
+            f"{shown} kWh benötigen."
+        )
+    sign = "+" if value > 0 else ""
+    return f"Nachbar kommt über die Nacht, die Bilanz ist {sign}{shown} kWh."
+
+
 def local_name(snapshot: Optional[Dict[str, Any]] = None) -> str:
     settings = mesh_settings()
     stored = settings.get("display_name") or ""
@@ -429,6 +486,8 @@ def _absorb_member(keep: Dict[str, Any], extra: Dict[str, Any]) -> None:
         keep["ip"] = extra["ip"]
     if not keep.get("feed_in_kwh") and extra.get("feed_in_kwh") is not None:
         keep["feed_in_kwh"] = extra["feed_in_kwh"]
+    if keep.get("balance_kwh") is None and extra.get("balance_kwh") is not None:
+        keep["balance_kwh"] = extra["balance_kwh"]
     if len(extra.get("history") or []) > len(keep.get("history") or []):
         keep["history"] = extra["history"]
     if float(extra.get("seen") or 0) > float(keep.get("seen") or 0):
@@ -437,6 +496,8 @@ def _absorb_member(keep: Dict[str, Any], extra: Dict[str, Any]) -> None:
             keep["feed_in_kw"] = extra.get("feed_in_kw")
         if extra.get("soc_percent") is not None:
             keep["soc_percent"] = extra.get("soc_percent")
+        if extra.get("balance_kwh") is not None:
+            keep["balance_kwh"] = extra.get("balance_kwh")
 
 
 def _collapse_into(members: Dict[str, Any], name: str, ip: str) -> str:
@@ -495,6 +556,7 @@ def _remember_member(
     feed: Optional[float],
     soc: Optional[float],
     energy_kwh: Optional[float] = None,
+    balance_kwh: Optional[float] = None,
 ) -> None:
     now = time.time()
 
@@ -518,6 +580,7 @@ def _remember_member(
                 None if current_kw is None else float(current_kw),
             ),
             "soc_percent": soc if soc is not None else prev.get("soc_percent"),
+            "balance_kwh": balance_kwh if balance_kwh is not None else prev.get("balance_kwh"),
             "history": append_history(prev.get("history"), now, None if current_kw is None else float(current_kw), soc if soc is not None else prev.get("soc_percent")),
             "alias": prev.get("alias") or "",
             "ask_ct_kwh": prev.get("ask_ct_kwh"),
@@ -759,12 +822,14 @@ def handle_datagram(raw: bytes, source_ip: str) -> None:
         feed = payload.get("feed_in_kw")
         soc = payload.get("soc_percent")
         energy = payload.get("feed_in_kwh")
+        balance = payload.get("balance_kwh")
         _remember_member(
             name,
             source_ip,
             None if feed is None else float(feed),
             None if soc is None else float(soc),
             None if energy is None else float(energy),
+            None if balance is None else float(balance),
         )
         return
     if kind == "cmd" and str(payload.get("to") or "") == local_name():
@@ -866,8 +931,9 @@ def cycle_once() -> None:
     ensure_node_name(str(snap.get("self_name") or ""))
     name = local_name(snap)
     feed, soc, energy = local_reading()
-    _remember_member(name, snap.get("self_ip") or "", feed, soc, energy)
-    packet = feed_packet(name, feed, soc, code, energy)
+    balance = local_night_balance_kwh()
+    _remember_member(name, snap.get("self_ip") or "", feed, soc, energy, balance)
+    packet = feed_packet(name, feed, soc, code, energy, balance)
     known = {item.get("ip") for item in (mesh_settings().get("members") or {}).values() if isinstance(item, dict)}
     self_ip = snap.get("self_ip") or ""
     for peer in snap.get("peers") or []:
@@ -940,6 +1006,8 @@ def public_status() -> Dict[str, Any]:
                 "grid_cost_ct_kwh": item.get("grid_cost_ct_kwh"),
                 "feed_in_kw": feed,
                 "feed_in_kwh": item.get("feed_in_kwh"),
+                "balance_kwh": item.get("balance_kwh"),
+                "outlook_text": outlook_line(item.get("balance_kwh")),
                 "connected_kwh": item.get("connected_kwh") or 0,
                 "soc_percent": item.get("soc_percent"),
                 "age_sec": age,

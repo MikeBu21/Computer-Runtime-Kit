@@ -14,6 +14,8 @@ from energiegemeinschaft_mesh import (
     feed_packet,
     generate_invite_code,
     merge_invite_codes,
+    night_balance_kwh_from_state,
+    outlook_line,
     verify_any,
     handle_datagram,
     is_community_counterpart,
@@ -215,6 +217,87 @@ class TestEnergiegemeinschaftMesh(unittest.TestCase):
                     mesh.remove_member("unbekannt")
                 with self.assertRaises(ValueError):
                     mesh.remove_member("hier")
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_feed_packet_carries_stored_day_balance(self):
+        code = "EG-7K2M-Q4HP"
+        packet = feed_packet("haus-nord", 1.25, 71, code, 8.2, -3.66)
+        self.assertEqual(packet["balance_kwh"], -3.66)
+        self.assertTrue(verify_packet(packet, code))
+        without = feed_packet("haus-nord", 1.25, 71, code, 8.2)
+        self.assertNotIn("balance_kwh", without)
+
+    def test_night_balance_is_the_stored_day_balance(self):
+        state = {
+            "energy_budget_snapshots": [
+                {
+                    "production_daily": {"total_kwh": 10.7},
+                    "day_balance": {
+                        "production_kwh": 10.7,
+                        "consumption_kwh": 14.36,
+                        "balance_kwh": 10.69,
+                    },
+                }
+            ]
+        }
+        self.assertEqual(night_balance_kwh_from_state(state), 10.69)
+        self.assertIsNone(night_balance_kwh_from_state({}))
+        self.assertIsNone(night_balance_kwh_from_state({"energy_budget_snapshots": [{}]}))
+
+    def test_outlook_uses_the_stored_balance_and_its_unit(self):
+        self.assertEqual(
+            outlook_line(None),
+            "Nachbar hat noch keinen Wert gemeldet.",
+        )
+        self.assertEqual(
+            outlook_line(-3.66),
+            "Nachbar wird nicht über die Nacht kommen, er würde 3,66 kWh benötigen.",
+        )
+        self.assertEqual(
+            outlook_line(0),
+            "Nachbar kommt über die Nacht, die Bilanz ist 0 kWh.",
+        )
+        self.assertEqual(
+            outlook_line(10.69),
+            "Nachbar kommt über die Nacht, die Bilanz ist +10,69 kWh.",
+        )
+        self.assertNotIn("3 kW", outlook_line(None))
+
+    def test_balance_survives_the_next_packet_and_reaches_the_card(self):
+        import tempfile
+        from pathlib import Path
+
+        import energiegemeinschaft_mesh as mesh
+
+        path = Path(tempfile.mkstemp(suffix=".json")[1])
+        path.write_text("{}", encoding="utf-8")
+        try:
+            with patch.object(mesh, "SETTINGS_FILE", path), patch.object(mesh, "local_name", return_value="hier"):
+                mesh._remember_member("pi-2-1", "100.1.1.2", 1.2, 70, 4.5, -3.66)
+                mesh._remember_member("pi-2-1", "100.1.1.2", 1.3, 71, 4.6)
+                stored = json.loads(path.read_text(encoding="utf-8"))["members"]["pi-2-1"]
+                self.assertEqual(stored["balance_kwh"], -3.66)
+                self.assertEqual(stored["feed_in_kw"], 1.3)
+                snap = {
+                    "ok": True,
+                    "error": "",
+                    "self_ip": "100.1.1.1",
+                    "self_name": "hier",
+                    "peers": [],
+                }
+                with patch.object(mesh, "tailscale_snapshot", return_value=snap):
+                    status = mesh.public_status()
+                member = status["members"][0]
+                self.assertEqual(member["name"], "pi-2-1")
+                self.assertEqual(member["balance_kwh"], -3.66)
+                self.assertEqual(
+                    member["outlook_text"],
+                    "Nachbar wird nicht über die Nacht kommen, er würde 3,66 kWh benötigen.",
+                )
+                mesh._remember_member("pi-2-1", "100.1.1.2", 1.4, 72, 4.7, 0)
+                stored = json.loads(path.read_text(encoding="utf-8"))["members"]["pi-2-1"]
+                self.assertEqual(stored["balance_kwh"], 0)
         finally:
             path.unlink(missing_ok=True)
 

@@ -370,40 +370,34 @@
     const rows = [];
     let previous = null;
     points.forEach(function (point) {
-      const close = Number(point.ct_kwh);
+      const price = Number(point.ct_kwh);
       const time = Number(point.time);
-      if (!Number.isFinite(close) || !Number.isFinite(time)) return;
-      const open = previous == null ? close : previous;
-      rows.push({ time: time, open: open, close: close });
-      previous = close;
+      if (!Number.isFinite(price) || !Number.isFinite(time)) return;
+      const delta = previous == null ? 0 : price - previous;
+      rows.push({ time: time, price: price, delta: delta });
+      previous = price;
     });
     const unique = [];
     rows.forEach(function (row) {
       if (unique.length && unique[unique.length - 1].time === row.time) unique[unique.length - 1] = row;
       else if (!unique.length || row.time > unique[unique.length - 1].time) unique.push(row);
     });
-    const moves = unique.map(function (row) { return Math.abs(row.close - row.open); }).filter(function (value) { return value > 0; }).sort(function (a, b) { return a - b; });
+    const moves = unique.map(function (row) { return Math.abs(row.delta); }).filter(function (value) { return value > 0; }).sort(function (a, b) { return a - b; });
     const typical = moves.length ? moves[Math.floor(moves.length / 2)] : 0;
     const flat = Math.max(0.04, typical * 0.45);
-    const outlier = Math.max(flat * 2.5, typical * 1.8);
     return unique.map(function (row) {
-      const delta = row.close - row.open;
-      const body = Math.abs(delta);
-      let open = row.open;
+      const body = Math.abs(row.delta);
       let color = CANDLE_BLUE;
-      if (body > flat && delta > 0) color = CANDLE_GREEN;
-      else if (body > flat && delta < 0) color = CANDLE_RED;
-      if (body >= outlier && delta !== 0) {
-        const extra = body * Math.min(0.85, 0.4 * (body / outlier));
-        const direction = delta > 0 ? 1 : -1;
-        open = row.close - direction * (body + extra);
-      }
+      if (body > flat && row.delta > 0) color = CANDLE_GREEN;
+      else if (body > flat && row.delta < 0) color = CANDLE_RED;
+      // Ein Viertel hat einen Preis. Der Körper darf nicht den vorigen Slot
+      // oder einen gestreckten Fantasiewert zeigen.
       return {
         time: row.time,
-        open: open,
-        high: Math.max(open, row.close),
-        low: Math.min(open, row.close),
-        close: row.close,
+        open: row.price,
+        high: row.price,
+        low: row.price,
+        close: row.price,
         color: color,
         borderColor: color,
         wickColor: color

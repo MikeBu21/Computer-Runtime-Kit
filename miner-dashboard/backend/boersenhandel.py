@@ -308,6 +308,16 @@ def slots_for_chart(slots: List[Dict[str, Any]], now: datetime, range_mode: str)
     return shown or list(slots)
 
 
+def candle_ohlc(ct_kwh: float) -> Dict[str, float]:
+    """Ein Börsenslot ist ein Preis, keine Spanne.
+
+    Open, High, Low und Close müssen derselbe ct/kWh-Wert sein. Sonst zeichnet
+    die Kerze den vorigen Slot oder einen gestreckten Wert, der nie notiert wurde.
+    """
+    price = float(ct_kwh)
+    return {"open": price, "high": price, "low": price, "close": price}
+
+
 def _fetch_slots(exchange: str) -> List[Dict[str, Any]]:
     now = time.time()
     moment = datetime.now(TZ)
@@ -426,6 +436,7 @@ def price_view(exchange: str, range_mode: str, settings: Optional[Dict[str, Any]
                 "day": s["day"],
                 "ct_kwh": s["ct_kwh"],
                 "time": int(s["start_ms"] / 1000),
+                **candle_ohlc(s["ct_kwh"]),
             }
             for s in shown
         ],
