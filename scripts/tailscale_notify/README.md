@@ -1,16 +1,18 @@
-# Tailscale → Telegram notifier (piMiner only)
+# Tailscale notifier (piMiner only)
 
-Runs **only on piMiner**. Polls every 60s. A Telegram message is sent only when the Tailscale IPv4 or IPv6 address changes from one real address to another. The message names the machine and the new address. The same IP does not send again: not on startup, not on the poll timer, and not when only online/offline, health, DNS, or key expiry change. The first address seen is stored and not announced.
+Runs **only on piMiner**. Polls every 60s and stores the current Tailscale snapshot.
 
-## Chat IDs (automatic)
+**Telegram is fully disabled.** No messages are sent on IP change, startup, poll, online/offline, health, DNS, or key expiry. The service keeps running so state stays fresh; other houses get the same silence after they pull this update.
 
-Each cycle reloads the full chat list from:
+To re-enable messages later, set `TELEGRAM_SEND_ENABLED = True` in `linux/tailscale_notify.py` (and `$script:TelegramSendEnabled = $true` in the Windows script) and tighten the send rules again.
+
+## Chat IDs (kept for a future re-enable)
+
+Each cycle still reloads the chat list from:
 
 1. `config.json` → `chat_ids` (optional static list)
 2. **`telegram_chats.json`** written by the miner Telegram bot whenever someone `/start`s or uses a command
 3. `TELEGRAM_CHAT_IDS` env (optional)
-
-New users who talk to the miner bot are added to `telegram_chats.json` by minerbot. The next notify cycle (≤60s) includes them for later alerts. Adding a chat does not send a message. IP-change alerts go to **all** known chats.
 
 This service does **not** call Telegram `getUpdates` (that would conflict with minerbot’s long-poll).
 

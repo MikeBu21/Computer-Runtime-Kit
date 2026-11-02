@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""piMiner-only: Tailscale change → Telegram (all known chats, stdlib only)."""
+"""piMiner-only: Tailscale poller (stdlib only).
+
+Telegram outbound is fully disabled: no IP-change, startup, or poll messages.
+The service still polls and stores state so installs stay healthy.
+"""
 from __future__ import annotations
 
 import argparse
@@ -18,6 +22,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 DEFAULT_INTERVAL = 60
+
+# All Tailscale → Telegram messages are off (including IP-change alerts).
+TELEGRAM_SEND_ENABLED = False
 
 
 def _now_local() -> str:
@@ -236,6 +243,8 @@ def format_ip_change_message(snap: Dict[str, Any], changed: List[str]) -> str:
 
 
 def send_telegram(token: str, chat_ids: List[int], text: str) -> int:
+    if not TELEGRAM_SEND_ENABLED:
+        return 0
     if not token or not chat_ids or not text:
         return 0
     ok = 0
@@ -296,8 +305,15 @@ def one_cycle(cfg: Dict[str, Any], state_path: Path) -> int:
     changed = changed_tailscale_ips(prev, snap)
     stored = snapshot_to_store(prev, snap)
 
-    token = str(cfg.get("telegram_token") or "")
     chats = resolve_chat_ids(cfg)
+    if not TELEGRAM_SEND_ENABLED:
+        # Keep polling and state; never notify.
+        if changed:
+            print(f"{_now_local()} ip_change={changed} telegram disabled — not sent")
+        save_state(state_path, stored, chats)
+        return 0
+
+    token = str(cfg.get("telegram_token") or "")
     if not chats:
         print(f"{_now_local()} no chat_ids yet — waiting for minerbot / config", file=sys.stderr)
         save_state(state_path, stored, [])
@@ -319,7 +335,9 @@ def one_cycle(cfg: Dict[str, Any], state_path: Path) -> int:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    ap = argparse.ArgumentParser(description="piMiner Tailscale → Telegram notifier")
+    ap = argparse.ArgumentParser(
+        description="piMiner Tailscale poller (Telegram send disabled)"
+    )
     ap.add_argument(
         "--config",
         default=os.environ.get(
@@ -338,7 +356,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument(
         "--force",
         action="store_true",
-        help="Accepted for old installers; does not send unless the IP changed",
+        help="Accepted for old installers; Telegram send stays disabled",
     )
     ap.add_argument("--interval", type=int, default=0, help="Override poll interval")
     args = ap.parse_args(argv)
@@ -346,7 +364,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     config_path = Path(args.config)
     state_path = Path(args.state)
     cfg0 = load_config(config_path)
-    if not cfg0.get("telegram_token"):
+    # Token is unused while Telegram is disabled; keep the check only if re-enabled.
+    if TELEGRAM_SEND_ENABLED and not cfg0.get("telegram_token"):
         print("missing telegram_token (config or TELEGRAM_BOT_TOKEN)", file=sys.stderr)
         return 2
 
@@ -357,7 +376,10 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     interval = int(args.interval or cfg0.get("interval_sec") or DEFAULT_INTERVAL)
     interval = max(15, interval)
-    print(f"tailscale_notify (piMiner) every {interval}s host={socket.gethostname()}")
+    print(
+        f"tailscale_notify (piMiner) every {interval}s host={socket.gethostname()} "
+        f"telegram={'on' if TELEGRAM_SEND_ENABLED else 'off'}"
+    )
     while True:
         try:
             cfg = load_config(config_path)  # pick up token/path edits

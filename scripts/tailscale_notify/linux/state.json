@@ -1,0 +1,18 @@
+{
+  "snapshot": {
+    "hostname": "piMiner",
+    "ipv4": "100.105.158.95",
+    "ipv6": "fd7a:115c:a1e0::1701:9ebc",
+    "dns_name": "piminer.tailb2a5da.ts.net",
+    "backend": "Running",
+    "online": true,
+    "key_expiry": "2026-12-05T11:20:20Z",
+    "health": [
+      "System DNS config not ideal. /etc/resolv.conf overwritten. See https://tailscale.com/s/dns-fight"
+    ],
+    "collected_at": "2026-11-02T17:15:21.546572+00:00"
+  },
+  "known_chat_ids": [
+    0
+  ]
+}

@@ -37,7 +37,7 @@ fi
 
 cat > "$UNIT_DIR/$UNIT_NAME" <<EOF
 [Unit]
-Description=Tailscale IP change → Telegram notifier
+Description=Tailscale poller (Telegram send disabled)
 After=network-online.target
 Wants=network-online.target
 

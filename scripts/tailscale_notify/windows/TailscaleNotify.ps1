@@ -1,5 +1,5 @@
-# Lightweight Tailscale → Telegram notifier for Windows (PowerShell 5+)
-# Polls every IntervalSec; sends only on change.
+# Lightweight Tailscale poller for Windows (PowerShell 5+).
+# Polls every IntervalSec. Telegram outbound is fully disabled.
 param(
     [string]$ConfigPath = "$PSScriptRoot\config.json",
     [string]$StatePath = "$PSScriptRoot\state.json",
@@ -8,6 +8,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# All Tailscale → Telegram messages are off (including IP-change alerts).
+$script:TelegramSendEnabled = $false
 
 function Get-Config {
     if (-not (Test-Path $ConfigPath)) {
@@ -134,6 +137,7 @@ function Get-Changes($prev, $cur, [double]$KeyWarnDays) {
 }
 
 function Send-Telegram([string]$Token, $ChatIds, [string]$Text) {
+    if (-not $script:TelegramSendEnabled) { return 0 }
     $ok = 0
     foreach ($id in $ChatIds) {
         $uri = "https://api.telegram.org/bot$Token/sendMessage"
@@ -182,6 +186,13 @@ function Invoke-Cycle([switch]$ForceSend) {
     }
     $changes = @(Get-Changes $prev $snap $warnDays)
     if ($ForceSend -and $changes.Count -eq 0) { $changes = @("manual") }
+    if (-not $script:TelegramSendEnabled) {
+        ($snap | ConvertTo-Json -Depth 5) | Set-Content -Path $StatePath -Encoding UTF8
+        if ($changes.Count -gt 0) {
+            Write-Host "$(Get-Date -Format o) change=$($changes -join ',') telegram disabled — not sent"
+        }
+        return
+    }
     if ($changes.Count -eq 0) { return }
     $msg = Format-Message $snap $changes
     $sent = Send-Telegram $cfg.telegram_token $cfg.chat_ids $msg
@@ -194,7 +205,7 @@ if ($Once -or $Force) {
     exit 0
 }
 
-Write-Host "tailscale_notify running every ${interval}s"
+Write-Host "tailscale_notify running every ${interval}s telegram=$(if ($script:TelegramSendEnabled) { 'on' } else { 'off' })"
 while ($true) {
     try { Invoke-Cycle } catch { Write-Host "cycle error: $_" }
     Start-Sleep -Seconds ([Math]::Max(15, $interval))
