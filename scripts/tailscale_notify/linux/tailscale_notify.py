@@ -18,7 +18,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 DEFAULT_INTERVAL = 60
-KEY_WARN_DAYS = 14
 
 
 def _now_local() -> str:
@@ -75,7 +74,6 @@ def load_config(path: Path) -> Dict[str, Any]:
         "telegram_token": os.environ.get("TELEGRAM_BOT_TOKEN", "").strip(),
         "chat_ids": [],
         "interval_sec": DEFAULT_INTERVAL,
-        "key_warn_days": KEY_WARN_DAYS,
         "hostname_override": "",
         "token_file": "",
         "chats_file": "",
@@ -191,73 +189,49 @@ def collect_snapshot(hostname: str) -> Dict[str, Any]:
     }
 
 
-def days_until_expiry(iso_ts: str) -> Optional[float]:
-    if not iso_ts:
-        return None
-    try:
-        ts = iso_ts.replace("Z", "+00:00")
-        exp = datetime.fromisoformat(ts)
-        if exp.tzinfo is None:
-            exp = exp.replace(tzinfo=timezone.utc)
-        return (exp - datetime.now(timezone.utc)).total_seconds() / 86400.0
-    except ValueError:
-        return None
-
-
-def diff_changes(
+def changed_tailscale_ips(
     prev: Optional[Dict[str, Any]],
     cur: Dict[str, Any],
-    *,
-    key_warn_days: float,
 ) -> List[str]:
-    if not prev:
-        return ["initial"]
-    changes: List[str] = []
-    for key, label in (
-        ("ipv4", "IPv4"),
-        ("ipv6", "IPv6"),
-        ("backend", "Backend"),
-        ("online", "Online"),
-        ("dns_name", "DNS"),
-        ("key_expiry", "KeyExpiry"),
-    ):
-        if prev.get(key) != cur.get(key):
-            changes.append(label)
-    prev_h = json.dumps(prev.get("health") or [], sort_keys=True)
-    cur_h = json.dumps(cur.get("health") or [], sort_keys=True)
-    if prev_h != cur_h:
-        changes.append("Health")
+    """Address families whose Tailscale IP changed from one real value to another.
 
-    days = days_until_expiry(str(cur.get("key_expiry") or ""))
-    prev_days = days_until_expiry(str(prev.get("key_expiry") or ""))
-    if days is not None and days <= key_warn_days:
-        if prev_days is None or prev_days > key_warn_days or "KeyExpiry" in changes:
-            if "KeyWarn" not in changes:
-                changes.append("KeyWarn")
-    return changes
+    No previous address, a missing read, or the same address is not a change.
+    Startup therefore stays quiet when the IP matches the last stored one.
+    """
+    if not isinstance(prev, dict):
+        return []
+    changed: List[str] = []
+    for key, label in (("ipv4", "IPv4"), ("ipv6", "IPv6")):
+        old = str(prev.get(key) or "").strip()
+        new = str(cur.get(key) or "").strip()
+        if old and new and old != new:
+            changed.append(label)
+    return changed
 
 
-def format_message(snap: Dict[str, Any], changes: List[str]) -> str:
+def snapshot_to_store(
+    prev: Optional[Dict[str, Any]],
+    cur: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Keep the last known IP when this poll could not read that family."""
+    stored = dict(cur)
+    if not isinstance(prev, dict):
+        return stored
+    for key in ("ipv4", "ipv6"):
+        if not str(cur.get(key) or "").strip() and str(prev.get(key) or "").strip():
+            stored[key] = prev.get(key)
+    return stored
+
+
+def format_ip_change_message(snap: Dict[str, Any], changed: List[str]) -> str:
     lines = [
-        "Tailscale Status",
-        f"Maschine: {snap.get('hostname')}",
+        "Tailscale-IP geändert",
+        f"Maschine: {snap.get('hostname') or ''}",
     ]
-    if snap.get("dns_name"):
-        lines.append(f"DNS: {snap.get('dns_name')}")
-    lines.append(f"IPv4: {snap.get('ipv4') or '—'}")
-    lines.append(f"IPv6: {snap.get('ipv6') or '—'}")
-    lines.append(f"Backend: {snap.get('backend')}")
-    if snap.get("online") is not None:
-        lines.append(f"Online: {snap.get('online')}")
-    if snap.get("key_expiry"):
-        days = days_until_expiry(str(snap["key_expiry"]))
-        extra = f" ({days:.0f} Tage)" if days is not None else ""
-        lines.append(f"KeyExpiry: {snap['key_expiry']}{extra}")
-    health = snap.get("health") or []
-    if health:
-        lines.append(f"Health: {', '.join(str(h) for h in health)}")
-    lines.append(f"Änderung: {', '.join(changes)}")
-    lines.append(f"Zeit: {_now_local()}")
+    if "IPv4" in changed:
+        lines.append(f"Neue IPv4: {snap.get('ipv4')}")
+    if "IPv6" in changed:
+        lines.append(f"Neue IPv6: {snap.get('ipv6')}")
     return "\n".join(lines)
 
 
@@ -275,8 +249,8 @@ def send_telegram(token: str, chat_ids: List[int], text: str) -> int:
             with urllib.request.urlopen(req, timeout=10) as resp:
                 resp.read(256)
             ok += 1
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            print(f"telegram {chat_id} failed: {exc}", file=sys.stderr)
+        except (urllib.error.URLError, TimeoutError, OSError):
+            print("telegram send failed", file=sys.stderr)
     return ok
 
 
@@ -314,41 +288,33 @@ def save_state(
     tmp.replace(path)
 
 
-def one_cycle(cfg: Dict[str, Any], state_path: Path, *, force: bool = False) -> int:
+def one_cycle(cfg: Dict[str, Any], state_path: Path) -> int:
     hostname = str(cfg.get("hostname_override") or "").strip() or socket.gethostname()
     snap = collect_snapshot(hostname)
     state = load_state(state_path)
     prev = state.get("snapshot") if isinstance(state.get("snapshot"), dict) else None
-    warn_days = float(cfg.get("key_warn_days") or KEY_WARN_DAYS)
-    changes = diff_changes(prev, snap, key_warn_days=warn_days)
-    if force and not changes:
-        changes = ["manual"]
+    changed = changed_tailscale_ips(prev, snap)
+    stored = snapshot_to_store(prev, snap)
 
     token = str(cfg.get("telegram_token") or "")
     chats = resolve_chat_ids(cfg)
     if not chats:
         print(f"{_now_local()} no chat_ids yet — waiting for minerbot / config", file=sys.stderr)
-        save_state(state_path, snap, [])
+        save_state(state_path, stored, [])
         return 0
 
-    known_prev = {int(x) for x in (state.get("known_chat_ids") or [])}
-    chats_set = set(chats)
-    new_chats = sorted(chats_set - known_prev)
     sent_total = 0
+    if changed:
+        msg = format_ip_change_message(snap, changed)
+        sent_total = send_telegram(token, chats, msg)
+        if sent_total <= 0 and isinstance(prev, dict):
+            stored["ipv4"] = prev.get("ipv4")
+            stored["ipv6"] = prev.get("ipv6")
+            print(f"{_now_local()} ip_change={changed} send failed; will retry", file=sys.stderr)
+        else:
+            print(f"{_now_local()} ip_change={changed} sent={sent_total}/{len(chats)}")
 
-    # New chat IDs: welcome with current status (even if Tailscale unchanged)
-    if new_chats and not force:
-        welcome = format_message(snap, ["new_chat"])
-        sent_total += send_telegram(token, new_chats, welcome)
-        print(f"{_now_local()} new_chats={new_chats} sent={sent_total}")
-
-    if changes:
-        msg = format_message(snap, changes)
-        sent = send_telegram(token, chats, msg)
-        sent_total += sent
-        print(f"{_now_local()} change={changes} sent={sent}/{len(chats)}")
-
-    save_state(state_path, snap, chats)
+    save_state(state_path, stored, chats)
     return sent_total
 
 
@@ -369,7 +335,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         ),
     )
     ap.add_argument("--once", action="store_true", help="Single check then exit")
-    ap.add_argument("--force", action="store_true", help="Send even without change")
+    ap.add_argument(
+        "--force",
+        action="store_true",
+        help="Accepted for old installers; does not send unless the IP changed",
+    )
     ap.add_argument("--interval", type=int, default=0, help="Override poll interval")
     args = ap.parse_args(argv)
 
@@ -381,9 +351,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 2
 
     if args.once or args.force:
-        # Reload chats at send time
         cfg = load_config(config_path)
-        one_cycle(cfg, state_path, force=bool(args.force))
+        one_cycle(cfg, state_path)
         return 0
 
     interval = int(args.interval or cfg0.get("interval_sec") or DEFAULT_INTERVAL)
@@ -392,7 +361,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     while True:
         try:
             cfg = load_config(config_path)  # pick up token/path edits
-            one_cycle(cfg, state_path, force=False)
+            one_cycle(cfg, state_path)
         except Exception as exc:  # keep service alive
             print(f"cycle error: {exc}", file=sys.stderr)
         time.sleep(interval)

@@ -37,7 +37,7 @@ fi
 
 cat > "$UNIT_DIR/$UNIT_NAME" <<EOF
 [Unit]
-Description=Tailscale change → Telegram notifier
+Description=Tailscale IP change → Telegram notifier
 After=network-online.target
 Wants=network-online.target
 
@@ -57,5 +57,4 @@ EOF
 chmod +x "$ROOT/tailscale_notify.py" "$ROOT/install.sh"
 systemctl --user daemon-reload
 systemctl --user enable --now "$UNIT_NAME"
-/usr/bin/python3 "$ROOT/tailscale_notify.py" --config "$CFG" --state "$STATE_DIR/state.json" --force || true
 echo "Installed: systemctl --user status $UNIT_NAME"
