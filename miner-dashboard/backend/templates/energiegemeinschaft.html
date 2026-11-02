@@ -664,6 +664,43 @@
     return value.toFixed(2);
   }
 
+  const EG_CHART_TZ = "Europe/Vienna";
+  const egDayPartsFmt = new Intl.DateTimeFormat("en-CA", {
+    timeZone: EG_CHART_TZ,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23"
+  });
+
+  function egLocalParts(tsMs) {
+    const out = {};
+    egDayPartsFmt.formatToParts(new Date(tsMs)).forEach(function (part) {
+      if (part.type !== "literal") out[part.type] = part.value;
+    });
+    return out;
+  }
+
+  function egTodayKey() {
+    const parts = egLocalParts(Date.now());
+    return parts.year + "-" + parts.month + "-" + parts.day;
+  }
+
+  function egHourOfDay(tsSec) {
+    const parts = egLocalParts(Number(tsSec) * 1000);
+    return Number(parts.hour) + Number(parts.minute) / 60 + Number(parts.second) / 3600;
+  }
+
+  function egIsTodayPoint(point) {
+    const ts = Number(point && point.ts);
+    if (!Number.isFinite(ts)) return false;
+    const parts = egLocalParts(ts * 1000);
+    return (parts.year + "-" + parts.month + "-" + parts.day) === egTodayKey();
+  }
+
   function drawChartFrame(svg, min, max, key, yOf, xLeft, xRight, yTop, yBottom) {
     const ns = "http://www.w3.org/2000/svg";
     const gridStroke = "rgba(255,255,255,0.08)";
@@ -700,6 +737,7 @@
       svg.appendChild(label);
     }
     for (let i = 0; i <= tickCount; i += 1) {
+      const hour = (24 * i) / tickCount;
       const x = xLeft + ((xRight - xLeft) * i) / tickCount;
       const grid = document.createElementNS(ns, "line");
       grid.setAttribute("x1", x.toFixed(1));
@@ -717,6 +755,15 @@
       tick.setAttribute("stroke", axisStroke);
       tick.setAttribute("stroke-width", "1");
       svg.appendChild(tick);
+      const label = document.createElementNS(ns, "text");
+      label.setAttribute("x", x.toFixed(1));
+      label.setAttribute("y", String(yBottom + 14));
+      label.setAttribute("text-anchor", i === 0 ? "start" : (i === tickCount ? "end" : "middle"));
+      label.setAttribute("fill", "rgba(255,255,255,0.45)");
+      label.setAttribute("font-size", "9");
+      label.setAttribute("font-family", "inherit");
+      label.textContent = String(hour);
+      svg.appendChild(label);
     }
     const axisY = document.createElementNS(ns, "line");
     axisY.setAttribute("x1", String(xLeft));
@@ -741,7 +788,9 @@
       const svg = card.querySelector('[data-series="' + key + '"]');
       const empty = card.querySelector('[data-empty="' + key + '"]');
       if (!svg || !empty) return;
-      const points = (history || []).filter(function (point) { return point[key] != null; });
+      const points = (history || []).filter(function (point) {
+        return point[key] != null && egIsTodayPoint(point);
+      });
       while (svg.firstChild) svg.removeChild(svg.firstChild);
       if (!points.length) {
         empty.hidden = false;
@@ -767,22 +816,22 @@
       function yOf(value) {
         return yBottom - ((value - min) / (max - min)) * plotH;
       }
-      function xOf(index) {
-        if (points.length === 1) return xRight;
-        return xLeft + (index / (points.length - 1)) * plotW;
+      function xOf(point) {
+        const hour = Math.max(0, Math.min(24, egHourOfDay(point.ts)));
+        return xLeft + (hour / 24) * plotW;
       }
       drawChartFrame(svg, min, max, key, yOf, xLeft, xRight, yTop, yBottom);
       if (points.length === 1) {
         const dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-        dot.setAttribute("cx", xOf(0).toFixed(1));
+        dot.setAttribute("cx", xOf(points[0]).toFixed(1));
         dot.setAttribute("cy", yOf(Number(points[0][key])).toFixed(1));
         dot.setAttribute("r", "5");
         dot.setAttribute("fill", "#00e676");
         svg.appendChild(dot);
         return;
       }
-      const coords = points.map(function (point, index) {
-        return xOf(index).toFixed(1) + "," + yOf(Number(point[key])).toFixed(1);
+      const coords = points.map(function (point) {
+        return xOf(point).toFixed(1) + "," + yOf(Number(point[key])).toFixed(1);
       }).join(" ");
       const line = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
       line.setAttribute("points", coords);
