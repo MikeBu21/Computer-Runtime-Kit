@@ -132,11 +132,11 @@ open_chromium_window() {
 
   for attempt in 1 2 3; do
     ensure_graphical_env
-    # Fenster an Gesamtbildschirm anpassen (Fullscreen, kein Kiosk – Esc beendet Fullscreen)
+    # Normales Fenster. Nicht Vollbild, damit der Start die Arbeitsfläche nicht verdeckt.
     if chromium_running; then
-      chromium --new-window --start-fullscreen "$url" >>"$CHROMIUM_LOG" 2>&1 &
+      chromium --new-window "$url" >>"$CHROMIUM_LOG" 2>&1 &
     else
-      chromium --start-fullscreen "$url" >>"$CHROMIUM_LOG" 2>&1 &
+      chromium "$url" >>"$CHROMIUM_LOG" 2>&1 &
     fi
     sleep 4
     if chromium_running; then

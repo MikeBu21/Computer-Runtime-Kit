@@ -140,6 +140,7 @@ def mesh_settings() -> Dict[str, Any]:
         "invite_code": str(raw.get("invite_code") or ""),
         "invite_codes": raw.get("invite_codes") if isinstance(raw.get("invite_codes"), list) else [],
         "display_name": str(raw.get("display_name") or ""),
+        "node_name": str(raw.get("node_name") or ""),
         "auth_key_set": bool(str(raw.get("tailscale_auth_key") or "").strip()),
         "members": raw.get("members") if isinstance(raw.get("members"), dict) else {},
         "removed_members": raw.get("removed_members") if isinstance(raw.get("removed_members"), list) else [],
@@ -295,13 +296,32 @@ def local_reading() -> Tuple[float, Optional[float], Optional[float]]:
 
 
 def local_name(snapshot: Optional[Dict[str, Any]] = None) -> str:
-    stored = mesh_settings().get("display_name") or ""
+    settings = mesh_settings()
+    stored = settings.get("display_name") or ""
     if stored:
         return stored
+    node = settings.get("node_name") or ""
+    if node:
+        return node
     snap = snapshot if snapshot is not None else tailscale_snapshot()
     if snap.get("self_name"):
         return str(snap["self_name"])
     return socket.gethostname().split(".")[0]
+
+
+def ensure_node_name(tailscale_name: str) -> None:
+    """Tailscale-Name einmal festhalten. Ein Neustart ohne Tailscale ändert ihn nicht."""
+    text = str(tailscale_name or "").strip()
+    if not text:
+        return
+    if str(mesh_settings().get("node_name") or "").strip():
+        return
+
+    def mutate(data: Dict[str, Any]) -> None:
+        if not str(data.get("node_name") or "").strip():
+            data["node_name"] = text
+
+    _update(mutate)
 
 
 CONNECTED_GAP_SEC = 150
@@ -390,6 +410,85 @@ def accrue_connected_kwh(
     return round(total + average_kw * (elapsed / 3600.0), 3)
 
 
+def _same_device(item: Dict[str, Any], key: str, name: str, ip: str) -> bool:
+    """Gleicher Name, auch bei anderer Großschreibung, oder dieselbe Tailscale-Adresse."""
+    folded = name.casefold()
+    if str(key).casefold() == folded or str(item.get("name") or "").casefold() == folded:
+        return True
+    return bool(ip) and str(item.get("ip") or "") == ip
+
+
+def _absorb_member(keep: Dict[str, Any], extra: Dict[str, Any]) -> None:
+    if not keep.get("alias") and extra.get("alias"):
+        keep["alias"] = extra["alias"]
+    if keep.get("ask_ct_kwh") is None and extra.get("ask_ct_kwh") is not None:
+        keep["ask_ct_kwh"] = extra["ask_ct_kwh"]
+    if keep.get("grid_cost_ct_kwh") is None and extra.get("grid_cost_ct_kwh") is not None:
+        keep["grid_cost_ct_kwh"] = extra["grid_cost_ct_kwh"]
+    if not keep.get("ip") and extra.get("ip"):
+        keep["ip"] = extra["ip"]
+    if not keep.get("feed_in_kwh") and extra.get("feed_in_kwh") is not None:
+        keep["feed_in_kwh"] = extra["feed_in_kwh"]
+    if len(extra.get("history") or []) > len(keep.get("history") or []):
+        keep["history"] = extra["history"]
+    if float(extra.get("seen") or 0) > float(keep.get("seen") or 0):
+        keep["seen"] = extra.get("seen")
+        if extra.get("feed_in_kw") is not None:
+            keep["feed_in_kw"] = extra.get("feed_in_kw")
+        if extra.get("soc_percent") is not None:
+            keep["soc_percent"] = extra.get("soc_percent")
+
+
+def _collapse_into(members: Dict[str, Any], name: str, ip: str) -> str:
+    """Einen Schlüssel behalten. Der Neustart unter anderem Namen legt keinen zweiten an."""
+    matches = [
+        key
+        for key, item in members.items()
+        if isinstance(item, dict) and _same_device(item, str(key), name, ip)
+    ]
+    if not matches:
+        return name
+
+    def rank(key: str) -> Tuple[int, int, int, float, int]:
+        item = members.get(key) or {}
+        return (
+            0 if str(key).casefold() == name.casefold() else 1,
+            0 if item.get("ip") else 1,
+            0 if item.get("alias") else 1,
+            -float(item.get("seen") or 0),
+            0 if key == name else 1,
+        )
+
+    keep = sorted(matches, key=rank)[0]
+    for extra_key in matches:
+        if extra_key == keep:
+            continue
+        extra = members.get(extra_key)
+        if isinstance(extra, dict):
+            _absorb_member(members[keep], extra)
+        members.pop(extra_key, None)
+    members[keep]["name"] = keep
+    return str(keep)
+
+
+def collapse_stored_duplicates() -> None:
+    with _lock:
+        data = _read_raw()
+        members = data.get("members")
+        if not isinstance(members, dict) or not members:
+            return
+        before = list(members.keys())
+        for key in before:
+            item = members.get(key)
+            if not isinstance(item, dict):
+                continue
+            _collapse_into(members, str(item.get("name") or key), str(item.get("ip") or ""))
+        if list(members.keys()) == before:
+            return
+        data["members"] = members
+        _write_raw(data)
+
+
 def _remember_member(
     name: str,
     ip: str,
@@ -403,10 +502,11 @@ def _remember_member(
         members = data.get("members")
         if not isinstance(members, dict):
             members = {}
-        prev = members.get(name) if isinstance(members.get(name), dict) else {}
+        key = _collapse_into(members, name, ip)
+        prev = members.get(key) if isinstance(members.get(key), dict) else {}
         current_kw = feed if feed is not None else prev.get("feed_in_kw")
-        members[name] = {
-            "name": name,
+        members[key] = {
+            "name": key,
             "ip": ip or prev.get("ip") or "",
             "feed_in_kw": current_kw,
             "feed_in_kwh": energy_kwh if energy_kwh is not None else prev.get("feed_in_kwh"),
@@ -463,7 +563,7 @@ def is_community_counterpart(item: Dict[str, Any], self_name: str, self_ip: str)
     """Nur ein Gerät, das den Einladungscode geschickt hat. Nicht man selbst, nicht das ganze Konto."""
     if not isinstance(item, dict) or not item.get("seen"):
         return False
-    if self_name and item.get("name") == self_name:
+    if self_name and str(item.get("name") or "").casefold() == self_name.casefold():
         return False
     if self_ip and item.get("ip") == self_ip:
         return False
@@ -478,15 +578,15 @@ def peer_feed_rows() -> List[Dict[str, Any]]:
     """Einspeisung der anderen Mitglieder. Das eigene Haus zählt nicht mit."""
     data = mesh_settings()
     now = time.time()
-    self_names = {socket.gethostname().split(".")[0]}
-    stored = str(data.get("display_name") or "")
-    if stored:
-        self_names.add(stored)
+    self_names = {socket.gethostname().split(".")[0].casefold()}
+    for stored in (data.get("display_name"), data.get("node_name")):
+        if stored:
+            self_names.add(str(stored).casefold())
     rows: List[Dict[str, Any]] = []
     for item in (data.get("members") or {}).values():
         if not isinstance(item, dict) or not item.get("seen"):
             continue
-        if item.get("name") in self_names:
+        if str(item.get("name") or "").casefold() in self_names:
             continue
         seen = float(item.get("seen") or 0)
         rows.append(
@@ -571,7 +671,7 @@ def _removed_names() -> set:
     names = mesh_settings().get("removed_members")
     if not isinstance(names, list):
         return set()
-    return {str(item).strip() for item in names if str(item).strip()}
+    return {str(item).strip().casefold() for item in names if str(item).strip()}
 
 
 def _remember_command(entry: Dict[str, Any]) -> None:
@@ -598,10 +698,14 @@ def known_member_keeps_link(name: str, source_ip: str, members: Any) -> bool:
     """Gerät, das den Code schon einmal gültig geschickt hat, bleibt an derselben Adresse online."""
     if not name or not source_ip or not isinstance(members, dict):
         return False
-    item = members.get(name)
-    if not isinstance(item, dict) or not item.get("seen"):
-        return False
-    return str(item.get("ip") or "") == source_ip
+    folded = name.casefold()
+    for key, item in members.items():
+        if not isinstance(item, dict) or not item.get("seen"):
+            continue
+        same = str(key).casefold() == folded or str(item.get("name") or "").casefold() == folded
+        if same or str(item.get("ip") or "") == source_ip:
+            return str(item.get("ip") or "") == source_ip
+    return False
 
 
 def _note_code_mismatch(name: str, source_ip: str) -> None:
@@ -634,7 +738,7 @@ def handle_datagram(raw: bytes, source_ip: str) -> None:
     except (UnicodeDecodeError, json.JSONDecodeError):
         return
     sender = str(payload.get("from") or "") if isinstance(payload, dict) else ""
-    if sender and sender in _removed_names():
+    if sender and sender.casefold() in _removed_names():
         return
     verified = isinstance(payload, dict) and verify_any(payload, accepted_codes() or [code])
     if not verified:
@@ -759,6 +863,7 @@ def cycle_once() -> None:
     if not code or _sock is None:
         return
     snap = tailscale_snapshot()
+    ensure_node_name(str(snap.get("self_name") or ""))
     name = local_name(snap)
     feed, soc, energy = local_reading()
     _remember_member(name, snap.get("self_ip") or "", feed, soc, energy)
@@ -798,10 +903,12 @@ def start_mesh() -> None:
         if _started:
             return
         _started = True
+    collapse_stored_duplicates()
     threading.Thread(target=_tick_loop, name="eg-mesh-tick", daemon=True).start()
 
 
 def public_status() -> Dict[str, Any]:
+    collapse_stored_duplicates()
     seed_live_history()
     snap = tailscale_snapshot()
     settings = mesh_settings()

@@ -132,8 +132,38 @@ class TestEnergiegemeinschaftMesh(unittest.TestCase):
 
     def test_only_the_counterpart_with_the_code_is_visible(self):
         self.assertFalse(is_community_counterpart({"name": "ich", "seen": 5, "ip": "100.0.0.1"}, "ich", "100.0.0.1"))
+        self.assertFalse(is_community_counterpart({"name": "Ich", "seen": 5, "ip": "100.0.0.1"}, "ich", "100.0.0.1"))
         self.assertFalse(is_community_counterpart({"name": "konto", "seen": 0, "ip": "100.0.0.2"}, "ich", "100.0.0.1"))
         self.assertTrue(is_community_counterpart({"name": "pi-2-1", "seen": 10, "ip": "100.0.0.9"}, "ich", "100.0.0.1"))
+
+    def test_restart_updates_the_same_device_instead_of_adding_one(self):
+        import tempfile
+        from pathlib import Path
+
+        import energiegemeinschaft_mesh as mesh
+
+        path = Path(tempfile.mkstemp(suffix=".json")[1])
+        path.write_text("{}", encoding="utf-8")
+        try:
+            with patch.object(mesh, "SETTINGS_FILE", path):
+                mesh._remember_member("raspberrypi2-1", "100.91.87.103", 1.2, 70, 4.5)
+                mesh.update_member_field("raspberrypi2-1", "alias", "Haus Martin")
+                mesh._remember_member("piMiner", "100.105.158.95", 0.0, 70, None)
+                mesh._remember_member("raspberrypi", "100.91.87.103", 1.4, 71, 4.6)
+                mesh._remember_member("piminer", "100.105.158.95", 0.1, 69, None)
+                stored = json.loads(path.read_text(encoding="utf-8"))["members"]
+                self.assertEqual({key.casefold() for key in stored}, {"raspberrypi2-1", "piminer"})
+                self.assertEqual(stored["raspberrypi2-1"]["alias"], "Haus Martin")
+                self.assertEqual(stored["raspberrypi2-1"]["ip"], "100.91.87.103")
+                self.assertEqual(stored["raspberrypi2-1"]["feed_in_kw"], 1.4)
+                self_key = next(key for key in stored if key.casefold() == "piminer")
+                self.assertEqual(stored[self_key]["ip"], "100.105.158.95")
+                self.assertEqual(stored[self_key]["feed_in_kw"], 0.1)
+                mesh.ensure_node_name("piminer")
+                mesh.ensure_node_name("anderer-name")
+                self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["node_name"], "piminer")
+        finally:
+            path.unlink(missing_ok=True)
 
     def test_name_price_and_grid_cost_survive_the_next_minute(self):
         import tempfile

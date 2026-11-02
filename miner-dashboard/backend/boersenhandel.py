@@ -291,6 +291,11 @@ def chart_window(now: datetime) -> tuple:
     return start, end
 
 
+def slot_covering(slots: List[Dict[str, Any]], now_ms: int) -> Optional[Dict[str, Any]]:
+    """Das Viertel, in dem `now` liegt. Spätere Kerzen im Chart sind nicht der Live-Preis."""
+    return next((slot for slot in slots if slot["start_ms"] <= now_ms < slot["end_ms"]), None)
+
+
 def slots_for_chart(slots: List[Dict[str, Any]], now: datetime, range_mode: str) -> List[Dict[str, Any]]:
     """Heute allein, oder die Vier-Tage-Spanne. Vergangene Stunden bleiben sichtbar."""
     if range_mode == "day":
@@ -393,7 +398,7 @@ def price_view(exchange: str, range_mode: str, settings: Optional[Dict[str, Any]
     moment = datetime.now(TZ)
     now_ms = int(moment.timestamp() * 1000)
     today = moment.strftime("%Y-%m-%d")
-    current = next((s for s in slots if s["start_ms"] <= now_ms < s["end_ms"]), None)
+    current = slot_covering(slots, now_ms)
     shown = slots_for_chart(slots, moment, "day" if range_mode == "day" else "4d")
     price = current["ct_kwh"] if current else None
     buy = float(settings["buy_ct_kwh"])

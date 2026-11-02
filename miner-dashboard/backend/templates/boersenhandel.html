@@ -265,6 +265,8 @@
     };
   }
 
+  const livePriceLine = { day: null, trade: null };
+
   function addCandleSeries(chart) {
     return chart.addCandlestickSeries({
       upColor: "#00ff4a",
@@ -273,11 +275,31 @@
       borderDownColor: "#ff2438",
       wickUpColor: "#00ff4a",
       wickDownColor: "#ff2438",
-      priceLineVisible: true,
-      priceLineColor: "#ffffff",
-      priceLineStyle: LightweightCharts.LineStyle.Dashed,
-      priceLineWidth: 1
+      // Die letzte Kerze ist das Tagesende bzw. der Folgetag, nicht der aktuelle Slot.
+      priceLineVisible: false,
+      lastValueVisible: false
     });
+  }
+
+  function syncLivePriceLine(which, series, price) {
+    if (!series) return;
+    if (!Number.isFinite(price)) {
+      if (livePriceLine[which]) {
+        series.removePriceLine(livePriceLine[which]);
+        livePriceLine[which] = null;
+      }
+      return;
+    }
+    const options = {
+      price: price,
+      color: "#ffffff",
+      lineWidth: 1,
+      lineStyle: LightweightCharts.LineStyle.Dashed,
+      axisLabelVisible: true,
+      title: ""
+    };
+    if (!livePriceLine[which]) livePriceLine[which] = series.createPriceLine(options);
+    else livePriceLine[which].applyOptions(options);
   }
 
   function ensureDayChart() {
@@ -449,7 +471,7 @@
 
   let lastCandleCount = 0;
 
-  function drawCandles(points, dayPoints) {
+  function drawCandles(points, dayPoints, livePrice) {
     ensureChart();
     if (!candleSeries) {
       metaEl.textContent = "Kerzenchart nicht geladen.";
@@ -459,9 +481,11 @@
     const todayCandles = candlesFrom(dayPoints || points);
     lastCandleCount = candles.length;
     candleSeries.setData(candles);
+    syncLivePriceLine("trade", candleSeries, livePrice);
     ensureDayChart();
     if (daySeries) {
       daySeries.setData(todayCandles);
+      syncLivePriceLine("day", daySeries, livePrice);
       if (!dayFitted && todayCandles.length && dayChart) {
         fitWhenReady(dayChart, todayCandles.length, function () { dayFitted = true; });
       }
@@ -469,8 +493,13 @@
     if (!fitted && candles.length) {
       fitWhenReady(tradeChart, candles.length, function () { fitted = true; });
     }
-    const last = candles[candles.length - 1];
-    if (last) priceEl.style.color = last.color || CANDLE_BLUE;
+    const nowSec = Date.now() / 1000;
+    let marked = null;
+    candles.forEach(function (row) {
+      if (row.time <= nowSec) marked = row;
+    });
+    const shown = marked || candles[candles.length - 1];
+    if (shown) priceEl.style.color = shown.color || CANDLE_BLUE;
     placeTags();
   }
 
@@ -493,7 +522,8 @@
     const points = data.points || [];
     const today = data.today;
     const dayPoints = today ? points.filter(function (point) { return point.day === today; }) : points;
-    drawCandles(points, dayPoints);
+    const livePrice = data.current_ct_kwh == null ? null : Number(data.current_ct_kwh);
+    drawCandles(points, dayPoints, livePrice);
   }
 
   async function saveThresholds(showHint) {

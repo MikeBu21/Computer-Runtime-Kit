@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import unittest
 from datetime import datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from boersenhandel import chart_window, slots_for_chart, tariff_grid_kw
+from boersenhandel import chart_window, slot_covering, slots_for_chart, tariff_grid_kw
 
 TZ = ZoneInfo("Europe/Vienna")
 
@@ -55,6 +56,41 @@ class ChartWindowTests(unittest.TestCase):
         slots = [_slot("2026-10-31", 10), _slot("2026-11-01", 9), _slot("2026-11-02", 9)]
         shown = slots_for_chart(slots, now, "day")
         self.assertEqual([slot["day"] for slot in shown], ["2026-11-01"])
+
+    def test_live_price_is_the_open_quarter_not_the_last_candle(self):
+        now = datetime(2026, 11, 2, 15, 40, tzinfo=TZ)
+        now_ms = int(now.timestamp() * 1000)
+
+        def quarter(day: str, hour: int, minute: int, ct: float) -> dict:
+            start = datetime.fromisoformat(f"{day}T{hour:02d}:{minute:02d}:00").replace(tzinfo=TZ)
+            start_ms = int(start.timestamp() * 1000)
+            return {
+                "day": day,
+                "hour": f"{hour:02d}:{minute:02d}",
+                "start_ms": start_ms,
+                "end_ms": start_ms + 15 * 60 * 1000,
+                "ct_kwh": ct,
+            }
+
+        slots = [
+            quarter("2026-11-02", 15, 30, 34.675),
+            quarter("2026-11-02", 23, 45, 21.862),
+            quarter("2026-11-03", 23, 45, 24.439),
+        ]
+        current = slot_covering(slots, now_ms)
+        self.assertIsNotNone(current)
+        self.assertEqual(current["ct_kwh"], 34.675)
+        self.assertEqual(current["hour"], "15:30")
+        self.assertEqual(slots_for_chart(slots, now, "day")[-1]["ct_kwh"], 21.862)
+        self.assertEqual(slots_for_chart(slots, now, "4d")[-1]["ct_kwh"], 24.439)
+
+    def test_charts_mark_the_live_quarter_not_the_last_bar(self):
+        text = Path(__file__).resolve().parents[1].joinpath("templates", "boersenhandel.html").read_text(encoding="utf-8")
+        self.assertIn("priceLineVisible: false", text)
+        self.assertIn("lastValueVisible: false", text)
+        self.assertNotIn("priceLineVisible: true", text)
+        self.assertIn("syncLivePriceLine", text)
+        self.assertIn("data.current_ct_kwh", text)
 
 
 if __name__ == "__main__":
