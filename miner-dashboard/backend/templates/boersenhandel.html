@@ -269,7 +269,7 @@
 
   function addCandleSeries(chart) {
     // Körper von Open bis Close, Docht für High und Low.
-    // Die letzte Kerze ist das Tagesende bzw. der Folgetag, nicht der aktuelle Slot.
+    // Die letzte Kerze ist das laufende Viertel, nicht 23:45 und nicht der Folgetag.
     return chart.addCandlestickSeries({
       upColor: "#00ff4a",
       downColor: "#ff2438",
@@ -371,10 +371,11 @@
   function candlesFrom(points) {
     const rows = [];
     let previousClose = null;
+    const nowSec = Date.now() / 1000;
     points.forEach(function (point) {
       const close = Number(point.close != null ? point.close : point.ct_kwh);
       const time = Number(point.time);
-      if (!Number.isFinite(close) || !Number.isFinite(time)) return;
+      if (!Number.isFinite(close) || !Number.isFinite(time) || time > nowSec) return;
       let open = Number(point.open);
       if (!Number.isFinite(open)) open = previousClose == null ? close : previousClose;
       let high = Number(point.high);
@@ -486,12 +487,14 @@
     const candles = candlesFrom(points);
     const todayCandles = candlesFrom(dayPoints || points);
     lastCandleCount = candles.length;
+    const tradeClose = candles.length ? candles[candles.length - 1].close : livePrice;
+    const dayClose = todayCandles.length ? todayCandles[todayCandles.length - 1].close : livePrice;
     candleSeries.setData(candles);
-    syncLivePriceLine("trade", candleSeries, livePrice);
+    syncLivePriceLine("trade", candleSeries, tradeClose);
     ensureDayChart();
     if (daySeries) {
       daySeries.setData(todayCandles);
-      syncLivePriceLine("day", daySeries, livePrice);
+      syncLivePriceLine("day", daySeries, dayClose);
       if (!dayFitted && todayCandles.length && dayChart) {
         fitWhenReady(dayChart, todayCandles.length, function () { dayFitted = true; });
       }

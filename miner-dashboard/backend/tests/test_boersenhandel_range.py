@@ -63,7 +63,9 @@ class ChartWindowTests(unittest.TestCase):
         ]
         shown = slots_for_chart(slots, now, "4d")
         days = [slot["day"] for slot in shown]
-        self.assertEqual(days, ["2026-10-29", "2026-10-31", "2026-11-01", "2026-11-02"])
+        self.assertEqual(days, ["2026-10-29", "2026-10-31", "2026-11-01"])
+        self.assertNotIn("2026-11-02", days)
+        self.assertNotIn("2026-11-03", days)
 
     def test_day_mode_is_only_today(self):
         now = datetime(2026, 11, 1, 17, 50, tzinfo=TZ)
@@ -71,27 +73,35 @@ class ChartWindowTests(unittest.TestCase):
         shown = slots_for_chart(slots, now, "day")
         self.assertEqual([slot["day"] for slot in shown], ["2026-11-01"])
 
-    def test_live_price_is_the_open_quarter_not_the_last_candle(self):
-        now = datetime(2026, 11, 2, 15, 40, tzinfo=TZ)
+    def test_future_quarter_on_3_nov_is_not_plotted(self):
+        now = datetime(2026, 11, 2, 16, 50, tzinfo=TZ)
         now_ms = int(now.timestamp() * 1000)
         slots = [
-            _quarter("2026-11-02", 15, 30, 34.675),
+            _quarter("2026-11-02", 16, 30, 34.307),
+            _quarter("2026-11-02", 16, 45, 34.515),
+            _quarter("2026-11-02", 17, 0, 33.137),
             _quarter("2026-11-02", 23, 45, 21.862),
             _quarter("2026-11-03", 23, 45, 24.439),
         ]
         current = slot_covering(slots, now_ms)
         self.assertIsNotNone(current)
-        self.assertEqual(current["ct_kwh"], 34.675)
-        self.assertEqual(current["hour"], "15:30")
-        self.assertEqual(slots_for_chart(slots, now, "day")[-1]["ct_kwh"], 21.862)
-        self.assertEqual(slots_for_chart(slots, now, "4d")[-1]["ct_kwh"], 24.439)
+        self.assertEqual(current["hour"], "16:45")
+        self.assertEqual(current["ct_kwh"], 34.515)
+        for mode in ("day", "4d"):
+            shown = slots_for_chart(slots, now, mode)
+            self.assertEqual(shown[-1]["day"], "2026-11-02")
+            self.assertEqual(shown[-1]["hour"], "16:45")
+            self.assertEqual(shown[-1]["ct_kwh"], 34.515)
+            self.assertTrue(all(slot["start_ms"] <= now_ms for slot in shown))
+            self.assertFalse(any(slot["day"] == "2026-11-03" for slot in shown))
+            self.assertFalse(any(slot["hour"] == "23:45" for slot in shown))
 
     def test_live_quarter_close_matches_headline_and_open_is_previous(self):
-        now = datetime(2026, 11, 2, 15, 40, tzinfo=TZ)
+        now = datetime(2026, 11, 2, 16, 50, tzinfo=TZ)
         slots = [
-            _quarter("2026-11-02", 15, 15, 33.908),
-            _quarter("2026-11-02", 15, 30, 34.675),
-            _quarter("2026-11-02", 16, 0, 33.376),
+            _quarter("2026-11-02", 16, 30, 34.307),
+            _quarter("2026-11-02", 16, 45, 34.515),
+            _quarter("2026-11-02", 17, 0, 33.137),
             _quarter("2026-11-02", 23, 45, 21.862),
             _quarter("2026-11-03", 23, 45, 24.439),
         ]
@@ -105,22 +115,28 @@ class ChartWindowTests(unittest.TestCase):
         with patch.object(boersenhandel, "_fetch_slots", return_value=slots), patch.object(
             boersenhandel, "datetime", _Clock
         ):
-            for mode, last_ct in (("day", 21.862), ("4d", 24.439)):
+            for mode in ("day", "4d"):
                 view = price_view("eag_energieag", mode, settings)
-                self.assertEqual(view["current_ct_kwh"], 34.675)
+                self.assertEqual(view["current_ct_kwh"], 34.515)
+                self.assertEqual(view["current_hour"], "16:45")
                 points = view["points"]
-                live = next(point for point in points if point["day"] == "2026-11-02" and point["hour"] == "15:30")
-                previous = next(point for point in points if point["hour"] == "15:15")
-                following = next(point for point in points if point["hour"] == "16:00")
-                self.assertEqual(live["close"], view["current_ct_kwh"])
-                self.assertEqual(live["close"], live["ct_kwh"])
-                self.assertEqual(live["open"], previous["ct_kwh"])
-                self.assertNotEqual(live["open"], live["close"])
-                self.assertNotEqual(live["close"], following["ct_kwh"])
-                self.assertEqual(live["high"], max(live["open"], live["close"]))
-                self.assertEqual(live["low"], min(live["open"], live["close"]))
-                self.assertFalse(live["open"] == live["high"] == live["low"] == live["close"])
+                self.assertGreaterEqual(len(points), 2)
+                self.assertEqual(points[-1]["day"], "2026-11-02")
+                self.assertEqual(points[-1]["hour"], "16:45")
+                self.assertEqual(points[-1]["close"], view["current_ct_kwh"])
+                self.assertEqual(points[-1]["close"], points[-1]["ct_kwh"])
+                self.assertEqual(points[-1]["open"], 34.307)
+                self.assertNotEqual(points[-1]["open"], points[-1]["close"])
+                self.assertEqual(points[-1]["high"], max(points[-1]["open"], points[-1]["close"]))
+                self.assertEqual(points[-1]["low"], min(points[-1]["open"], points[-1]["close"]))
+                self.assertFalse(
+                    points[-1]["open"] == points[-1]["high"] == points[-1]["low"] == points[-1]["close"]
+                )
+                self.assertTrue(all(point["day"] != "2026-11-03" for point in points))
+                self.assertTrue(all(point["hour"] != "23:45" for point in points))
+                self.assertNotIn("17:00", [point["hour"] for point in points])
                 for index, point in enumerate(points):
+                    self.assertLessEqual(point["time"], int(now.timestamp()))
                     self.assertEqual(point["close"], point["ct_kwh"])
                     if index == 0:
                         self.assertEqual(point["open"], point["close"])
@@ -131,9 +147,6 @@ class ChartWindowTests(unittest.TestCase):
                     if point["open"] != point["close"]:
                         self.assertNotEqual(point["high"], point["low"])
                         self.assertFalse(point["open"] == point["high"] == point["low"] == point["close"])
-                self.assertEqual(points[-1]["ct_kwh"], last_ct)
-                self.assertEqual(points[-1]["close"], last_ct)
-                self.assertNotEqual(points[-1]["open"], points[-1]["close"])
 
     def test_day_candle_opens_on_the_previous_slot_outside_today(self):
         now = datetime(2026, 11, 2, 0, 10, tzinfo=TZ)
@@ -195,6 +208,7 @@ class ChartWindowTests(unittest.TestCase):
         self.assertNotIn("priceLineVisible: true", text)
         self.assertIn("syncLivePriceLine", text)
         self.assertIn("data.current_ct_kwh", text)
+        self.assertIn("time > nowSec", text)
         self.assertIn("addCandlestickSeries", text)
         self.assertNotIn("addHistogramSeries", text)
         self.assertIn("open: row.open", text)

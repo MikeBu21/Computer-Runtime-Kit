@@ -356,16 +356,17 @@ def outlook_line(balance_kwh: Any) -> str:
 def balance_lamp(balance_kwh: Any) -> Optional[Dict[str, str]]:
     """Ampel zur gespeicherten Tagesbilanz in kWh.
 
-    Grün über +1, orange von −1 bis +1 einschließlich, rot unter −1.
+    Über +1 eine grüne Lampe, von −1 bis +1 eine hellgrüne Lampe.
+    Unter −1 füllt das Statuskästchen hellrot, ohne rote Lampe.
     """
     if isinstance(balance_kwh, bool) or not isinstance(balance_kwh, (int, float)):
         return None
     value = float(balance_kwh)
     if value > 1:
-        return {"level": "green", "word": "Gut"}
+        return {"level": "green", "fill": False}
     if value >= -1:
-        return {"level": "orange", "word": "Unsicher"}
-    return {"level": "red", "word": "Reicht nicht"}
+        return {"level": "light-green", "fill": False}
+    return {"level": "short", "fill": True}
 
 
 _REPORTED_CHOICES = {

@@ -301,7 +301,12 @@ def _http_json(url: str) -> Dict[str, Any]:
 
 
 def chart_window(now: datetime) -> tuple:
-    """Vier Kalendertage ab Mitternacht, Ende am übernächsten Mitternacht (Folgetag inklusive)."""
+    """Vier Kalendertage ab Mitternacht bis übernächste Mitternacht.
+
+    Das ist nur das Abruffenster. Der Börsen-Endtag ist exklusiv, deshalb liegt
+    die letzte gelieferte Kerze auf 23:45 des Folgetags (am 2. Nov. also der
+    3. Nov. 23:45). Gezeichnet wird davon nichts nach der lokalen Uhrzeit.
+    """
     start = (now - timedelta(days=CHART_HISTORY_DAYS - 1)).replace(
         hour=0, minute=0, second=0, microsecond=0
     )
@@ -310,20 +315,28 @@ def chart_window(now: datetime) -> tuple:
 
 
 def slot_covering(slots: List[Dict[str, Any]], now_ms: int) -> Optional[Dict[str, Any]]:
-    """Das Viertel, in dem `now` liegt. Spätere Kerzen im Chart sind nicht der Live-Preis."""
+    """Das Viertel, in dem `now` liegt."""
     return next((slot for slot in slots if slot["start_ms"] <= now_ms < slot["end_ms"]), None)
 
 
 def slots_for_chart(slots: List[Dict[str, Any]], now: datetime, range_mode: str) -> List[Dict[str, Any]]:
-    """Heute allein, oder die Vier-Tage-Spanne. Vergangene Stunden bleiben sichtbar."""
+    """Heute allein, oder die Vier-Tage-Spanne. Slots nach der lokalen Uhrzeit fallen weg."""
+    now_ms = int(now.timestamp() * 1000)
+
+    def started(slot: Dict[str, Any]) -> bool:
+        return int(slot["start_ms"]) <= now_ms
+
     if range_mode == "day":
         today = now.strftime("%Y-%m-%d")
-        return [slot for slot in slots if slot["day"] == today]
+        return [slot for slot in slots if slot["day"] == today and started(slot)]
     start, end = chart_window(now)
     start_ms = int(start.timestamp() * 1000)
     end_ms = int(end.timestamp() * 1000)
-    shown = [slot for slot in slots if slot["end_ms"] > start_ms and slot["start_ms"] < end_ms]
-    return shown or list(slots)
+    return [
+        slot
+        for slot in slots
+        if int(slot["end_ms"]) > start_ms and int(slot["start_ms"]) < end_ms and started(slot)
+    ]
 
 
 def candle_for_slot(slot: Dict[str, Any], previous_close: Optional[float]) -> Dict[str, float]:
@@ -491,11 +504,13 @@ def price_view(exchange: str, range_mode: str, settings: Optional[Dict[str, Any]
         exchange = settings["exchange"]
     slots = _fetch_slots(exchange)
     moment = datetime.now(TZ)
-    now_ms = int(moment.timestamp() * 1000)
     today = moment.strftime("%Y-%m-%d")
-    current = slot_covering(slots, now_ms)
     shown = slots_for_chart(slots, moment, "day" if range_mode == "day" else "4d")
-    price = current["ct_kwh"] if current else None
+    points = chart_points(slots, shown)
+    # Kopfzeile und letzte Kerze sind derselbe Slot: das laufende Viertel,
+    # oder das letzte bereits begonnene, falls das aktuelle noch fehlt.
+    latest = points[-1] if points else None
+    price = latest["ct_kwh"] if latest else None
     buy = float(settings["buy_ct_kwh"])
     sell = float(settings["sell_ct_kwh"])
     return {
@@ -507,7 +522,7 @@ def price_view(exchange: str, range_mode: str, settings: Optional[Dict[str, Any]
         "unit": "ct/kWh",
         "updated_at": datetime.now(TZ).isoformat(timespec="seconds"),
         "current_ct_kwh": price,
-        "current_hour": current["hour"] if current else None,
+        "current_hour": latest["hour"] if latest else None,
         "buy_ct_kwh": buy,
         "sell_ct_kwh": sell,
         "buy_kw": settings.get("buy_kw"),
@@ -515,7 +530,7 @@ def price_view(exchange: str, range_mode: str, settings: Optional[Dict[str, Any]
         "lower_ct_kwh": buy,
         "upper_ct_kwh": sell,
         "action": charge_action(price, buy, sell),
-        "points": chart_points(slots, shown),
+        "points": points,
         "exchanges": [
             {"id": key, "label": spec["label"], "group": spec.get("group") or "Börsen"}
             for key, spec in EXCHANGES.items()
