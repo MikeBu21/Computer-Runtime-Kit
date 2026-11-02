@@ -260,7 +260,7 @@
 
   function formatBalance(value) {
     if (value == null || value === "" || typeof value === "boolean" || !Number.isFinite(Number(value))) {
-      return "noch nicht gemeldet";
+      return "";
     }
     const num = Number(value);
     let text = Math.abs(num).toFixed(3).replace(/0+$/, "").replace(/\.$/, "").replace(".", ",");
@@ -273,18 +273,18 @@
     const reported = member.reported || {};
     if (key === "balance_kwh") return formatBalance(member.balance_kwh);
     if (key === "neighbor_trade") {
-      return { buy: "Vom Nachbarn zukaufen", sell: "An den Nachbarn verkaufen", both: "Beides" }[reported.neighbor_trade] || "noch nicht gemeldet";
+      return { buy: "Vom Nachbarn zukaufen", sell: "An den Nachbarn verkaufen", both: "Beides" }[reported.neighbor_trade] || "";
     }
     if (key === "share_without_production" || key === "only_if_enough_tomorrow") {
       if (reported[key] === true) return "ja";
       if (reported[key] === false) return "nein";
-      return "noch nicht gemeldet";
+      return "";
     }
     if (key === "max_zukauf_kw" || key === "max_verkauf_kw") {
-      if (reported[key] == null || reported[key] === "") return "noch nicht gemeldet";
+      if (reported[key] == null || reported[key] === "") return "";
       return String(reported[key]).replace(".", ",") + " kW";
     }
-    return "noch nicht gemeldet";
+    return "";
   }
 
   function reportedLine(key) {
@@ -295,7 +295,7 @@
     prefix.textContent = "Beim Nachbarn: ";
     const value = document.createElement("strong");
     value.dataset.reportedValue = "1";
-    value.textContent = "noch nicht gemeldet";
+    value.textContent = "";
     p.append(prefix, value);
     return p;
   }
