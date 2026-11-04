@@ -6,7 +6,8 @@
 <style>
   .gvr-hero {
     display: grid;
-    grid-template-columns: 1.4fr 1fr;
+    grid-template-columns: minmax(280px, 1.45fr) minmax(220px, 1fr);
+    justify-content: start;
     gap: 1rem;
     margin-bottom: 1.25rem;
   }
@@ -36,6 +37,19 @@
   .gvr-value span { font-size: 1.3rem; color: var(--muted); font-weight: 600; margin-left: 0.35rem; }
   .gvr-value-side { font-size: 2.6rem; }
   .gvr-sub { color: var(--muted); margin: 0.35rem 0 0; font-size: 0.92rem; }
+  .gvr-hero-main.gvr-short {
+    background: #ffcdd2;
+    border-color: #e57373;
+  }
+  .gvr-hero-main.gvr-short .gvr-kicker { color: #7f1d1d; }
+  .gvr-hero-main.gvr-short .gvr-value,
+  .gvr-hero-main.gvr-short .gvr-sub { color: #3b0a0a; }
+  .gvr-hero-main.gvr-short .gvr-value span { color: #7f1d1d; }
+  .gvr-lamp { display: flex; align-items: center; gap: 0.45rem; margin: 0.7rem 0 0; }
+  .gvr-lamp-dot {
+    width: 0.7rem; height: 0.7rem; border-radius: 50%;
+    background: #00e676; box-shadow: 0 0 8px #00e676;
+  }
   .gvr-cards {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
@@ -82,7 +96,7 @@
   .gvr-note { color: var(--muted); font-size: 0.88rem; margin: 0.35rem 0; }
   .gvr-chart-wrap { height: 340px; }
   .gvr-chart-wrap.short { height: 240px; }
-  .gvr-cards.stats { grid-template-columns: repeat(4, 1fr); }
+  .gvr-cards.stats { grid-template-columns: repeat(3, 1fr); }
   .gvr-meta { display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; margin-top: 0.8rem; }
   .gvr-pill {
     background: rgba(255,255,255,0.05);
@@ -107,16 +121,17 @@
 <div id="gvr_alerts"></div>
 
 <div class="gvr-hero">
-  <div class="gvr-hero-main">
+  <div class="gvr-hero-main" id="gvr_purchase_card">
     <p class="gvr-kicker">Empfohlener Zukauf</p>
     <p class="gvr-value" id="gvr_weekly">— <span>kW</span></p>
-    <p class="gvr-sub" id="gvr_weekly_sub">Stabiler Wert, höchstens einmal pro Woche automatisch neu.</p>
-    <div class="gvr-meta" id="gvr_meta"></div>
+    <p class="gvr-sub" id="gvr_weekly_sub">Dauerzukauf aus Last, PV-Prognose und Speicher — Anzeige immer aktuell.</p>
+    <p class="gvr-lamp" id="gvr_lamp" hidden><i class="gvr-lamp-dot" aria-hidden="true"></i><span>Nacht ist gedeckt</span></p>
   </div>
   <div class="gvr-hero-side">
-    <p class="gvr-kicker">Tageswert</p>
-    <p class="gvr-value gvr-value-side" id="gvr_daily">— <span>kW</span></p>
-    <p class="gvr-sub">Alle 24 Stunden leicht nachgeführt. Zum Ablesen, nicht als Schaltbefehl.</p>
+    <p class="gvr-kicker">Rest der letzten Tage</p>
+    <p class="gvr-value gvr-value-side" id="gvr_rest">— <span>kW</span></p>
+    <p class="gvr-sub">Der bisherige Wert. Nur zum Ablesen.</p>
+    <div class="gvr-meta" id="gvr_meta"></div>
   </div>
 </div>
 
@@ -132,20 +147,14 @@
 
 <div class="gvr-panel">
   <h3 class="panel-title">Letztes Jahr</h3>
-  <p class="gvr-note" id="gvr_long_note">365 Tage, jeder Punkt ein Tag. Gemessene Tage bleiben gespeichert, leere Tage füllen sich von selbst.</p>
+  <p class="gvr-note" id="gvr_long_note">Die Kurve wächst jeden Tag um einen Tag und füllt das Feld. Ein volles Jahr mit 365 Tagen ist der Endzustand. Jeder Punkt ist die Summe der Stunden ohne Miner, in kWh. Die weiße Linie ist das Mittel der letzten sieben vorhandenen Punkte.</p>
   <div class="gvr-chart-wrap"><canvas id="gvr_chart_long"></canvas></div>
 </div>
 
 <div class="gvr-panel">
   <h3 class="panel-title">Wochen</h3>
-  <p class="gvr-note">Jeder Balken ist der mittlere Grundverbrauch einer Kalenderwoche, in kWh pro Tag. Die letzten zwölf Wochen mit Messung.</p>
+  <p class="gvr-note">Jeder Balken ist die Summe der gemessenen Tage einer Kalenderwoche, geteilt durch die Anzahl dieser Tage, in kWh pro Tag. Angezeigt werden die letzten zwölf Wochen.</p>
   <div class="gvr-chart-wrap short"><canvas id="gvr_chart_weeks"></canvas></div>
-</div>
-
-<div class="gvr-panel">
-  <h3 class="panel-title">Haus und Sonne</h3>
-  <p class="gvr-note" id="gvr_sun_note">Nur Tage, an denen der Grundverbrauch und die PV beide gemessen sind.</p>
-  <div class="gvr-chart-wrap short"><canvas id="gvr_chart_sun"></canvas></div>
 </div>
 
 <div class="gvr-panel">
@@ -163,7 +172,6 @@
   const nf1 = new Intl.NumberFormat("de-DE", { maximumFractionDigits: 1, minimumFractionDigits: 1 });
   let longChart = null;
   let weekChart = null;
-  let sunChart = null;
   let report = null;
 
   function kw(value) {
@@ -210,15 +218,30 @@
 
   function render(data) {
     report = data;
-    setBig("gvr_weekly", data.weekly_kw);
-    setBig("gvr_daily", data.daily_kw);
+    setBig("gvr_rest", data.weekly_kw);
+    setBig("gvr_weekly", data.recommended_kw);
+    const purchaseCard = document.getElementById("gvr_purchase_card");
+    const lamp = document.getElementById("gvr_lamp");
+    const short = !!data.recommended_short && data.recommended_kw != null;
+    purchaseCard.classList.toggle("gvr-short", short);
+    lamp.hidden = short || data.recommended_kw == null;
     const sub = document.getElementById("gvr_weekly_sub");
-    const bits = [];
-    if (data.weekly_kwh_per_day != null) bits.push(nf1.format(data.weekly_kwh_per_day) + " kWh am Tag");
-    if (data.month_projected_kwh != null) bits.push("etwa " + nf.format(data.month_projected_kwh) + " kWh in 30 Tagen");
-    if (data.next_week_change) bits.push("nächste automatische Wochenänderung " + data.next_week_change);
-    if (data.trend_label) bits.push("Grundverbrauch " + data.trend_label);
-    sub.textContent = bits.join(" · ") || "Stabiler Wert, höchstens einmal pro Woche automatisch neu.";
+    if (data.recommended_kw != null) {
+      const parts = data.recommended_parts || {};
+      const bits = [];
+      if (parts.load_kwh != null) bits.push("Last " + nf1.format(parts.load_kwh) + " kWh");
+      if (parts.pv_credit_kwh != null) bits.push("PV-Gutschrift " + nf1.format(parts.pv_credit_kwh) + " kWh");
+      if (parts.relief_kwh != null) bits.push("Speicher " + nf1.format(parts.relief_kwh) + " kWh/Tag");
+      if (parts.min_soc_percent != null) bits.push("Min-SoC " + nf1.format(parts.min_soc_percent) + " %");
+      if (short) bits.push("Nachtboden aktiv");
+      sub.textContent = bits.join(" · ") || "Dauerzukauf aus Last, PV-Prognose und Speicher — Anzeige immer aktuell.";
+    } else {
+      const bits = [];
+      if (data.weekly_kwh_per_day != null) bits.push(nf1.format(data.weekly_kwh_per_day) + " kWh am Tag");
+      if (data.next_week_change) bits.push("nächste automatische Wochenänderung " + data.next_week_change);
+      if (data.trend_label) bits.push("Grundverbrauch " + data.trend_label);
+      sub.textContent = bits.join(" · ") || "Noch zu wenig Last-, PV- oder Speicherdaten für den Dauerzukauf.";
+    }
     const meta = document.getElementById("gvr_meta");
     const w = data.window || {};
     meta.innerHTML = [
@@ -240,9 +263,11 @@
           ? nf1.format(today.hours) + " h gemessen · " + kw(today.base_kw) + " kW · 24-h-Schätzung " + nf1.format(today.extrapolated_kwh || 0) + " kWh"
           : "noch keine Messung"),
       card("Letzte 7 Tage", week.base_kwh != null ? nf1.format(week.base_kwh) + " kWh" : "—",
-        week.days ? week.days + " volle Tage · " + kw(week.base_kw) + " kW" : "zu wenig volle Tage"),
-      card("Letzte 30 Tage", month.base_kwh != null ? nf1.format(month.base_kwh) + " kWh" : "—",
-        month.days ? month.days + " volle Tage · " + kw(month.base_kw) + " kW" : "zu wenig volle Tage")
+        week.days ? week.days + " volle Tage · Mittel pro Tag · " + kw(week.base_kw) + " kW" : "zu wenig volle Tage"),
+      card("Spitze 30 Tage", month.peak_kwh != null ? nf1.format(month.peak_kwh) + " kWh" : "—",
+        month.peak_date
+          ? longDate(month.peak_date) + (month.base_kwh != null ? " · Mittel " + nf1.format(month.base_kwh) + " kWh an " + month.days + " Tagen" : "")
+          : "zu wenig volle Tage")
     ].join("");
 
     document.getElementById("gvr_alerts").innerHTML = (data.alerts || []).map(function (text) {
@@ -267,24 +292,7 @@
     const hi = data.highlights || {};
     const hungry = hi.hungriest;
     const quiet = hi.quietest;
-    const cmp = hi.compare || {};
     const sun = data.sun;
-    let compareMain = "—";
-    let compareSub = "Sieben Tage gegen die sieben Tage vier Wochen davor";
-    if (cmp.recent_kwh != null && cmp.delta_kwh != null && cmp.earlier_days) {
-      const delta = Number(cmp.delta_kwh);
-      compareMain = nf1.format(cmp.recent_kwh) + " kWh";
-      if (Math.abs(delta) < 0.3) {
-        compareSub = "etwa wie vor vier Wochen (" + nf1.format(cmp.earlier_kwh) + " kWh)";
-      } else if (delta > 0) {
-        compareSub = nf1.format(delta) + " kWh mehr pro Tag als vor vier Wochen";
-      } else {
-        compareSub = nf1.format(Math.abs(delta)) + " kWh weniger pro Tag als vor vier Wochen";
-      }
-    } else if (cmp.recent_kwh != null) {
-      compareMain = nf1.format(cmp.recent_kwh) + " kWh";
-      compareSub = "Vor vier Wochen liegen noch zu wenig Tage";
-    }
     let sunMain = "—";
     let sunSub = "Noch kein Tag mit Grundverbrauch und PV";
     if (sun && sun.cover != null) {
@@ -294,7 +302,6 @@
     document.getElementById("gvr_highlights").innerHTML = [
       card("Hungrigster Tag", hungry ? nf1.format(hungry.base_kwh) + " kWh" : "—", hungry ? longDate(hungry.date) : "noch kein voller Tag"),
       card("Ruhigster Tag", quiet ? nf1.format(quiet.base_kwh) + " kWh" : "—", quiet ? longDate(quiet.date) : "noch kein voller Tag"),
-      card("Gegen vor vier Wochen", compareMain, compareSub),
       card("Sonne deckt das Haus", sunMain, sunSub)
     ].join("");
   }
@@ -394,9 +401,14 @@
     const rows = data.year || [];
     const note = document.getElementById("gvr_long_note");
     if (note && rows.length) {
+      const measuredOnCurve = rows.filter(function (row) { return row.base_kwh != null; }).length;
+      const full = rows.length >= 365;
+      const growth = full
+        ? "Die Kurve ist jeden Tag um einen Tag gewachsen und füllt das Feld. Ein volles Jahr mit 365 Tagen ist erreicht und bleibt der Endzustand. "
+        : "Die Kurve wächst jeden Tag um einen Tag und füllt das Feld. Ein volles Jahr mit 365 Tagen ist der Endzustand. ";
       note.textContent = rows.length + " Tage, vom " + longDate(rows[0].date) + " bis " + longDate(rows[rows.length - 1].date) +
-        ". " + (data.filled_days || 0) + " davon sind gemessen, jeder Punkt ist so ein Tag. " +
-        "Leere Tage bleiben frei und füllen sich. Gelb = Grundverbrauch in kWh ohne Miner. Weiß gestrichelt = Mittel über 7 Tage.";
+        ". " + growth + measuredOnCurve + " Tage sind gemessen. " +
+        "Gelb = Grundverbrauch in kWh ohne Miner. Weiß gestrichelt = Mittel über 7 Tage.";
     }
     if (longChart) longChart.destroy();
     longChart = drawBaseChart(document.getElementById("gvr_chart_long"), rows, 2);
@@ -433,45 +445,6 @@
           y: {
             beginAtZero: false,
             title: { display: true, text: "kWh pro Tag", color: "#8b9cb3" },
-            ticks: { color: "#8b9cb3" },
-            grid: { color: "rgba(255,255,255,0.05)" }
-          }
-        }
-      }
-    });
-
-    const sun = data.sun;
-    const sunNote = document.getElementById("gvr_sun_note");
-    if (sunChart) sunChart.destroy();
-    sunChart = null;
-    if (!sun) {
-      if (sunNote) sunNote.textContent = "Sobald Tage mit Grundverbrauch und gemessener PV gespeichert sind, steht hier, wie oft die Sonne das Haus deckt.";
-      return;
-    }
-    if (sunNote) {
-      sunNote.textContent = "An " + sun.days + " Tagen mit beiden Messungen. Ein solcher Tag hat den Hausverbrauch " +
-        nf1.format(sun.cover) + "-mal gedeckt.";
-    }
-    sunChart = new Chart(document.getElementById("gvr_chart_sun"), {
-      type: "bar",
-      data: {
-        labels: ["Grundverbrauch", "PV"],
-        datasets: [{
-          label: "kWh am Tag",
-          data: [sun.base_kwh, sun.pv_kwh],
-          backgroundColor: ["#ffea00", "#00e676"],
-          borderRadius: 8
-        }]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: { legend: { display: false } },
-        scales: {
-          x: axisStyle(),
-          y: {
-            beginAtZero: true,
-            title: { display: true, text: "kWh am Tag", color: "#8b9cb3" },
             ticks: { color: "#8b9cb3" },
             grid: { color: "rgba(255,255,255,0.05)" }
           }

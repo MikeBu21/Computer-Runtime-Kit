@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
 import socket
 import subprocess
 import threading
@@ -29,6 +30,10 @@ _ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
 _lock = threading.Lock()
 _started = False
 _sock: Optional[socket.socket] = None
+# Letzter vollständig gelesener Stand. Ein halbfertiges JSON darf daraus nicht
+# eine leere Gemeinschaft machen.
+_last_good_path = ""
+_last_good: Dict[str, Any] = {}
 
 
 def generate_invite_code() -> str:
@@ -123,18 +128,53 @@ def command_packet(sender: str, target: str, text: str, code: str) -> Dict[str, 
     return sign_packet(payload, code)
 
 
-def _read_raw() -> Dict[str, Any]:
+def _remember_good(data: Dict[str, Any]) -> None:
+    global _last_good_path, _last_good
+    _last_good_path = str(SETTINGS_FILE)
+    _last_good = json.loads(json.dumps(data))
+
+
+def _copy_last_good() -> Optional[Dict[str, Any]]:
+    if _last_good_path != str(SETTINGS_FILE) or not _last_good:
+        return None
+    return json.loads(json.dumps(_last_good))
+
+
+def _load_settings_document() -> Tuple[str, Dict[str, Any]]:
+    """missing, ok oder unreadable. Ein kaputter Zwischenstand wird nicht als leer gelesen."""
     if not SETTINGS_FILE.is_file():
-        return {}
-    try:
-        raw = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return raw if isinstance(raw, dict) else {}
+        return "missing", {}
+    for attempt in range(5):
+        try:
+            raw = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            time.sleep(0.01 * (attempt + 1))
+            continue
+        if isinstance(raw, dict):
+            _remember_good(raw)
+            return "ok", raw
+        time.sleep(0.01 * (attempt + 1))
+    cached = _copy_last_good()
+    if cached is not None:
+        return "ok", cached
+    return "unreadable", {}
+
+
+def _read_raw() -> Dict[str, Any]:
+    _status, data = _load_settings_document()
+    return data
 
 
 def _write_raw(data: Dict[str, Any]) -> None:
-    SETTINGS_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    """Ersetzt die Datei atomar. Leser sehen den alten oder den neuen Stand, nie ein halbes JSON."""
+    payload = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+    tmp = SETTINGS_FILE.with_name(SETTINGS_FILE.name + ".tmp")
+    with tmp.open("w", encoding="utf-8") as handle:
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(tmp, SETTINGS_FILE)
+    _remember_good(data)
 
 
 def mesh_settings() -> Dict[str, Any]:
@@ -152,10 +192,96 @@ def mesh_settings() -> Dict[str, Any]:
     }
 
 
+def _merge_history(older: Any, newer: Any, limit: int = 360) -> List[Dict[str, Any]]:
+    """Beide Verläufe behalten. Ein Punkt ohne Messwert löscht den gespeicherten Wert nicht."""
+    by_ts: Dict[float, Dict[str, Any]] = {}
+    for source in (older, newer):
+        if not isinstance(source, list):
+            continue
+        for point in source:
+            if not isinstance(point, dict):
+                continue
+            try:
+                stamp = round(float(point.get("ts")), 1)
+            except (TypeError, ValueError):
+                continue
+            merged = by_ts.get(stamp, {"ts": stamp})
+            for field in ("feed_in_kw", "soc_percent"):
+                if point.get(field) is not None:
+                    merged[field] = point.get(field)
+            by_ts[stamp] = merged
+    ordered = [by_ts[stamp] for stamp in sorted(by_ts)]
+    if limit > 0:
+        return ordered[-limit:]
+    return ordered
+
+
+def _keep_recorded_stats(baseline: Dict[str, Any], data: Dict[str, Any]) -> None:
+    """Ein dünner neuer Stand darf Code, Mitglieder und schon geschriebene Statistik nicht löschen."""
+    if not isinstance(baseline, dict) or not isinstance(data, dict):
+        return
+    if str(baseline.get("invite_code") or "") and not str(data.get("invite_code") or ""):
+        data["invite_code"] = baseline.get("invite_code")
+    old_codes = baseline.get("invite_codes")
+    if isinstance(old_codes, list) and old_codes and not data.get("invite_codes"):
+        data["invite_codes"] = list(old_codes)
+    removed = {
+        str(item).strip()
+        for item in (data.get("removed_members") or [])
+        if str(item).strip()
+    }
+    old_members = baseline.get("members") if isinstance(baseline.get("members"), dict) else {}
+    members = data.get("members") if isinstance(data.get("members"), dict) else None
+    if members is None:
+        if old_members:
+            data["members"] = json.loads(json.dumps(old_members))
+        return
+    for key, old in old_members.items():
+        if not isinstance(old, dict):
+            continue
+        if key in removed or str(old.get("name") or "") in removed:
+            continue
+        new = members.get(key)
+        if not isinstance(new, dict):
+            members[key] = json.loads(json.dumps(old))
+            continue
+        merged = _merge_history(old.get("history"), new.get("history"))
+        if merged:
+            new["history"] = merged
+        for field in ("feed_in_kwh", "soc_percent", "balance_kwh", "alias", "ask_ct_kwh", "grid_cost_ct_kwh"):
+            if new.get(field) is None and old.get(field) is not None:
+                new[field] = old.get(field)
+        old_connected = old.get("connected_kwh")
+        new_connected = new.get("connected_kwh")
+        if isinstance(old_connected, (int, float)) and (
+            not isinstance(new_connected, (int, float)) or float(new_connected) < float(old_connected)
+        ):
+            new["connected_kwh"] = old_connected
+    data["members"] = members
+    old_admin = baseline.get("member_admin") if isinstance(baseline.get("member_admin"), dict) else {}
+    admin = data.get("member_admin") if isinstance(data.get("member_admin"), dict) else None
+    if admin is None:
+        if old_admin:
+            data["member_admin"] = json.loads(json.dumps(old_admin))
+        return
+    for key, value in old_admin.items():
+        if key not in admin and key not in removed:
+            admin[key] = value
+    data["member_admin"] = admin
+
+
 def _update(mutator) -> Dict[str, Any]:
     with _lock:
-        data = _read_raw()
+        prior = _copy_last_good()
+        status, data = _load_settings_document()
+        if status == "unreadable":
+            # Nicht mit einem leeren Dict überschreiben, sonst sind Code und Mitglieder weg.
+            return prior or {}
+        if prior:
+            _keep_recorded_stats(prior, data)
+        baseline = json.loads(json.dumps(data))
         mutator(data)
+        _keep_recorded_stats(baseline, data)
         _write_raw(data)
         return data
 
@@ -494,14 +620,20 @@ HISTORY_LIMIT = 360
 def append_history(previous: Any, now: float, feed_kw: Optional[float], soc: Optional[float]) -> List[Dict[str, Any]]:
     """Einen Zeitpunkt an den Verlauf dieses Geräts hängen."""
     history = [item for item in (previous or []) if isinstance(item, dict)]
-    point: Dict[str, Any] = {"ts": round(float(now), 1)}
-    if feed_kw is not None:
-        point["feed_in_kw"] = round(float(feed_kw), 3)
-    if soc is not None:
-        point["soc_percent"] = round(float(soc), 1)
     if history and abs(float(history[-1].get("ts") or 0) - float(now)) < 20:
+        point = dict(history[-1])
+        point["ts"] = round(float(now), 1)
+        if feed_kw is not None:
+            point["feed_in_kw"] = round(float(feed_kw), 3)
+        if soc is not None:
+            point["soc_percent"] = round(float(soc), 1)
         history[-1] = point
     else:
+        point = {"ts": round(float(now), 1)}
+        if feed_kw is not None:
+            point["feed_in_kw"] = round(float(feed_kw), 3)
+        if soc is not None:
+            point["soc_percent"] = round(float(soc), 1)
         history.append(point)
     return history[-HISTORY_LIMIT:]
 
@@ -590,12 +722,17 @@ def _absorb_member(keep: Dict[str, Any], extra: Dict[str, Any]) -> None:
         keep["grid_cost_ct_kwh"] = extra["grid_cost_ct_kwh"]
     if not keep.get("ip") and extra.get("ip"):
         keep["ip"] = extra["ip"]
-    if not keep.get("feed_in_kwh") and extra.get("feed_in_kwh") is not None:
+    if keep.get("feed_in_kwh") is None and extra.get("feed_in_kwh") is not None:
         keep["feed_in_kwh"] = extra["feed_in_kwh"]
     if keep.get("balance_kwh") is None and extra.get("balance_kwh") is not None:
         keep["balance_kwh"] = extra["balance_kwh"]
-    if len(extra.get("history") or []) > len(keep.get("history") or []):
-        keep["history"] = extra["history"]
+    old_connected = keep.get("connected_kwh")
+    extra_connected = extra.get("connected_kwh")
+    if isinstance(extra_connected, (int, float)) and (
+        not isinstance(old_connected, (int, float)) or float(extra_connected) > float(old_connected)
+    ):
+        keep["connected_kwh"] = extra_connected
+    keep["history"] = _merge_history(keep.get("history"), extra.get("history"))
     if float(extra.get("seen") or 0) > float(keep.get("seen") or 0):
         keep["seen"] = extra.get("seen")
         if extra.get("feed_in_kw") is not None:

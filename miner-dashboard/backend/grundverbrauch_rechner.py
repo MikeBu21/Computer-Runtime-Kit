@@ -44,6 +44,38 @@ WEATHER_CACHE_SEC = 3600
 # Leichte Anhebung des empfohlenen Zukaufs bei schlechter werdender Woche (Anteil × Score).
 WEATHER_BUMP_FRAC = 0.12
 SOC_HOLD_HORIZONS = (24, 48)
+# Dauer-Zukauf: Speicherziel, drei Tage, morgige Prognose, Minsock-Boden.
+PURCHASE_SOC_TARGET = 63.0
+PURCHASE_SOC_DEADBAND = 3.0
+PURCHASE_SOC_HOURS = 168.0
+PURCHASE_HIST_HOURS = 72.0
+PURCHASE_SOC_LIMIT = 0.25
+PURCHASE_HIST_LIMIT = 0.15
+PURCHASE_FCST_MIN = -0.30
+PURCHASE_FCST_MAX = 0.50
+PURCHASE_FLOOR_EFF = 0.95
+PURCHASE_FLOOR_SKIP_KWH = 0.4
+PURCHASE_STEP_KW = 0.05
+PURCHASE_MAX_KW = 2.0
+PURCHASE_PV_HOUR_KWH = 0.1
+# Angezeigter Zukauf aus den ersten drei Kalendertagen des Monats.
+MONTH_OPEN_DAYS = 3
+MONTH_SHAPE_LIMIT = 0.12
+# Heller Tag im Fenster 8–17 Uhr: shortwave/800 liegt im Mittel bei etwa 0,45, nicht bei 1.
+CLEAR_DAYLIGHT_SUN = 0.45
+WEATHER_SWING = 0.50
+WEATHER_FACTOR_MIN = 0.85
+WEATHER_FACTOR_MAX = 1.35
+# Dauer-Zukauf voraus: Last 7 Tage, PV-Mischung, Speicher über 2 Tage, Glättung.
+FORWARD_LOOKBACK_DAYS = 7
+FORWARD_PV_TOMORROW_W = 0.6
+FORWARD_PV_DAY_AFTER_W = 0.4
+FORWARD_RELIEF_DAYS = 2.0
+FORWARD_BUFFER_SOC = 3.0
+FORWARD_SMOOTH_REL = 0.12
+FORWARD_SMOOTH_ABS = 0.15
+MIN_SOC_HARD_LOW = 30.0
+MIN_SOC_HARD_HIGH = 35.0
 
 
 def _f(value: Any, default: float = 0.0) -> float:
@@ -358,12 +390,18 @@ def _parsed_stamp(raw: Any) -> Optional[datetime]:
 
 def _avg_base(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     if not rows:
-        return {"days": 0, "base_kwh": None, "base_kw": None}
+        return {"days": 0, "base_kwh": None, "base_kw": None, "peak_kwh": None, "peak_date": None}
     base_mean = sum(r["base_kwh"] for r in rows) / len(rows)
+    peak = max(rows, key=lambda row: row["base_kwh"])
+    peak_date = peak.get("date")
+    if hasattr(peak_date, "isoformat"):
+        peak_date = peak_date.isoformat()
     return {
         "days": len(rows),
         "base_kwh": round(base_mean, 2),
         "base_kw": round(base_mean / HOURS, 3),
+        "peak_kwh": round(float(peak["base_kwh"]), 2),
+        "peak_date": None if peak_date is None else str(peak_date)[:10],
     }
 
 
@@ -642,7 +680,7 @@ def build_report_from_parts(
             notices.append(f"{miner['name']} ist in dieser Rechnung aus und zählt nicht zum Zukauf.")
     if weekly == 0:
         alerts.append(
-            "Empfohlener Zukauf ist 0 kW: die gemessene Erzeugung deckt Grundverbrauch und angenommene Dauerläufer inklusive Akkuverlust."
+            "Rest der letzten Tage ist 0 kW: die gemessene Erzeugung deckt Grundverbrauch und angenommene Dauerläufer inklusive Akkuverlust."
         )
 
     return {
@@ -753,11 +791,11 @@ def merge_base_archive(
     return out
 
 
-def describe_history(rows: Sequence[Dict[str, Any]], today: date) -> Dict[str, Any]:
-    """365 Kalendertage bis gestern. Fehlende Tage bleiben leer und füllen sich später."""
-    by_date = {row["date"]: row for row in merge_base_archive([], rows)}
-    end = today - timedelta(days=1)
-    start = end - timedelta(days=YEAR_DAYS - 1)
+def _calendar_slots(
+    by_date: Dict[str, Dict[str, Any]],
+    start: date,
+    end: date,
+) -> List[Dict[str, Any]]:
     slots: List[Dict[str, Any]] = []
     day = start
     while day <= end:
@@ -771,37 +809,44 @@ def describe_history(rows: Sequence[Dict[str, Any]], today: date) -> Dict[str, A
             }
         )
         day += timedelta(days=1)
+    return slots
+
+
+def year_curve_slots(rows: Sequence[Dict[str, Any]], today: date) -> List[Dict[str, Any]]:
+    """Fenster der Jahreskurve: erster gemessener Tag bis gestern, höchstens 365 Tage.
+
+    Jeder Kalendertag in diesem Fenster ist ein Punkt, kurze Lücken dazwischen
+    bleiben leer. Tage vor der ersten Messung fehlen, damit die Kurve die
+    Breite füllt und jeden Tag um einen Punkt wächst. Ab 365 Kalender- oder
+    Messtagen bleiben die letzten 365 Tage stehen.
+    """
+    by_date = {row["date"]: row for row in merge_base_archive([], rows)}
+    end = today - timedelta(days=1)
+    measured = [
+        date.fromisoformat(day)
+        for day, row in by_date.items()
+        if row.get("base_kwh") is not None and day <= end.isoformat()
+    ]
+    if not measured:
+        return []
+    first = min(measured)
+    span = (end - first).days + 1
+    if span >= YEAR_DAYS or len(measured) >= YEAR_DAYS:
+        start = end - timedelta(days=YEAR_DAYS - 1)
+        if start < first:
+            start = first
+    else:
+        start = first
+    return _calendar_slots(by_date, start, end)
+
+
+def describe_history(rows: Sequence[Dict[str, Any]], today: date) -> Dict[str, Any]:
+    """Kennzahlen über 365 Tage bis gestern. Die Jahreskurve nutzt das gewachsene Fenster."""
+    by_date = {row["date"]: row for row in merge_base_archive([], rows)}
+    end = today - timedelta(days=1)
+    start = end - timedelta(days=YEAR_DAYS - 1)
+    slots = _calendar_slots(by_date, start, end)
     measured = [slot for slot in slots if slot["base_kwh"] is not None]
-
-    def _window(end_day: date, length: int = 7) -> Tuple[Optional[float], int]:
-        begin = end_day - timedelta(days=length - 1)
-        values = []
-        cursor = begin
-        while cursor <= end_day:
-            src = by_date.get(cursor.isoformat())
-            if src and src.get("base_kwh") is not None:
-                values.append(src["base_kwh"])
-            cursor += timedelta(days=1)
-        if not values:
-            return None, 0
-        return round(sum(values) / len(values), 2), len(values)
-
-    compare = None
-    if measured:
-        last = date.fromisoformat(measured[-1]["date"])
-        recent, recent_n = _window(last)
-        earlier, earlier_n = _window(last - timedelta(days=28))
-        delta = None
-        if recent is not None and earlier is not None:
-            delta = round(recent - earlier, 2)
-        compare = {
-            "recent_kwh": recent,
-            "recent_days": recent_n,
-            "earlier_kwh": earlier,
-            "earlier_days": earlier_n,
-            "delta_kwh": delta,
-        }
-
     hungriest = max(measured, key=lambda slot: slot["base_kwh"]) if measured else None
     quietest = min(measured, key=lambda slot: slot["base_kwh"]) if measured else None
     weeks: Dict[str, List[float]] = {}
@@ -824,18 +869,21 @@ def describe_history(rows: Sequence[Dict[str, Any]], today: date) -> Dict[str, A
     if sun_rows:
         base_mean = sum(slot["base_kwh"] for slot in sun_rows) / len(sun_rows)
         pv_mean = sum(slot["pv_kwh"] for slot in sun_rows) / len(sun_rows)
+        covered = sum(1 for slot in sun_rows if slot["pv_kwh"] >= slot["base_kwh"])
         sun = {
             "days": len(sun_rows),
+            "covered_days": covered,
             "base_kwh": round(base_mean, 2),
             "pv_kwh": round(pv_mean, 2),
             "cover": round(pv_mean / base_mean, 2) if base_mean > 0 else None,
         }
+    year = year_curve_slots(rows, today)
     return {
-        "year": slots,
+        "year": year,
         "filled_days": len(measured),
-        "year_days": len(slots),
-        "from": slots[0]["date"] if slots else None,
-        "to": slots[-1]["date"] if slots else None,
+        "year_days": len(year),
+        "from": year[0]["date"] if year else None,
+        "to": year[-1]["date"] if year else None,
         "weeks": week_rows,
         "highlights": {
             "hungriest": (
@@ -848,7 +896,6 @@ def describe_history(rows: Sequence[Dict[str, Any]], today: date) -> Dict[str, A
                 if quietest
                 else None
             ),
-            "compare": compare,
         },
         "sun": sun,
     }
@@ -1185,6 +1232,564 @@ def soc_hold_extra_kw(
     return round(extra, 3), info
 
 
+def _clamp_kw(value: float, low: float, high: float) -> float:
+    return max(low, min(high, value))
+
+
+def _round_step(value: float, step: float) -> float:
+    return math.floor((value / step) + 0.5) * step
+
+
+def _first_sun_hour(hours: Any) -> Optional[int]:
+    best: Optional[int] = None
+    if not isinstance(hours, dict):
+        return None
+    for key, val in hours.items():
+        try:
+            hour = int(str(key).replace("h", ""))
+            kwh = float(val or 0)
+        except (TypeError, ValueError):
+            continue
+        if kwh < PURCHASE_PV_HOUR_KWH:
+            continue
+        if best is None or hour < best:
+            best = hour
+    return best
+
+
+def hours_until_morning_sun(now: datetime, today_hours: Any, tomorrow_hours: Any) -> float:
+    """Stunden bis zur ersten Stunde mit mindestens 0,1 kWh Sonne. Mindestens 1."""
+    today_first = _first_sun_hour(today_hours)
+    if today_first is not None and now.hour < today_first:
+        target = now.replace(hour=today_first, minute=0, second=0, microsecond=0)
+    else:
+        morning = _first_sun_hour(tomorrow_hours)
+        if morning is None:
+            morning = 7
+        target = (now + timedelta(days=1)).replace(
+            hour=morning, minute=0, second=0, microsecond=0
+        )
+    return max(1.0, (target - now).total_seconds() / 3600.0)
+
+
+def purchase_setpoint_kw(
+    *,
+    soc_percent: Optional[float],
+    storage_kwh: Optional[float],
+    min_soc_percent: float,
+    daily_base_kwh: Optional[float],
+    tomorrow_pv_kwh: Optional[float],
+    hours_until_sun: float,
+    soc_mean_3d: Optional[float] = None,
+    target_soc: float = PURCHASE_SOC_TARGET,
+) -> Dict[str, Any]:
+    """Empfohlener Dauer-Zukauf in kW.
+
+    P_soc gleicht den Speicher langsam auf das Ziel aus (168 h, Totzone,
+    begrenzt). P_hist macht dasselbe mit dem Mittel der letzten drei Tage.
+    P_fcst setzt die Tageslast gegen die PV von morgen. Der Minsock-Boden
+    hebt das Ergebnis, wenn die Nacht sonst unter die Grenze fällt.
+    Angezeigt wird das gerundete, auf 0…2 kW geklemmte Ergebnis.
+    """
+    empty = {
+        "kw": None,
+        "p_soc": 0.0,
+        "p_hist": 0.0,
+        "p_fcst": 0.0,
+        "p_raw": None,
+        "p_floor": 0.0,
+        "hours_until_sun": None,
+        "daily_base_kwh": None,
+    }
+    if soc_percent is None or storage_kwh is None or storage_kwh <= 0:
+        return empty
+    storage = float(storage_kwh)
+    horizon = max(1.0, float(hours_until_sun))
+    gap = float(target_soc) - float(soc_percent)
+    if abs(gap) <= PURCHASE_SOC_DEADBAND:
+        p_soc = 0.0
+    else:
+        p_soc = _clamp_kw(gap / 100.0 * storage / PURCHASE_SOC_HOURS, -PURCHASE_SOC_LIMIT, PURCHASE_SOC_LIMIT)
+    if soc_mean_3d is None:
+        p_hist = 0.0
+    else:
+        hist_gap = float(target_soc) - float(soc_mean_3d)
+        p_hist = _clamp_kw(
+            hist_gap / 100.0 * storage / PURCHASE_HIST_HOURS,
+            -PURCHASE_HIST_LIMIT,
+            PURCHASE_HIST_LIMIT,
+        )
+    daily = None if daily_base_kwh is None else max(0.0, float(daily_base_kwh))
+    if daily is None or tomorrow_pv_kwh is None:
+        p_fcst = 0.0
+    else:
+        p_fcst = _clamp_kw(
+            (daily - float(tomorrow_pv_kwh)) / HOURS,
+            PURCHASE_FCST_MIN,
+            PURCHASE_FCST_MAX,
+        )
+    p_raw = p_soc + p_hist + p_fcst
+    p_floor = 0.0
+    if daily is not None:
+        e_load = (daily / HOURS) * horizon
+        e_above = (float(soc_percent) - float(min_soc_percent)) / 100.0 * storage
+        buffer_kwh = PURCHASE_SOC_DEADBAND / 100.0 * storage
+        e_floor = max(0.0, e_load + buffer_kwh - e_above)
+        if e_floor >= PURCHASE_FLOOR_SKIP_KWH:
+            p_floor = e_floor / (PURCHASE_FLOOR_EFF * horizon)
+    held = _clamp_kw(max(p_raw, p_floor), 0.0, PURCHASE_MAX_KW)
+    shown = round(_round_step(held, PURCHASE_STEP_KW), 2)
+    return {
+        "kw": shown,
+        "p_soc": round(p_soc, 3),
+        "p_hist": round(p_hist, 3),
+        "p_fcst": round(p_fcst, 3),
+        "p_raw": round(p_raw, 3),
+        "p_floor": round(p_floor, 3),
+        "hours_until_sun": round(horizon, 2),
+        "daily_base_kwh": round(daily, 2) if daily is not None else None,
+    }
+
+
+def _recent_daily_base_kwh(algo_state: Dict[str, Any], days: Sequence[Dict[str, Any]], today: date) -> Optional[float]:
+    bases: List[float] = []
+    for row in ((algo_state.get("energy_week_plan") or {}).get("days") or [])[:3]:
+        try:
+            value = float((row.get("daily_totals") or {}).get("base_kwh") or 0)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            bases.append(value)
+    if bases:
+        return sum(bases) / len(bases)
+    totals: List[float] = []
+    for day in days:
+        try:
+            day_date = date.fromisoformat(str(day.get("date") or "")[:10])
+        except ValueError:
+            continue
+        if day_date >= today:
+            continue
+        hourly = _hourly_or_zero(day.get("base_hourly"))
+        total = sum(hourly)
+        if _measured_hours(hourly) >= MIN_HOURS and total > 0:
+            totals.append(total)
+    last = totals[-3:]
+    if not last:
+        return None
+    return sum(last) / len(last)
+
+
+def _complete_base_totals(
+    algo_state: Dict[str, Any],
+    days: Sequence[Dict[str, Any]],
+    today: date,
+    lookback: int,
+) -> List[float]:
+    """Grundverbrauch der letzten vollständigen Tage, neueste zuerst aus dem Wochenplan."""
+    bases: List[float] = []
+    for row in (algo_state.get("energy_week_plan") or {}).get("days") or []:
+        try:
+            value = float((row.get("daily_totals") or {}).get("base_kwh") or 0)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            bases.append(value)
+        if len(bases) >= lookback:
+            break
+    if len(bases) >= max(3, lookback // 2):
+        return bases[:lookback]
+    totals: List[float] = []
+    for day in days:
+        try:
+            day_date = date.fromisoformat(str(day.get("date") or "")[:10])
+        except ValueError:
+            continue
+        if day_date >= today:
+            continue
+        hourly = _hourly_or_zero(day.get("base_hourly"))
+        total = sum(hourly)
+        if _measured_hours(hourly) >= MIN_HOURS and total > 0:
+            totals.append(total)
+    return totals[-lookback:]
+
+
+def hard_min_soc_percent(raw: Any) -> float:
+    """Mindest-SoC aus der Steuerung, Korridor 30–35 %. Keine Planungsbänder."""
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = MIN_SOC_HARD_HIGH
+    return _clamp_kw(value, MIN_SOC_HARD_LOW, MIN_SOC_HARD_HIGH)
+
+
+def forward_purchase_kw(
+    *,
+    soc_percent: Optional[float],
+    storage_kwh: Optional[float],
+    min_soc_percent: float,
+    daily_base_kwh: Optional[float],
+    base_load_scale: float,
+    tomorrow_pv_kwh: Optional[float],
+    day_after_pv_kwh: Optional[float],
+    forecast_trust: float,
+    hours_until_sun: float,
+) -> Dict[str, Any]:
+    """Ruhiger Dauer-Zukauf: Lastbasis, PV-Gutschrift, Speicher, Nachtboden.
+
+    Last = 7-Tage-Mittel × base_load_scale.
+    PV-Gutschrift = Mischung morgen/übermorgen × Trust, gedeckelt bei der Last.
+    Speicher-Entlastung = Headroom über Min-SoC+Puffer, gestreckt auf 2 Tage.
+    Roh-kW = Restdefizit / 24. Boden greift nur, wenn sonst Min-SoC reißt.
+    """
+    empty: Dict[str, Any] = {
+        "kw": None,
+        "p_raw": None,
+        "p_floor": 0.0,
+        "p_held": None,
+        "load_kwh": None,
+        "pv_credit_kwh": None,
+        "relief_kwh": None,
+        "deficit_kwh": None,
+        "headroom_kwh": None,
+        "min_soc_percent": None,
+        "hours_until_sun": None,
+        "short": False,
+    }
+    if daily_base_kwh is None or daily_base_kwh <= 0:
+        return empty
+    if storage_kwh is None or storage_kwh <= 0 or soc_percent is None:
+        return empty
+    min_soc = hard_min_soc_percent(min_soc_percent)
+    try:
+        scale = float(base_load_scale)
+    except (TypeError, ValueError):
+        scale = 1.0
+    scale = max(0.5, min(2.0, scale))
+    load_kwh = max(0.0, float(daily_base_kwh) * scale)
+    trust = _clamp_kw(_f(forecast_trust, 0.85), 0.3, 1.0)
+    pv_tom = max(0.0, _f(tomorrow_pv_kwh))
+    pv_after = max(0.0, _f(day_after_pv_kwh))
+    if tomorrow_pv_kwh is None and day_after_pv_kwh is None:
+        pv_blend = 0.0
+    elif day_after_pv_kwh is None:
+        pv_blend = pv_tom
+    elif tomorrow_pv_kwh is None:
+        pv_blend = pv_after
+    else:
+        pv_blend = FORWARD_PV_TOMORROW_W * pv_tom + FORWARD_PV_DAY_AFTER_W * pv_after
+    pv_credit = min(load_kwh, pv_blend * trust)
+    storage = float(storage_kwh)
+    headroom = max(0.0, (float(soc_percent) - min_soc) / 100.0 * storage)
+    buffer_kwh = FORWARD_BUFFER_SOC / 100.0 * storage
+    usable = max(0.0, headroom - buffer_kwh)
+    relief = usable / FORWARD_RELIEF_DAYS
+    deficit = max(0.0, load_kwh - pv_credit - relief)
+    p_raw = deficit / HOURS
+    horizon = max(1.0, float(hours_until_sun))
+    e_load = (load_kwh / HOURS) * horizon
+    e_above = max(0.0, (float(soc_percent) - min_soc) / 100.0 * storage)
+    e_floor = max(0.0, e_load + buffer_kwh - e_above)
+    p_floor = 0.0
+    if e_floor >= PURCHASE_FLOOR_SKIP_KWH:
+        p_floor = e_floor / (PURCHASE_FLOOR_EFF * horizon)
+    held = _clamp_kw(max(p_raw, p_floor), 0.0, PURCHASE_MAX_KW)
+    shown = round(_round_step(held, PURCHASE_STEP_KW), 2)
+    return {
+        "kw": shown,
+        "p_raw": round(p_raw, 3),
+        "p_floor": round(p_floor, 3),
+        "p_held": round(held, 3),
+        "load_kwh": round(load_kwh, 2),
+        "pv_credit_kwh": round(pv_credit, 2),
+        "relief_kwh": round(relief, 2),
+        "deficit_kwh": round(deficit, 2),
+        "headroom_kwh": round(headroom, 2),
+        "min_soc_percent": round(min_soc, 1),
+        "hours_until_sun": round(horizon, 2),
+        "short": bool(p_floor > p_raw + 0.02),
+        "base_load_scale": round(scale, 4),
+        "forecast_trust": round(trust, 3),
+        "pv_blend_kwh": round(pv_blend, 2),
+    }
+
+
+def apply_forward_smooth(
+    prev: Optional[Dict[str, Any]],
+    raw_kw: Optional[float],
+    floor_kw: float,
+    *,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Aktualisiert den Dauerzukauf bei jedem Auslesen, mit Schritt-Glättung gegen Schwanken."""
+    now = now or datetime.now()
+    prev = dict(prev or {})
+    try:
+        prev_kw = float(prev["kw"]) if prev.get("kw") is not None else None
+    except (TypeError, ValueError):
+        prev_kw = None
+    if raw_kw is None:
+        return {
+            "kw": prev_kw,
+            "raw_kw": None,
+            "floor_kw": round(max(0.0, float(floor_kw)), 3),
+            "updated": False,
+            "updated_at": prev.get("updated_at"),
+            "floored": False,
+        }
+    target = max(0.0, float(raw_kw))
+    floor = max(0.0, float(floor_kw))
+    aimed = max(target, floor)
+    floored = floor > target + 0.005
+    smoothed = _clamp_step(prev_kw, aimed, FORWARD_SMOOTH_REL, FORWARD_SMOOTH_ABS)
+    held = _clamp_kw(smoothed, 0.0, PURCHASE_MAX_KW)
+    shown = round(_round_step(held, PURCHASE_STEP_KW), 2)
+    changed = prev_kw is None or abs(shown - float(prev_kw)) >= 0.005
+    return {
+        "kw": shown,
+        "raw_kw": round(target, 3),
+        "floor_kw": round(floor, 3),
+        "smoothed_kw": round(smoothed, 3),
+        "updated": changed,
+        "updated_at": now.isoformat(timespec="seconds"),
+        "floored": floored,
+    }
+
+
+def _forward_for_report(
+    days: Sequence[Dict[str, Any]],
+    today: date,
+    current_soc: Optional[float],
+    storage_kwh: Optional[float],
+    prev_forward: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Baut den angezeigten Dauer-Zukauf aus Steuerungsdaten und Glättung."""
+    bases: List[float] = []
+    try:
+        from control_algorithm.config import load_config, load_state
+        from control_algorithm.soc_calibration import normalize_base_load_scale
+
+        algo = load_state()
+        cfg = load_config()
+        min_soc = hard_min_soc_percent(cfg.get("min_soc_percent"))
+        if storage_kwh is None:
+            raw_storage = cfg.get("storage_kwh")
+            storage_kwh = None if raw_storage is None else float(raw_storage)
+        bases = _complete_base_totals(algo, days, today, FORWARD_LOOKBACK_DAYS)
+        daily = sum(bases) / len(bases) if bases else None
+        scale = normalize_base_load_scale(algo.get("base_load_scale"))
+        trust = _f(algo.get("forecast_trust"), 0.85)
+        raw_tom = algo.get("pv_yield_tomorrow_kwh")
+        raw_after = algo.get("pv_yield_day_after_kwh")
+        tomorrow_pv = None if raw_tom is None else float(raw_tom)
+        day_after_pv = None if raw_after is None else float(raw_after)
+        horizon = hours_until_morning_sun(
+            datetime.now(),
+            algo.get("pv_forecast_today_hours"),
+            algo.get("pv_forecast_tomorrow_hours"),
+        )
+    except Exception:
+        return {"kw": None, "short": False, "parts": {}, "lock": {}, "days_used": 0}
+    parts = forward_purchase_kw(
+        soc_percent=current_soc,
+        storage_kwh=storage_kwh,
+        min_soc_percent=min_soc,
+        daily_base_kwh=daily,
+        base_load_scale=scale,
+        tomorrow_pv_kwh=tomorrow_pv,
+        day_after_pv_kwh=day_after_pv,
+        forecast_trust=trust,
+        hours_until_sun=horizon,
+    )
+    lock = apply_forward_smooth(
+        prev_forward,
+        parts.get("p_raw") if parts.get("p_raw") is not None else parts.get("kw"),
+        _f(parts.get("p_floor")),
+    )
+    if lock.get("kw") is not None:
+        parts = dict(parts)
+        parts["kw"] = lock["kw"]
+        parts["smoothed_kw"] = lock.get("smoothed_kw")
+        parts["floored"] = lock.get("floored")
+        parts["days_used"] = len(bases)
+    return {
+        "kw": lock.get("kw"),
+        "short": bool(parts.get("short") or lock.get("floored")),
+        "parts": parts,
+        "lock": lock,
+        "days_used": len(bases),
+    }
+
+
+def _purchase_for_report(
+    days: Sequence[Dict[str, Any]],
+    today: date,
+    current_soc: Optional[float],
+    storage_kwh: Optional[float],
+) -> Dict[str, Any]:
+    """Liest Prognose und Tageslast einmal und rechnet den angezeigten Zukauf."""
+    try:
+        from control_algorithm.config import load_config, load_state
+
+        algo = load_state()
+        cfg = load_config()
+        min_soc = hard_min_soc_percent(cfg.get("min_soc_percent"))
+        if storage_kwh is None:
+            raw_storage = cfg.get("storage_kwh")
+            storage_kwh = None if raw_storage is None else float(raw_storage)
+        raw_pv = algo.get("pv_yield_tomorrow_kwh")
+        tomorrow_pv = None if raw_pv is None else float(raw_pv)
+        horizon = hours_until_morning_sun(
+            datetime.now(),
+            algo.get("pv_forecast_today_hours"),
+            algo.get("pv_forecast_tomorrow_hours"),
+        )
+        daily = _recent_daily_base_kwh(algo, days, today)
+    except Exception:
+        return {"kw": None}
+    return purchase_setpoint_kw(
+        soc_percent=current_soc,
+        storage_kwh=storage_kwh,
+        min_soc_percent=min_soc,
+        daily_base_kwh=daily,
+        tomorrow_pv_kwh=tomorrow_pv,
+        hours_until_sun=horizon,
+    )
+
+
+def month_shape_factor(daily_kwh: Sequence[float]) -> float:
+    """Leichter Sprung: der letzte Monatstag zieht proportional am Mittel.
+
+    Halb der Abstand zum Mittel, halb der Schritt vom Vortag. Begrenzt auf
+    ±12 %, damit der Zukauf mit dem Haushalt mitgeht, ohne zu springen.
+    Nächsten Monat gilt dieselbe Regel auf dessen ersten Tagen.
+    """
+    if len(daily_kwh) < 2:
+        return 1.0
+    mean = sum(float(v) for v in daily_kwh) / len(daily_kwh)
+    if mean <= 0.05:
+        return 1.0
+    latest = float(daily_kwh[-1])
+    prev = float(daily_kwh[-2])
+    jump = 0.5 * ((latest / mean) - 1.0) + 0.5 * ((latest - prev) / mean)
+    return 1.0 + _clamp_kw(jump, -MONTH_SHAPE_LIMIT, MONTH_SHAPE_LIMIT)
+
+
+def weather_consumption_factor(sun_factors: Sequence[Any]) -> Tuple[float, Optional[float]]:
+    """Hebt oder senkt den Zukauf nach dem Tageslicht der nächsten Woche.
+
+    1,0 bei einem hellen Tag (Mittel etwa 0,45). Dunkler hebt, heller senkt,
+    höchstens +35 % und −15 %.
+    """
+    vals: List[float] = []
+    for raw in sun_factors:
+        if raw is None:
+            continue
+        try:
+            vals.append(float(raw))
+        except (TypeError, ValueError):
+            continue
+    if not vals or CLEAR_DAYLIGHT_SUN <= 0:
+        return 1.0, None
+    sun = sum(vals) / len(vals)
+    tilt = WEATHER_SWING * (CLEAR_DAYLIGHT_SUN - sun) / CLEAR_DAYLIGHT_SUN
+    return _clamp_kw(1.0 + tilt, WEATHER_FACTOR_MIN, WEATHER_FACTOR_MAX), sun
+
+
+def month_open_zukauf_kw(daily_kwh: Sequence[float], sun_factors: Sequence[Any]) -> Optional[float]:
+    """kW aus dem Monatsanfang, leicht skaliert, mal Wetterfaktor der nächsten Woche."""
+    usable = [max(0.0, float(v)) for v in daily_kwh if v is not None and float(v) > 0]
+    if not usable:
+        return None
+    shape = month_shape_factor(usable)
+    factor, _sun = weather_consumption_factor(sun_factors)
+    shaped = (sum(usable) / len(usable)) * shape
+    return round(max(0.0, shaped / HOURS * factor), 2)
+
+
+def _opening_month_rows(days: Sequence[Dict[str, Any]], today: date) -> List[Dict[str, Any]]:
+    """Vollständige Tage unter den ersten drei Kalendertagen des Monats."""
+    start = today.replace(day=1)
+    end = start + timedelta(days=MONTH_OPEN_DAYS)
+    picked: List[Dict[str, Any]] = []
+    for day in days:
+        try:
+            day_date = date.fromisoformat(str(day.get("date") or "")[:10])
+        except ValueError:
+            continue
+        if day_date < start or day_date >= end or day_date >= today:
+            continue
+        hourly = _hourly_or_zero(day.get("base_hourly"))
+        total = sum(hourly)
+        if _measured_hours(hourly) < MIN_HOURS or total <= 0:
+            continue
+        pv_raw = day.get("pv_hourly")
+        pv = _hourly_or_zero(pv_raw) if isinstance(pv_raw, list) and len(pv_raw) >= HOURS else None
+        night = 0.0
+        for hour in range(HOURS):
+            if pv is not None:
+                is_night = pv[hour] < PURCHASE_PV_HOUR_KWH
+            else:
+                is_night = hour < 7 or hour >= 18
+            if is_night:
+                night += hourly[hour]
+        picked.append({"date": day_date, "base_kwh": total, "night_kwh": night})
+    picked.sort(key=lambda row: row["date"])
+    return picked
+
+
+def month_open_for_report(
+    days: Sequence[Dict[str, Any]],
+    today: date,
+    weather_meta: Optional[Dict[str, Any]],
+    current_soc: Optional[float],
+    storage_kwh: Optional[float],
+    min_soc_percent: Optional[float],
+) -> Dict[str, Any]:
+    """Nur die Anzeige. Der Dauer-Zukauf ins BMS liest diese Zahl nicht."""
+    empty: Dict[str, Any] = {
+        "kw": None,
+        "short": False,
+        "shape": None,
+        "weather_factor": None,
+        "sun_mean": None,
+        "daily_kwh": None,
+        "night_kwh": None,
+        "days_used": 0,
+        "headroom_kwh": None,
+    }
+    rows = _opening_month_rows(days, today)
+    if not rows:
+        return empty
+    bases = [float(row["base_kwh"]) for row in rows]
+    shape = month_shape_factor(bases)
+    suns = [
+        row.get("sun_factor")
+        for row in ((weather_meta or {}).get("days") or [])
+        if isinstance(row, dict)
+    ]
+    factor, sun = weather_consumption_factor(suns)
+    mean = sum(bases) / len(bases)
+    night_mean = sum(float(row["night_kwh"]) for row in rows) / len(rows)
+    night_shaped = night_mean * shape
+    headroom = None
+    short = False
+    if current_soc is not None and storage_kwh is not None and storage_kwh > 0 and min_soc_percent is not None:
+        headroom = (float(current_soc) - float(min_soc_percent)) / 100.0 * float(storage_kwh)
+        short = night_shaped > max(0.0, headroom)
+    return {
+        "kw": month_open_zukauf_kw(bases, suns),
+        "short": short,
+        "shape": round(shape, 3),
+        "weather_factor": round(factor, 3),
+        "sun_mean": None if sun is None else round(sun, 3),
+        "daily_kwh": round(mean, 2),
+        "night_kwh": round(night_shaped, 2),
+        "days_used": len(rows),
+        "headroom_kwh": None if headroom is None else round(headroom, 2),
+    }
+
+
 def get_report(base_dir: str) -> Dict[str, Any]:
     path = _state_path(base_dir)
     today = date.today()
@@ -1248,6 +1853,38 @@ def get_report(base_dir: str) -> Dict[str, Any]:
         state["base_archive"] = archive
         report["base_history"] = archive
         report.update(describe_history(archive, today))
+        # Angezeigter Dauer-Zukauf: bei jedem Auslesen aktuell, BMS-Schreiben unverändert.
+        # weekly/daily bleibt der Rest der letzten Tage und geht nicht ins Register.
+        prev_forward = (
+            state.get("forward_purchase")
+            if isinstance(state.get("forward_purchase"), dict)
+            else {}
+        )
+        forward = _forward_for_report(days, today, current_soc, storage, prev_forward)
+        lock = forward.get("lock") or {}
+        state["forward_purchase"] = {
+            "kw": lock.get("kw"),
+            "updated_at": lock.get("updated_at"),
+            "raw_kw": lock.get("raw_kw"),
+            "floor_kw": lock.get("floor_kw"),
+        }
+        report["recommended_kw"] = lock.get("kw")
+        state["recommended_kw"] = lock.get("kw")
+        report["recommended_short"] = bool(forward.get("short"))
+        parts = dict(forward.get("parts") or {})
+        parts["days_used"] = forward.get("days_used")
+        parts["updated_at"] = lock.get("updated_at")
+        report["recommended_parts"] = parts
+        if lock.get("kw") is not None:
+            report["formula"] = (
+                "Empfohlener Zukauf = (7-Tage-Grundverbrauch × base_load_scale "
+                "− PV-Gutschrift aus morgen/übermorgen × forecast_trust, gedeckelt bei der Last "
+                "− Speicher-Headroom über Mindest-SoC plus Puffer, gestreckt auf 2 Tage) / 24. "
+                "Nachtboden nur wenn sonst das Mindest-SoC (30–35 %, dynamisch aus der Steuerung) "
+                "vor der nächsten PV reißt. Glättung max. 12 % oder 0,15 kW. "
+                "Die Anzeige wird bei jedem Auslesen aktualisiert. "
+                "Nur bei eingeschaltetem Schalter Planung, keine Netzspitzen geht dieser Wert ins BMS."
+            )
         _save_state(path, state)
         return report
 
@@ -1305,14 +1942,17 @@ def save_targets(base_dir: str, updates: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def recommended_import_kw(base_dir: str) -> Optional[float]:
-    """Gespeicherter empfohlener Zukauf in kW, ohne neue Rechnung."""
+    """Gespeicherter angezeigter Zukauf in kW, ohne neue Rechnung.
+
+    Das ist der Wert der Karte Empfohlener Zukauf. Der Rest der letzten Tage
+    (weekly/daily, früher 0,02 kW) wird hier nicht gelesen.
+    """
     path = _state_path(base_dir)
     with _lock:
-        rec = _load_state(path).get("recommendation") or {}
-    raw = rec.get("daily_kw")
-    if raw is None:
-        raw = rec.get("weekly_kw")
+        raw = _load_state(path).get("recommended_kw")
     try:
+        if raw is None:
+            return None
         return round(max(0.0, float(raw)), 3)
     except (TypeError, ValueError):
         return None

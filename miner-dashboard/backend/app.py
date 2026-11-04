@@ -15,6 +15,10 @@ try:
 except Exception:
     pass
 
+import einmal_clone
+
+einmal_clone.register(app)
+
 
 def _wants_json() -> bool:
     if request.form.get("_ajax") == "1":

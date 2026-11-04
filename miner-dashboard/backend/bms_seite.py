@@ -1943,10 +1943,10 @@ def planning_write_kw(raw: Optional[float]) -> Optional[float]:
 
 
 def apply_planning_hold(settings: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Planung, keine Netzspitzen: empfohlener Zukauf ab 0,2 kW ins BMS-Register.
+    """Planung, keine Netzspitzen: angezeigter Zukauf ab 0,2 kW ins BMS-Register.
 
-    Liegt die Empfehlung darunter, bleibt das Register unangetastet. Hielt die Planung
-    vorher einen Wert, wird er freigegeben, damit 0,02 kW nicht stehen bleibt.
+    Nur bei eingeschaltetem Schalter. Aus schreibt keinen Zukauf. Hielt die Planung
+    vorher einen Wert, wird er freigegeben. Der Rest der letzten Tage (0,02 kW) zählt nicht.
     """
     if settings is None:
         settings = load_settings()

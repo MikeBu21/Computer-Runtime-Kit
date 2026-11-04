@@ -192,20 +192,40 @@
     return "still seit " + Math.round(sec) + " s";
   }
 
+  let refreshSerial = 0;
+  let communityShown = false;
+
   async function refresh() {
-    const response = await fetch("/api/energiegemeinschaft/mesh", { credentials: "same-origin" });
-    if (!response.ok) return;
-    const data = await response.json();
+    const serial = ++refreshSerial;
+    let response;
+    try {
+      response = await fetch("/api/energiegemeinschaft/mesh", { credentials: "same-origin" });
+    } catch (err) {
+      return;
+    }
+    if (serial !== refreshSerial || !response.ok) return;
+    let data;
+    try {
+      data = await response.json();
+    } catch (err) {
+      return;
+    }
+    if (serial !== refreshSerial || !data) return;
+    const members = data.members || [];
+    // Ein zu schneller Poll kann einen leeren Zwischenstand zeichnen. Code und
+    // Mitglieder, die schon sichtbar sind, bleiben stehen.
+    if (!data.invite_code && members.length === 0 && communityShown) return;
     codeEl.textContent = data.invite_code || "noch keiner";
     document.getElementById("eg_sum").textContent = (data.feed_sum_kw == null ? "–" : data.feed_sum_kw) + " kW";
-    document.getElementById("eg_fresh").textContent = data.fresh_count + " von " + (data.members || []).length + " in der letzten Minute";
+    document.getElementById("eg_fresh").textContent = data.fresh_count + " von " + members.length + " in der letzten Minute";
     const net = data.tailscale_ok
       ? (data.self_name + " · " + (data.self_ip || "keine Adresse") + " · " + data.peer_count + " Gegenstellen")
       : ("Tailscale nicht bereit. " + (data.tailscale_error || ""));
     document.getElementById("eg_net").textContent = net;
-    latestMembers = data.members || [];
+    latestMembers = members;
     renderMembers(latestMembers);
     renderMemberSettings();
+    if (data.invite_code || members.length) communityShown = true;
   }
 
   const peerCards = {};

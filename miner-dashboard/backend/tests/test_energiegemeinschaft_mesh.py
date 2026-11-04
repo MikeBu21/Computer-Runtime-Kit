@@ -106,6 +106,11 @@ class TestEnergiegemeinschaftMesh(unittest.TestCase):
         self.assertEqual(martin[-1]["soc_percent"], 71)
         self.assertEqual(len(other), 1)
         self.assertEqual(other[0]["soc_percent"], 40)
+        # Ein Folgewert ohne Speicherstand darf den eben geschriebenen Stand nicht löschen.
+        kept_soc = append_history(martin, 170, 1.6, None)
+        self.assertEqual(len(kept_soc), 2)
+        self.assertEqual(kept_soc[-1]["feed_in_kw"], 1.6)
+        self.assertEqual(kept_soc[-1]["soc_percent"], 71)
 
     def test_current_reading_is_the_first_point_immediately(self):
         item = {"feed_in_kw": 2.4, "soc_percent": 81, "seen": 1000, "history": []}
@@ -364,6 +369,193 @@ class TestEnergiegemeinschaftMesh(unittest.TestCase):
                 mesh._remember_member("pi-2-1", "100.1.1.2", 1.4, 72, 4.7, 0)
                 stored = json.loads(path.read_text(encoding="utf-8"))["members"]["pi-2-1"]
                 self.assertEqual(stored["balance_kwh"], 0)
+        finally:
+            path.unlink(missing_ok=True)
+
+
+class TestSettingsDoNotFlickerBlank(unittest.TestCase):
+    def _path(self):
+        import tempfile
+        from pathlib import Path
+
+        return Path(tempfile.mkstemp(suffix=".json")[1])
+
+    def test_half_written_file_still_shows_code_and_members(self):
+        import energiegemeinschaft_mesh as mesh
+
+        path = self._path()
+        intact = {
+            "invite_code": "EG-AAAA-BBBB",
+            "members": {
+                "raspberrypi2": {
+                    "name": "raspberrypi2",
+                    "alias": "Ludwig",
+                    "ip": "100.98.134.23",
+                }
+            },
+        }
+        path.write_text(json.dumps(intact), encoding="utf-8")
+        torn = '{"invite_code": "EG-AAAA-BBBB", "members": {"raspberrypi2": '
+        try:
+            with patch.object(mesh, "SETTINGS_FILE", path):
+                mesh._last_good_path = ""
+                mesh._last_good = {}
+                seen = mesh.mesh_settings()
+                self.assertTrue(seen["invite_code"])
+                self.assertEqual(seen["members"]["raspberrypi2"]["alias"], "Ludwig")
+                path.write_text(torn, encoding="utf-8")
+                seen = mesh.mesh_settings()
+                self.assertEqual(seen["invite_code"], "EG-AAAA-BBBB")
+                self.assertEqual(seen["members"]["raspberrypi2"]["alias"], "Ludwig")
+                mesh._remember_member("raspberrypi2-1", "100.91.87.103", 1.1, 40, 2.0)
+                stored = json.loads(path.read_text(encoding="utf-8"))
+                self.assertEqual(stored["invite_code"], "EG-AAAA-BBBB")
+                self.assertEqual(stored["members"]["raspberrypi2"]["alias"], "Ludwig")
+                self.assertIn("raspberrypi2-1", stored["members"])
+        finally:
+            path.unlink(missing_ok=True)
+            path.with_name(path.name + ".tmp").unlink(missing_ok=True)
+
+    def test_unreadable_file_without_a_prior_read_is_left_alone(self):
+        import energiegemeinschaft_mesh as mesh
+
+        path = self._path()
+        torn = '{"invite_code": "EG-AAAA-BBBB", "members": {"raspberrypi2": '
+        path.write_text(torn, encoding="utf-8")
+        try:
+            with patch.object(mesh, "SETTINGS_FILE", path):
+                mesh._last_good_path = ""
+                mesh._last_good = {}
+                mesh._remember_member("raspberrypi2-1", "100.91.87.103", 1.1, 40, 2.0)
+                self.assertEqual(path.read_text(encoding="utf-8"), torn)
+                self.assertEqual(mesh.mesh_settings()["invite_code"], "")
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_parallel_read_never_sees_a_partial_community_file(self):
+        import threading
+        import time
+
+        import energiegemeinschaft_mesh as mesh
+
+        path = self._path()
+        path.write_text(
+            json.dumps({"invite_code": "EG-AAAA-BBBB", "members": {}}),
+            encoding="utf-8",
+        )
+        errors = []
+        stop = threading.Event()
+
+        def writer():
+            while not stop.is_set():
+                mesh._remember_member("raspberrypi2", "100.98.134.23", 0.4, 55, 1.0)
+
+        try:
+            with patch.object(mesh, "SETTINGS_FILE", path):
+                mesh._last_good_path = ""
+                mesh._last_good = {}
+                thread = threading.Thread(target=writer)
+                thread.start()
+                started = time.time()
+                while time.time() - started < 0.35:
+                    try:
+                        data = json.loads(path.read_text(encoding="utf-8"))
+                    except (OSError, json.JSONDecodeError) as exc:
+                        errors.append(type(exc).__name__)
+                        continue
+                    if not data.get("invite_code") or not isinstance(data.get("members"), dict):
+                        errors.append("blank")
+                stop.set()
+                thread.join(timeout=2)
+            self.assertEqual(errors, [])
+            stored = json.loads(path.read_text(encoding="utf-8"))
+            self.assertTrue(stored["invite_code"])
+            self.assertIn("raspberrypi2", stored["members"])
+        finally:
+            path.unlink(missing_ok=True)
+            path.with_name(path.name + ".tmp").unlink(missing_ok=True)
+
+    def test_rewrite_keeps_history_and_today_feed_when_a_packet_omits_them(self):
+        import energiegemeinschaft_mesh as mesh
+
+        path = self._path()
+        history = [
+            {"ts": 1000 + index * 30, "feed_in_kw": 0.2, "soc_percent": 40 + index}
+            for index in range(5)
+        ]
+        path.write_text(
+            json.dumps(
+                {
+                    "invite_code": "EG-AAAA-BBBB",
+                    "members": {
+                        "raspberrypi2-1": {
+                            "name": "raspberrypi2-1",
+                            "alias": "Haus Martin",
+                            "ip": "100.91.87.103",
+                            "feed_in_kwh": 1.25,
+                            "connected_kwh": 4.5,
+                            "soc_percent": 44,
+                            "balance_kwh": 8.97,
+                            "seen": 1120,
+                            "history": history,
+                        },
+                        "raspberrypi2": {
+                            "name": "raspberrypi2",
+                            "alias": "Ludwig",
+                            "ip": "100.98.134.23",
+                            "feed_in_kwh": 2.5,
+                            "connected_kwh": 9,
+                            "history": [{"ts": 1100, "feed_in_kw": 0.3, "soc_percent": 39}],
+                        },
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        try:
+            with patch.object(mesh, "SETTINGS_FILE", path):
+                mesh._last_good_path = ""
+                mesh._last_good = {}
+                mesh._remember_member("raspberrypi2-1", "100.91.87.103", 0.4, None, None, None)
+
+                def wipe(data):
+                    data["invite_code"] = ""
+                    data["members"] = {
+                        "raspberrypi2-1": {
+                            "name": "raspberrypi2-1",
+                            "history": [],
+                            "feed_in_kwh": None,
+                            "connected_kwh": 0,
+                        }
+                    }
+
+                mesh._update(wipe)
+            stored = json.loads(path.read_text(encoding="utf-8"))
+            martin = stored["members"]["raspberrypi2-1"]
+            ludwig = stored["members"]["raspberrypi2"]
+            self.assertEqual(stored["invite_code"], "EG-AAAA-BBBB")
+            self.assertGreaterEqual(len(martin["history"]), 5)
+            self.assertEqual(martin["history"][0]["soc_percent"], 40)
+            self.assertEqual(martin["feed_in_kwh"], 1.25)
+            self.assertGreaterEqual(martin["connected_kwh"], 4.5)
+            self.assertEqual(martin["alias"], "Haus Martin")
+            self.assertEqual(ludwig["alias"], "Ludwig")
+            self.assertEqual(ludwig["feed_in_kwh"], 2.5)
+            self.assertEqual(len(ludwig["history"]), 1)
+        finally:
+            path.unlink(missing_ok=True)
+            path.with_name(path.name + ".tmp").unlink(missing_ok=True)
+
+    def test_page_save_does_not_replace_a_torn_settings_file(self):
+        import energiegemeinschaft as page
+
+        path = self._path()
+        torn = '{"invite_code": "EG-AAAA-BBBB", "members": {"raspberrypi2": '
+        path.write_text(torn, encoding="utf-8")
+        try:
+            with patch.object(page, "SETTINGS_FILE", path):
+                page.save_settings("geag")
+                self.assertEqual(path.read_text(encoding="utf-8"), torn)
         finally:
             path.unlink(missing_ok=True)
 

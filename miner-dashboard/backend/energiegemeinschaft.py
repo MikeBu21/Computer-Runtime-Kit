@@ -8,6 +8,7 @@ Beispiel markiert und können später gegen Live-Daten getauscht werden.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -57,13 +58,21 @@ def save_settings(community: str, enabled: bool | None = None) -> Dict[str, Any]
     if SETTINGS_FILE.is_file():
         try:
             loaded = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                raw = loaded
         except (OSError, json.JSONDecodeError):
-            raw = {}
+            # Halb geschriebene Datei nicht durch community/enabled ersetzen.
+            return current
+        if not isinstance(loaded, dict):
+            return current
+        raw = loaded
     raw["community"] = community
     raw["enabled"] = current["enabled"] if enabled is None else bool(enabled)
-    SETTINGS_FILE.write_text(json.dumps(raw, indent=2) + "\n", encoding="utf-8")
+    payload = json.dumps(raw, indent=2, ensure_ascii=False) + "\n"
+    tmp = SETTINGS_FILE.with_name(SETTINGS_FILE.name + ".tmp")
+    with tmp.open("w", encoding="utf-8") as handle:
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(tmp, SETTINGS_FILE)
     return {"community": raw["community"], "enabled": raw["enabled"]}
 
 
