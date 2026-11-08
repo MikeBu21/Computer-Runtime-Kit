@@ -562,7 +562,7 @@
           </div>
         </div>
 
-        {% set auto_paths = ['/automatikmodus', '/zeitsteuerung', '/telegrambot', '/steuerungsalgorithmus'] %}
+        {% set auto_paths = ['/automatikmodus', '/zeitsteuerung', '/steuerungsalgorithmus'] %}
         {% set auto_open = request.path in auto_paths %}
         <div class="nav-group" data-nav-group>
           <button type="button" class="nav-group-toggle" aria-expanded="{{ 'true' if auto_open else 'false' }}" aria-controls="nav_auto_group" data-nav-group-toggle>
@@ -573,7 +573,6 @@
             <a class="nav-link nav-link-leaf{% if request.path == '/automatikmodus' %} active{% endif %}" href="/automatikmodus">⚙️ Automatik</a>
             <a class="nav-link nav-link-leaf{% if request.path == '/automatikmodus' %} active{% endif %}" href="/automatikmodus">🤖 Automatikmodus</a>
             <a class="nav-link nav-link-leaf{% if request.path == '/zeitsteuerung' %} active{% endif %}" href="/zeitsteuerung">⏱ Zeitsteuerung</a>
-            <a class="nav-link nav-link-leaf{% if request.path == '/telegrambot' %} active{% endif %}" href="/telegrambot">💬 Telegram-Bot</a>
             <a class="nav-link nav-link-leaf{% if request.path == '/steuerungsalgorithmus' %} active{% endif %}" href="/steuerungsalgorithmus">🧠 Steuerungsalgorithmus</a>
           </div>
         </div>
@@ -591,7 +590,7 @@
           </div>
         </div>
 
-        {% set other_paths = ['/fehlerberichte'] %}
+        {% set other_paths = ['/fehlerberichte', '/telegrambot'] %}
         {% set other_open = request.path in other_paths %}
         <div class="nav-group" data-nav-group>
           <button type="button" class="nav-group-toggle" aria-expanded="{{ 'true' if other_open else 'false' }}" aria-controls="nav_other_group" data-nav-group-toggle>
@@ -600,6 +599,7 @@
           </button>
           <div id="nav_other_group" class="nav-group-body{% if other_open %} is-open{% endif %}" data-nav-group-body {% if not other_open %}hidden{% endif %}>
             <a class="nav-link nav-link-leaf{% if request.path == '/fehlerberichte' %} active{% endif %}" href="/fehlerberichte">📋 Fehlerbericht</a>
+            <a class="nav-link nav-link-leaf{% if request.path == '/telegrambot' %} active{% endif %}" href="/telegrambot">💬 Bot-Token-Konfiguration</a>
           </div>
         </div>
       </div>

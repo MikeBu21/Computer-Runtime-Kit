@@ -1,6 +1,6 @@
 {
   "channel": "standard",
-  "created": "2026-11-08T15:25:02+0100",
+  "created": "2026-11-08T15:34:13+0100",
   "files": {
     "AGENTS.md": "80cbbeae8bec122292d37f093e879ceae5d45f6625e7582e0b4e93288a4988ce",
     "Desktop/Alles starten.desktop": "85873226fbffe9a8d4f9d3ecee426a588e89740ad2da39dd5a47651e4c7a37ca",
@@ -153,7 +153,7 @@
     "miner-dashboard/backend/templates/add_device.html": "0b82b3f4c0e6f5c75694827cd44056b15118aea5e0da7377f333fea627f8205e",
     "miner-dashboard/backend/templates/add_miner.html": "f3e4e6451e8ae410d4d26cf92e6d5ec4f72daf251787c8907fca7f20fcc129ae",
     "miner-dashboard/backend/templates/automatik.html": "89fd87057ceb92b1c13c318462402a803007a57dc3e2b0c36bea4ffa47325ce0",
-    "miner-dashboard/backend/templates/base.html": "eab2c9b0fecfb52ea17b3a6d181700fa30a0d9f9a3b41ce6f943e75917fec7a1",
+    "miner-dashboard/backend/templates/base.html": "62185be02909f5301451b79a3cad8b5016b101742b5fc097fb82ab5cc56c2336",
     "miner-dashboard/backend/templates/bms_netzbezug.html": "1ae849f8ee1ead502f303fa8b643aa09a077d54a52c826fa90d23a4154e305fa",
     "miner-dashboard/backend/templates/boersenhandel.html": "3235abce7ace131510950c2cb6b3fba577bf358477da855761649f8896636859",
     "miner-dashboard/backend/templates/dashboard.html": "85c9abfac40adc7890a775a6e9ab3eab5cf9c85354768f95e04a816298a21e85",
@@ -170,7 +170,7 @@
     "miner-dashboard/backend/templates/smartmeter.html": "e2ab5fb3aab8ef5dc313ed9b25b489ef1b1d9e39148889caa406729ddd95668a",
     "miner-dashboard/backend/templates/statistik_konfigurieren.html": "c0320aa1f2d46e6f19a41dfed907cf23d9c7e693d14976c4552359e800d8dd14",
     "miner-dashboard/backend/templates/steuerungsalgorithmus.html": "f813776c61dc3f3ccd9dcb908028b5b572b41f58595ffcd78cdc1a8fe6cd6c85",
-    "miner-dashboard/backend/templates/telegrambot.html": "2fe4e0ce599f37c96f2b6b778ed4192c9079de117387d36330a14d1966de38c1",
+    "miner-dashboard/backend/templates/telegrambot.html": "98d3d9b274f635c0df2784f2ad61eb3243743d42d7c2275e6b7950e7f0d3d392",
     "miner-dashboard/backend/templates/telegramm.html": "0d509d60775c1af75bb5b88d97181d8e23411d39c7fd2c3efe53ff7e9d0ec486",
     "miner-dashboard/backend/templates/updates.html": "5fbb71cd492c2325361895fcac7aa908859fbc15be63870261d6db7ab8727387",
     "miner-dashboard/backend/templates/verbrauchsdaten.html": "a1f2169da34e6c8dd099b15818fe0553f042f84439d523f975fa627bc9adf269",
@@ -310,5 +310,5 @@
   },
   "format": 2,
   "notes": "Download nutzt den Soft-Scan: nur Token im Programmcode, und der Scan wird nach jedem Update wiederhergestellt. Der Upload-Scan bleibt streng. Standardwerte ohne persönliche Daten.",
-  "version": 35
+  "version": 36
 }
