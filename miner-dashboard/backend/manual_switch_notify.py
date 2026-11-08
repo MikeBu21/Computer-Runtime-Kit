@@ -158,14 +158,30 @@ def load_connected_chat_ids(path: Optional[Path] = None) -> List[int]:
         return []
 
 
-def _load_bot_token() -> str:
+def _load_bot_tokens() -> List[str]:
+    """Nur Benachrichtigungs-Tokens aus telegram_config.json (kein Fehlerbericht)."""
     if not CONFIG_PATH.is_file():
-        return ""
+        return []
     try:
         data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-        return str(data.get("telegram_token") or "").strip()
     except Exception:
-        return ""
+        return []
+    tokens: List[str] = []
+    raw_list = data.get("telegram_tokens") if isinstance(data, dict) else None
+    if isinstance(raw_list, list):
+        for item in raw_list:
+            value = str(item or "").strip()
+            if value and value not in tokens:
+                tokens.append(value)
+    primary = str((data or {}).get("telegram_token") or "").strip() if isinstance(data, dict) else ""
+    if primary and primary not in tokens:
+        tokens.insert(0, primary)
+    return tokens
+
+
+def _load_bot_token() -> str:
+    tokens = _load_bot_tokens()
+    return tokens[0] if tokens else ""
 
 
 def _post_telegram_message(token: str, chat_id: int, text: str) -> None:
@@ -183,13 +199,16 @@ def _post_telegram_message(token: str, chat_id: int, text: str) -> None:
 
 def broadcast_text(text: str, *, chat_ids: Optional[Iterable[int]] = None) -> int:
     """Sendet an die Wartung, nicht an alle Bot-Nutzer. Rückgabe: Anzahl Versuche."""
-    token = _load_bot_token()
-    if not token or not text:
+    tokens = _load_bot_tokens()
+    if not tokens or not text:
         return 0
     ids = list(chat_ids) if chat_ids is not None else load_notify_chat_ids()
-    for chat_id in ids:
-        _post_telegram_message(token, int(chat_id), text)
-    return len(ids)
+    sent = 0
+    for token in tokens:
+        for chat_id in ids:
+            _post_telegram_message(token, int(chat_id), text)
+            sent += 1
+    return sent
 
 
 def notify_manual_switch(

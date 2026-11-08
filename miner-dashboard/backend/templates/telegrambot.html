@@ -52,6 +52,41 @@
       font-weight: 700;
       margin-bottom: 1rem;
     }
+    .token-list {
+      display: grid;
+      gap: 0.55rem;
+      margin: 0 0 1.1rem;
+    }
+    .token-list-empty {
+      color: var(--muted);
+      font-size: 0.9rem;
+      margin: 0 0 1.1rem;
+      padding: 0.85rem 1rem;
+      border: 1px dashed var(--border);
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.02);
+    }
+    .token-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      padding: 0.75rem 0.9rem;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.03);
+    }
+    .token-row code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      color: #e3f2fd;
+      font-size: 0.92rem;
+      word-break: break-all;
+    }
+    .token-row .btn-secondary-custom {
+      flex-shrink: 0;
+      padding: 0.35rem 0.75rem;
+      font-size: 0.85rem;
+    }
     .hint-list {
       color: var(--muted);
       font-size: 0.9rem;
@@ -142,7 +177,7 @@
       <div class="telegram-icon">💬</div>
       <div>
         <h3>Telegram-Verbindung</h3>
-        <p>Speichere hier den Bot-Token. Der Bot kann danach Status und Steuerbefehle verarbeiten.</p>
+        <p>Bot-Tokens für Benachrichtigungen hinzufügen. Die Liste unten wächst automatisch mit jedem neuen Token.</p>
       </div>
     </div>
 
@@ -150,15 +185,38 @@
     <div class="alert-success-custom">{{ message }}</div>
     {% endif %}
 
-    <div class="token-badge">🔐 Token wird lokal am Pi gespeichert</div>
+    <div class="token-badge">🔐 Nur Benachrichtigungs-Tokens · Fehlerbericht-Token bleibt getrennt</div>
+
+    <h5 class="panel-title">🔗 Verbundene Bot-Tokens (Benachrichtigung)</h5>
+    <p style="color: var(--muted); margin-top: -0.35rem; font-size: 0.9rem;">
+      Automatisch aus den hinterlegten Benachrichtigungs-Tokens. Der Fehlerbericht-Token erscheint hier nicht und kann hier nicht gelöscht werden.
+    </p>
+    {% if connected_tokens %}
+    <div class="token-list">
+      {% for item in connected_tokens %}
+      <div class="token-row">
+        <code title="Benachrichtigungs-Bot">{{ item.masked }}</code>
+        <form method="post" style="margin:0;" onsubmit="return confirm('Diesen Benachrichtigungs-Token wirklich entfernen?');">
+          <input type="hidden" name="action" value="delete_token">
+          <input type="hidden" name="token_index" value="{{ item.index }}">
+          <button type="submit" class="btn-secondary-custom">🗑️ Löschen</button>
+        </form>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="token-list-empty">Noch keine Benachrichtigungs-Tokens verbunden.</p>
+    {% endif %}
 
     <form method="post">
+      <input type="hidden" name="action" value="save">
       <div class="mb-3">
-        <label for="telegram_token" class="form-label">Telegram Bot Token</label>
+        <label for="telegram_token" class="form-label">Telegram Bot Token hinzufügen</label>
         <div class="token-input-wrap">
           <input type="text" class="form-control" id="telegram_token" name="telegram_token"
-            value="{{ token or '' }}" placeholder="123456789:ABCdefGHI..." required>
+            value="" placeholder="123456789:ABCdefGHI..." autocomplete="off">
         </div>
+        <small style="color: var(--muted);">Beim Speichern wird ein neuer Token automatisch in die Liste aufgenommen.</small>
       </div>
 
       <h5 class="panel-title" style="margin-top: 1.25rem;">📡 Datenüberwachung / Home Assistant</h5>
@@ -227,6 +285,7 @@
 
     <ul class="hint-list">
       <li>Den Token bekommst du im Telegram-Chat mit <strong>BotFather</strong>.</li>
+      <li>Die Liste zeigt nur Benachrichtigungs-Tokens. Der Fehlerbericht-Token wird hier weder angezeigt noch gelöscht.</li>
       <li>Befehle: <code>/ertrag</code>, <code>/morgen</code>, <code>/statistik</code> – oder die Buttons Ertrag heute, Ertrag morgen, Stromprofil und Status.</li>
       <li>Alarm-Schwellwerte und HA-Datenüberwachung gelten sofort im Bot (kein Neustart nötig). Nur bei Token-Änderung <code>minerbot.py</code> neu starten.</li>
       <li><code>ha_data_bridge</code> muss laufen, damit HA-Daten aktuell bleiben.</li>

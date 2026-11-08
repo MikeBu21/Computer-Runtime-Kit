@@ -329,6 +329,11 @@ def telegram_configured(base_dir: Path = BACKEND_DIR) -> bool:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         token = str((data or {}).get("telegram_token") or "").strip()
-        return bool(token and token != '""')
+        if token and token != '""':
+            return True
+        raw_list = (data or {}).get("telegram_tokens")
+        if isinstance(raw_list, list):
+            return any(str(item or "").strip() and str(item).strip() != '""' for item in raw_list)
+        return False
     except Exception:
         return False

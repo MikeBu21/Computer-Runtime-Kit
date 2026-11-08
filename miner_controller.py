@@ -9,7 +9,7 @@ from statistics import mean
 # -------------------------
 
 miners = [
-    {"ip": "192.168.1.128", "password": "p!yZ/mnX?3Rz"},
+    {"ip": "192.168.1.128", "password": "Beispiel"},
     # Hier kannst du bis zu 15 Miner eintragen
     # {"ip": "192.168.1.129", "password": "dein_passwort2"},
 ]

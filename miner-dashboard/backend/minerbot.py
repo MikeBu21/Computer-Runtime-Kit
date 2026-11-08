@@ -46,7 +46,17 @@ def load_config():
 
 
 def load_token():
-    return load_config().get("telegram_token", "")
+    config = load_config()
+    primary = str(config.get("telegram_token") or "").strip()
+    if primary:
+        return primary
+    raw_list = config.get("telegram_tokens")
+    if isinstance(raw_list, list):
+        for item in raw_list:
+            value = str(item or "").strip()
+            if value:
+                return value
+    return ""
 
 
 def load_alarm_settings():

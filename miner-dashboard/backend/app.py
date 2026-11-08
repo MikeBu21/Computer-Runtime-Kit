@@ -1040,55 +1040,127 @@ def update_note():
     return _action_response(f"Notiz für {label} gespeichert.")
 
 
+def _telegram_config_path():
+    return os.path.join(os.path.dirname(__file__), 'telegram_config.json')
+
+
+def _load_telegram_config():
+    path = _telegram_config_path()
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _mask_telegram_token(token: str) -> str:
+    token = str(token or "").strip()
+    if len(token) <= 12:
+        return ("*" * max(len(token) - 4, 0)) + token[-4:]
+    return token[:6] + "…" + token[-4:]
+
+
+def _notification_tokens_from_config(config: dict) -> list:
+    """Nur Benachrichtigungs-Tokens aus telegram_config.json (nie Fehlerbericht)."""
+    tokens = []
+    raw_list = config.get("telegram_tokens")
+    if isinstance(raw_list, list):
+        for item in raw_list:
+            value = str(item or "").strip()
+            if value and value not in tokens:
+                tokens.append(value)
+    primary = str(config.get("telegram_token") or "").strip()
+    if primary and primary not in tokens:
+        tokens.insert(0, primary)
+    return tokens
+
+
+def _sync_notification_tokens(config: dict, tokens: list) -> None:
+    cleaned = []
+    for item in tokens:
+        value = str(item or "").strip()
+        if value and value not in cleaned:
+            cleaned.append(value)
+    config["telegram_tokens"] = cleaned
+    config["telegram_token"] = cleaned[0] if cleaned else ""
+
+
+def _save_telegram_config(config: dict) -> None:
+    with open(_telegram_config_path(), "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=4)
+
+
 @app.route('/telegrambot', methods=['GET', 'POST'])
 def telegrambot():
-    config_path = os.path.join(os.path.dirname(__file__), 'telegram_config.json')
     message = None
-    config = {}
-
-    if os.path.exists(config_path):
-        try:
-            with open(config_path, "r", encoding="utf-8") as f:
-                config = json.load(f)
-        except Exception:
-            config = {}
+    config = _load_telegram_config()
+    tokens = _notification_tokens_from_config(config)
 
     if request.method == 'POST':
-        new_token = (request.form.get('telegram_token') or "").strip()
-        if new_token:
-            config['telegram_token'] = new_token
-        config['feed_in_alarm_kw'] = request.form.get(
-            'feed_in_alarm_kw', config.get('feed_in_alarm_kw', -100)
-        )
-        config['high_usage_alarm_kw'] = request.form.get(
-            'high_usage_alarm_kw', config.get('high_usage_alarm_kw', 100)
-        )
-        config['power_outage_enabled'] = '1' in request.form.getlist(
-            'power_outage_enabled'
-        )
-        config['ha_data_monitor_enabled'] = '1' in request.form.getlist(
-            'ha_data_monitor_enabled'
-        )
-        for old_key in (
-            'ev_charging_alarm_enabled',
-            'ev_charging_alarm_minutes',
-            'ev_charging_alarm_kw',
-            'speicher_ausfall_enabled',
-        ):
-            config.pop(old_key, None)
-        config.pop('notalarm_enabled', None)
-        with open(config_path, "w", encoding="utf-8") as f:
-            json.dump(config, f, indent=4)
-        message = "Telegram-Einstellungen erfolgreich gespeichert."
+        action = (request.form.get('action') or 'save').strip()
+        if action == 'delete_token':
+            try:
+                index = int(request.form.get('token_index', -1))
+            except (TypeError, ValueError):
+                index = -1
+            if 0 <= index < len(tokens):
+                removed = tokens.pop(index)
+                _sync_notification_tokens(config, tokens)
+                _save_telegram_config(config)
+                message = f"Bot-Token {_mask_telegram_token(removed)} entfernt (nur Benachrichtigungen)."
+            else:
+                message = "Token konnte nicht entfernt werden."
+        else:
+            new_token = (request.form.get('telegram_token') or "").strip()
+            if new_token:
+                if new_token not in tokens:
+                    tokens.append(new_token)
+                    message = "Bot-Token hinzugefügt. Die Liste wurde aktualisiert."
+                else:
+                    message = "Dieser Bot-Token ist bereits in der Liste."
+            else:
+                message = "Telegram-Einstellungen erfolgreich gespeichert."
+            _sync_notification_tokens(config, tokens)
+            config['feed_in_alarm_kw'] = request.form.get(
+                'feed_in_alarm_kw', config.get('feed_in_alarm_kw', -100)
+            )
+            config['high_usage_alarm_kw'] = request.form.get(
+                'high_usage_alarm_kw', config.get('high_usage_alarm_kw', 100)
+            )
+            config['power_outage_enabled'] = '1' in request.form.getlist(
+                'power_outage_enabled'
+            )
+            config['ha_data_monitor_enabled'] = '1' in request.form.getlist(
+                'ha_data_monitor_enabled'
+            )
+            for old_key in (
+                'ev_charging_alarm_enabled',
+                'ev_charging_alarm_minutes',
+                'ev_charging_alarm_kw',
+                'speicher_ausfall_enabled',
+            ):
+                config.pop(old_key, None)
+            config.pop('notalarm_enabled', None)
+            _save_telegram_config(config)
+
+        config = _load_telegram_config()
+        tokens = _notification_tokens_from_config(config)
 
     from telegram_ha_alarm import ha_monitor_enabled, read_ha_data_state
 
     ha_state = read_ha_data_state()
     ha_monitor_on = ha_monitor_enabled(config)
+    connected_tokens = [
+        {"index": idx, "masked": _mask_telegram_token(token)}
+        for idx, token in enumerate(tokens)
+    ]
 
     return render_template(
         'telegrambot.html',
-        token=config.get('telegram_token', ''),
+        connected_tokens=connected_tokens,
         message=message,
         feed_in_alarm_kw=config.get('feed_in_alarm_kw', -100),
         high_usage_alarm_kw=config.get('high_usage_alarm_kw', 100),
@@ -2161,25 +2233,20 @@ TELEGRAM_CONFIG_FILE = "telegram_config.json"
 
 
 def save_telegram_token(token):
-    config_path = os.path.join(os.path.dirname(__file__), TELEGRAM_CONFIG_FILE)
-    config = {}
-    if os.path.exists(config_path):
-        try:
-            with open(config_path, "r", encoding="utf-8") as f:
-                config = json.load(f)
-        except Exception:
-            config = {}
-    config["telegram_token"] = token
-    with open(config_path, "w", encoding="utf-8") as f:
-        json.dump(config, f, indent=4)
+    config = _load_telegram_config()
+    tokens = _notification_tokens_from_config(config)
+    value = str(token or "").strip()
+    if value and value not in tokens:
+        tokens.append(value)
+    elif value:
+        tokens = [value] + [t for t in tokens if t != value]
+    _sync_notification_tokens(config, tokens)
+    _save_telegram_config(config)
 
 
 def load_telegram_token():
-    if os.path.exists(TELEGRAM_CONFIG_FILE):
-        with open(TELEGRAM_CONFIG_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            return data.get("telegram_token", "")
-    return ""
+    tokens = _notification_tokens_from_config(_load_telegram_config())
+    return tokens[0] if tokens else ""
 
 
 def open_browser():
