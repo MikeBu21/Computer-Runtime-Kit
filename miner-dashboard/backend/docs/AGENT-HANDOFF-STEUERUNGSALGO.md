@@ -1,6 +1,6 @@
 # Agent-Handoff: Steuerungsalgorithmus (Pi vs. GitHub)
 
-> **Stand:** 2026-08-30 · **Repo:** `https://github.com/MikeBu21/piMiner` (Branch `main`)  
+> **Stand:** 2026-08-30 · **Repo:** `https://github.com/MikeBu21/piminer` (Branch `main`)  
 > **Laufender Pi:** `/home/piminer/minersteuerung` · Standort Beispiel, AT  
 > **Wichtig:** Stand 2026-08-30 ist der **vollständige Autopilot auf GitHub** (`origin/main`). Laufzeit-State (JSON-Heartbeat, State, Steering-History) bleibt nur auf dem Pi.
 
@@ -149,7 +149,7 @@ Unter Max-SoC: Anomalie wird übersprungen + aktive Hoch-Anomalie gelöscht.
 
 ### 4.6 Prioritätssortierung
 
-**Skala 0–10** (10 = wichtigster Anker, z. B. Beispiel)
+**Skala 0–10** (10 = wichtigster Anker, z. B. Hydro 395)
 
 | Funktion | Datei | Logik |
 |---|---|---|

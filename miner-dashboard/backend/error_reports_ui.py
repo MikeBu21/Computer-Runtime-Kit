@@ -7,7 +7,7 @@ import os
 import subprocess
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 DEFAULT_CONFIG = Path(
     "/home/piminer/minersteuerung/scripts/error_log_pipeline/pi/config.json"
@@ -111,7 +111,7 @@ def list_packages(folder: Path, name: str) -> List[Dict[str, Any]]:
     if not folder.is_dir():
         return []
     rows: List[Dict[str, Any]] = []
-    for meta in sorted(folder.glob("piMiner-errors-*.meta.json"), reverse=True):
+    for meta in sorted(folder.glob("piminer-errors-*.meta.json"), reverse=True):
         label = meta.name.replace(".meta.json", "")
         gz = folder / f"{label}.jsonl.gz"
         if not gz.is_file():
@@ -146,8 +146,23 @@ def list_packages(folder: Path, name: str) -> List[Dict[str, Any]]:
     return rows
 
 
-def timer_status() -> Dict[str, Any]:
-    """Best-effort systemd --user timer next/last times."""
+def _fmt_ts(ts: Any) -> Optional[str]:
+    try:
+        value = float(ts)
+    except (TypeError, ValueError):
+        return None
+    if value <= 0:
+        return None
+    return datetime.fromtimestamp(value).isoformat(sep=" ", timespec="minutes")
+
+
+def timer_status(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Status of the background daemon (error-log-send.service).
+
+    Keys keep the former timer names so the existing page renders unchanged:
+    collect_* = next/last 14-day collect, send_* = pause/retry state.
+    """
+    cfg = cfg or load_pipeline_config()
     out: Dict[str, Any] = {
         "collect_next": None,
         "collect_last": None,
@@ -155,49 +170,34 @@ def timer_status() -> Dict[str, Any]:
         "send_last": None,
         "collect_active": False,
         "send_active": False,
+        "last_error": "",
     }
     try:
         r = subprocess.run(
-            [
-                "systemctl",
-                "--user",
-                "show",
-                "error-log-collect.timer",
-                "error-log-send.timer",
-                "--property=Id,ActiveState,NextElapseUSecRealtime,LastTriggerUSec",
-                "--no-pager",
-            ],
+            ["systemctl", "--user", "is-active", "error-log-send.service"],
             capture_output=True,
             text=True,
             timeout=5,
             check=False,
         )
+        active = (r.stdout or "").strip() == "active"
     except (OSError, subprocess.TimeoutExpired):
-        return out
+        active = False
+    out["collect_active"] = out["send_active"] = active
 
-    blocks = [b for b in (r.stdout or "").split("\n\n") if b.strip()]
-    for block in blocks:
-        props = {}
-        for line in block.splitlines():
-            if "=" in line:
-                k, v = line.split("=", 1)
-                props[k] = v
-        tid = props.get("Id", "")
-        active = props.get("ActiveState") == "active"
-        nxt = props.get("NextElapseUSecRealtime") or ""
-        last = props.get("LastTriggerUSec") or ""
-        if nxt in ("", "n/a", "0"):
-            nxt = None
-        if last in ("", "n/a", "0"):
-            last = None
-        if "collect" in tid:
-            out["collect_active"] = active
-            out["collect_next"] = nxt
-            out["collect_last"] = last
-        elif "send" in tid:
-            out["send_active"] = active
-            out["send_next"] = nxt
-            out["send_last"] = last
+    state_file = Path(str(cfg.get("state_file") or "/home/piminer/minersteuerung/logs/error_reports/state.json"))
+    state = _load_json(state_file) if state_file.is_file() else None
+    if isinstance(state, dict):
+        last = state.get("last_collect")
+        out["collect_last"] = _fmt_ts(last)
+        try:
+            days = int(cfg.get("window_days") or 14)
+            out["collect_next"] = _fmt_ts(float(last) + days * 86400)
+        except (TypeError, ValueError):
+            pass
+        out["send_last"] = state.get("last_send") or None
+        out["send_next"] = _fmt_ts(state.get("pause_until"))
+        out["last_error"] = state.get("last_error") or ""
     return out
 
 
@@ -210,9 +210,10 @@ def build_status() -> Dict[str, Any]:
     return {
         "window_days": int(cfg.get("window_days") or 14),
         "schedule_note": cfg.get("schedule_note") or "",
-        "schedule_collect": "1. und 15. jeden Monats um 03:15",
-        "schedule_retry": "täglich 06:30 (Outbox-Nachversuch)",
+        "schedule_collect": "alle 14 Tage (Hintergrunddienst, nur Berichte mit Einträgen)",
+        "schedule_retry": "bei Telegram-Fehler: Pause, danach erneuter Versuch",
         "chat_ids": chats,
+        "user_chat_id": str(cfg.get("user_chat_id") or ""),
         "chats_file": cfg.get("chats_file") or "",
         "sources": [
             "Steuerungsalgorithmus.log",
@@ -221,21 +222,19 @@ def build_status() -> Dict[str, Any]:
         "outbox": list_packages(outbox, "outbox"),
         "sent": list_packages(sent, "sent")[:20],
         "buffer": list_packages(buffer, "buffer"),
-        "timers": timer_status(),
+        "timers": timer_status(cfg),
         "config_path": cfg.get("config_path"),
     }
 
 
-def run_send_now() -> Dict[str, Any]:
-    """Send pending outbox packages via existing send_telegram.py."""
+def _run_sender(*extra: str) -> Tuple[int, str]:
     script = PIPELINE_DIR / "send_telegram.py"
-    cfg = DEFAULT_CONFIG
     py = PYTHON if PYTHON.is_file() else Path("python3")
     if not script.is_file():
-        return {"ok": False, "message": f"Skript fehlt: {script}"}
+        return -1, f"Skript fehlt: {script}"
     try:
         r = subprocess.run(
-            [str(py), str(script), "--config", str(cfg)],
+            [str(py), str(script), "--config", str(DEFAULT_CONFIG), *extra],
             capture_output=True,
             text=True,
             timeout=120,
@@ -243,17 +242,32 @@ def run_send_now() -> Dict[str, Any]:
             cwd=str(PIPELINE_DIR),
         )
     except subprocess.TimeoutExpired:
-        return {"ok": False, "message": "Senden abgebrochen (Timeout)"}
+        return -1, "Senden abgebrochen (Timeout)"
     except OSError as exc:
-        return {"ok": False, "message": str(exc)}
-    text = ((r.stdout or "") + "\n" + (r.stderr or "")).strip()
-    ok = r.returncode == 0
+        return -1, str(exc)
+    return r.returncode, ((r.stdout or "") + "\n" + (r.stderr or "")).strip()
+
+
+def run_test() -> Dict[str, Any]:
+    """Testnachricht: kurz an den Fehlerbericht-Chat, danach an die eigene Chat-ID."""
+    code, text = _run_sender("--test")
+    if code == 0:
+        return {"ok": True, "message": "Testnachricht gesendet.", "detail": text}
+    return {"ok": False, "message": "Testnachricht fehlgeschlagen (siehe Detail).", "detail": text}
+
+
+def run_send_now() -> Dict[str, Any]:
+    """Send pending outbox packages; with an empty outbox send a test message instead."""
+    code, text = _run_sender()
+    ok = code == 0
     if "outbox empty" in text:
-        return {"ok": True, "message": "Outbox leer — nichts zu senden.", "detail": text}
+        result = run_test()
+        result["message"] = "Outbox leer — " + result["message"]
+        return result
     if ok:
         return {"ok": True, "message": "Telegram-Versand ausgeführt.", "detail": text}
     return {
         "ok": False,
         "message": "Versand fehlgeschlagen oder teilweise offen (siehe Detail).",
-        "detail": text or f"exit {r.returncode}",
+        "detail": text or f"exit {code}",
     }

@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import contextlib
 import inspect
 import json
 import os
@@ -15,22 +16,28 @@ sys.path.insert(0, str(BACKEND))
 import public_update as pu
 
 
-def test_upload_button_hidden_while_newer_version_or_upload():
+def test_upload_button_only_on_publisher_and_not_while_busy():
     assert pu.upload_allowed(
         is_publisher=True, uploading=False, downloading=False, local_version=2, remote_version=3
-    ) is False
+    ) is True
     assert pu.upload_allowed(
         is_publisher=True, uploading=True, downloading=False, local_version=3, remote_version=3
     ) is False
     assert pu.upload_allowed(
-        is_publisher=True, uploading=False, downloading=False, local_version=3, remote_version=None
+        is_publisher=True, uploading=False, downloading=True, local_version=3, remote_version=3
     ) is False
+    assert pu.upload_allowed(
+        is_publisher=True, uploading=False, downloading=False, local_version=3, remote_version=None
+    ) is True
     assert pu.upload_allowed(
         is_publisher=False, uploading=False, downloading=False, local_version=3, remote_version=3
     ) is False
-    assert pu.upload_allowed(
-        is_publisher=True, uploading=False, downloading=False, local_version=3, remote_version=3
-    ) is True
+
+
+def test_next_version_counts_past_web_and_local():
+    assert pu.next_version(31, 33) == 34
+    assert pu.next_version(35, 33) == 36
+    assert pu.next_version(33, None) == 34
 
 
 def test_standard_overlay_has_no_personal_material():
@@ -52,7 +59,7 @@ def test_standard_overlay_has_no_personal_material():
     assert algo["lat"] is None
     blob = "\n".join(files.values())
     assert "0" not in blob
-    assert "Beispiel" not in blob
+    assert "myminingfarm1986" not in blob
 
 
 def test_scan_rejects_personal_token(tmp_path: Path):
@@ -103,10 +110,10 @@ def test_download_installs_only_program_code(tmp_path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
 
-    copied = pu._copy_download(snapshot, dest)
+    result = pu._copy_download(snapshot, dest)
 
     # Code + Setup-Assets (z. B. systemd-User-Unit), keine persönlichen JSON/Logs.
-    assert copied == 4
+    assert result["copied"] == 4
     assert (dest / "miner-dashboard/backend/app.py").read_text(encoding="utf-8") == "print('neu')\n"
     assert "neu" in (dest / "miner-dashboard/backend/templates/dashboard.html").read_text(encoding="utf-8")
     assert (dest / "scripts/example.sh").read_text(encoding="utf-8") == "echo neu\n"
@@ -129,9 +136,10 @@ def test_download_installs_only_program_code(tmp_path: Path):
     assert pu.is_installable_code("scripts/export/dump.sh") is False
 
 
-def test_personal_code_file_is_not_replaced(tmp_path: Path):
+def test_personal_code_file_is_updated_with_backup(tmp_path: Path):
     snapshot = tmp_path / "snapshot"
     dest = tmp_path / "pi"
+    backup = tmp_path / "rollback"
     secret = "nur-dieses-geraet-passwort"
     local_script = "print('lokal " + secret + "')\n"
     (dest / "miner-dashboard/backend").mkdir(parents=True)
@@ -145,10 +153,13 @@ def test_personal_code_file_is_not_replaced(tmp_path: Path):
     (snapshot / "miner-dashboard/backend").mkdir(parents=True)
     (snapshot / "miner-dashboard/backend/app.py").write_text("print('neu')\n", encoding="utf-8")
 
-    copied = pu._copy_download(snapshot, dest)
+    result = pu._copy_download(snapshot, dest, backup_dir=backup)
 
-    assert copied == 1
-    assert (dest / "pause_miner.py").read_text(encoding="utf-8") == local_script
+    assert result["copied"] == 2
+    assert result["personal_overwritten"] == ["pause_miner.py"]
+    assert (dest / "pause_miner.py").read_text(encoding="utf-8") == "print('entwickler')\n"
+    assert (backup / "files/pause_miner.py").read_text(encoding="utf-8") == local_script
+    assert json.loads((backup / "rollback.json").read_text(encoding="utf-8"))["replaced"] == ["pause_miner.py"]
     assert (dest / "miner-dashboard/backend/app.py").read_text(encoding="utf-8") == "print('neu')\n"
     assert secret in (dest / "miner-dashboard/backend/miners.json").read_text(encoding="utf-8")
 
@@ -240,8 +251,30 @@ def test_auto_update_ignores_same_version_and_clears_when_busy():
     assert pu.auto_update_step(16, 15, True, 16, 1000.0, 1100.0)[0] == "idle"
 
 
+def test_auto_update_is_on_after_boot_and_off_only_in_ram(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(pu, "PUBLISHER_FILE", tmp_path / "publisher")
+    monkeypatch.setattr(pu, "RAM_DIR", tmp_path / "ram")
+    monkeypatch.setattr(pu, "AUTO_UPDATE_OFF_FLAG", tmp_path / "ram" / "auto_update_off")
+    assert pu.auto_update_active() is True
+    assert pu.set_auto_update(False)[0] is True
+    assert pu.auto_update_active() is False
+    assert pu.set_auto_update(True)[0] is True
+    assert pu.auto_update_active() is True
+    (tmp_path / "publisher").write_text("1\n", encoding="utf-8")
+    assert pu.auto_update_active() is False
+    assert pu.set_auto_update(True)[0] is False
+
+
+def test_pull_if_newer_skips_when_auto_update_off(monkeypatch):
+    monkeypatch.setattr(pu, "auto_update_active", lambda: False)
+    monkeypatch.setattr(pu, "fetch_remote_version", lambda use_cache=False: 99)
+    monkeypatch.setattr(pu, "start_download", lambda: (_ for _ in ()).throw(AssertionError("kein Download")))
+    assert pu.pull_if_newer() is False
+
+
 def test_pull_if_newer_leaves_the_current_version_alone(monkeypatch):
-    monkeypatch.setattr(pu, "fetch_remote_version", lambda: 15)
+    monkeypatch.setattr(pu, "auto_update_active", lambda: True)
+    monkeypatch.setattr(pu, "fetch_remote_version", lambda use_cache=False: 15)
     monkeypatch.setattr(pu, "load_state", lambda: {"local_version": 15})
     monkeypatch.setattr(pu, "_job", lambda: {"uploading": False, "downloading": False})
     monkeypatch.setattr(pu, "start_download", lambda: (_ for _ in ()).throw(AssertionError("kein Download")))
@@ -249,7 +282,8 @@ def test_pull_if_newer_leaves_the_current_version_alone(monkeypatch):
 
 
 def test_pull_if_newer_starts_when_the_web_version_is_higher(monkeypatch):
-    monkeypatch.setattr(pu, "fetch_remote_version", lambda: 16)
+    monkeypatch.setattr(pu, "auto_update_active", lambda: True)
+    monkeypatch.setattr(pu, "fetch_remote_version", lambda use_cache=False: 16)
     monkeypatch.setattr(pu, "load_state", lambda: {"local_version": 15})
     monkeypatch.setattr(pu, "_job", lambda: {"uploading": False, "downloading": False})
     monkeypatch.setattr(pu, "start_download", lambda: (True, "ok"))
@@ -407,14 +441,11 @@ class HaRepairTests(unittest.TestCase):
 
     def test_repair_failure_is_warning_and_update_completes(self):
         source = inspect.getsource(pu._download_worker)
-        self.assertLess(source.index("_copy_download(DOWNLOAD_DIR)"), source.index("ensure_home_assistant()"))
+        self.assertLess(source.index("_copy_download(DOWNLOAD_DIR"), source.index("ensure_home_assistant()"))
+        self.assertLess(source.index("wait_for_crypt("), source.index("_copy_download(DOWNLOAD_DIR"))
+        self.assertIn("DOWNLOAD_SCAN_SOFT_V1", source)
         self.assertIn("_download_worker", inspect.getsource(pu.start_download))
         self.assertIn("start_download", inspect.getsource(pu.pull_if_newer))
-        worker_file = Path(pu.__file__).read_text(encoding="utf-8")
-        self.assertIn(
-            "_copy_download(DOWNLOAD_DIR)\n        _ensure_soft_download_scan_file()",
-            worker_file,
-        )
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             layout = self._layout(root / "ha", hass=False)
@@ -424,8 +455,8 @@ class HaRepairTests(unittest.TestCase):
             jobs = []
             saved = {}
 
-            def fake_git(args, cwd):
-                dest = Path(args[-1])
+            def fake_clone(dest, job_key):
+                dest = Path(dest)
                 backend = dest / "miner-dashboard" / "backend"
                 backend.mkdir(parents=True, exist_ok=True)
                 (backend / "app.py").write_text("print(1)\n", encoding="utf-8")
@@ -442,21 +473,33 @@ class HaRepairTests(unittest.TestCase):
                     return subprocess.CompletedProcess(args, 1, "", "pull blocked in test")
                 raise AssertionError("unerwartet: " + " ".join(args))
 
-            with patch.object(pu, "_run_git", fake_git), patch.object(
-                pu, "DOWNLOAD_DIR", download
-            ), patch.object(pu, "REPO_ROOT", repo), patch.object(
-                pu, "_write_job", lambda **fields: jobs.append(dict(fields))
-            ), patch.object(pu, "_ensure_soft_download_scan_file", lambda path=None: None), patch.object(
-                pu, "apply_runtime_setup", lambda dest_root=None: ["ok"]
-            ), patch.object(pu, "restart_control_services_soon", lambda: None), patch.object(
-                pu, "save_state", lambda state: saved.update(state)
-            ), patch.object(pu, "load_state", lambda: {"local_version": 1}), patch.object(
-                pu, "_resolve_ha_layout", lambda: layout
-            ), patch.object(pu, "_venv_python_version", lambda python: "3.11.2"), patch.object(
-                pu, "_requires_python", lambda version: ">=3.13.2"
-            ), patch.object(pu, "_run_cmd", fake_run), patch.object(
-                pu, "_poll_home_assistant", lambda *a, **k: True
-            ):
+            patches = {
+                "_clone_release": fake_clone,
+                "DOWNLOAD_DIR": download,
+                "ADMIN_WORK_DIR": root / "admin-work",
+                "_ram_dir": lambda: root,
+                "_cleanup_legacy_workdirs": lambda: None,
+                "crypt_state": lambda repo=None: ("ready", ""),
+                "wait_for_crypt": lambda *a, **k: "",
+                "apply_admin_packages": lambda root: [],
+                "_start_health_watch": lambda *a, **k: None,
+                "_prune_rollbacks": lambda *a, **k: None,
+                "REPO_ROOT": repo,
+                "_write_job": lambda **fields: jobs.append(dict(fields)),
+                "_ensure_soft_download_scan_file": lambda path=None: None,
+                "apply_runtime_setup": lambda dest_root=None: ["ok"],
+                "restart_control_services_soon": lambda: None,
+                "save_state": lambda state: saved.update(state),
+                "load_state": lambda: {"local_version": 1},
+                "_resolve_ha_layout": lambda: layout,
+                "_venv_python_version": lambda python: "3.11.2",
+                "_requires_python": lambda version: ">=3.13.2",
+                "_run_cmd": fake_run,
+                "_poll_home_assistant": lambda *a, **k: True,
+            }
+            with contextlib.ExitStack() as stack:
+                for name, value in patches.items():
+                    stack.enter_context(patch.object(pu, name, value))
                 pu._download_worker()
 
             self.assertTrue(jobs)

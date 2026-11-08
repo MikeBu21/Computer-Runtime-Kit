@@ -1,11 +1,18 @@
 #!/bin/bash
+# Wait for boot-time encryption to finish. This does not start encryption.
+i=0
+while [ ! -f /run/miner-chip-crypt.ready ] && [ "$i" -lt 600 ]; do
+  sleep 2
+  i=$((i + 1))
+done
 # Geordnete Auto-Start-Infrastruktur für mehrere Dienste.
 # Reihenfolge unten in START_ORDER ändern – nicht die Aufrufe zerstreut anpassen.
 set -uo pipefail
 
 MODE="${1:-desktop}"   # desktop | autostart
 
-ROOT="${MINER_ROOT:-/home/piminer/minersteuerung}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="${MINER_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 BASE="$ROOT/miner-dashboard"
 DESKTOP_START="$BASE/start_all_desktop.sh"
 STATUS_TERMINAL="$BASE/open_service_status_terminal.sh"
@@ -34,7 +41,7 @@ log() {
 }
 
 ensure_graphical_env() {
-  export HOME="${HOME:-/home/piminer}"
+  export HOME="${HOME:-$(getent passwd "$(id -un)" | cut -d: -f6)}"
   export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
   export DISPLAY="${DISPLAY:-:0}"
   if [ -z "${XAUTHORITY:-}" ] && [ -f "$HOME/.Xauthority" ]; then
@@ -136,6 +143,9 @@ open_chromium_window() {
     if chromium_running; then
       chromium --new-window "$url" >>"$CHROMIUM_LOG" 2>&1 &
     else
+      rm -f "$HOME/.config/chromium/SingletonLock" \
+        "$HOME/.config/chromium/SingletonCookie" \
+        "$HOME/.config/chromium/SingletonSocket"
       chromium "$url" >>"$CHROMIUM_LOG" 2>&1 &
     fi
     sleep 4
@@ -170,13 +180,21 @@ batterie_scraper() {
 
 tailscale() {
   log "3/… Tailscale"
+  local ts_start=""
   if [ -x "$HOME/bin/tailscale-start.sh" ]; then
-    "$HOME/bin/tailscale-start.sh" >>"$LOG_FILE" 2>&1 || log "Tailscale: Start fehlgeschlagen"
+    ts_start="$HOME/bin/tailscale-start.sh"
   elif [ -x /home/piminer/bin/tailscale-start.sh ]; then
-    /home/piminer/bin/tailscale-start.sh >>"$LOG_FILE" 2>&1 || log "Tailscale: Start fehlgeschlagen"
+    ts_start=/home/piminer/bin/tailscale-start.sh
   else
     log "Tailscale: Startskript fehlt"
+    return 0
   fi
+  if [ ! -f /var/lib/tailscale-joined ]; then
+    log "Tailscale: noch kein Token – Beitritt nur über das Token-Fenster"
+    return 0
+  fi
+  # Hintergrund mit Zeitlimit: eine pkexec- oder Login-Abfrage darf die Startfenster nicht aufhalten.
+  ( timeout 120 "$ts_start" >>"$LOG_FILE" 2>&1 || log "Tailscale: Start fehlgeschlagen" ) &
 }
 
 boot_repair() {

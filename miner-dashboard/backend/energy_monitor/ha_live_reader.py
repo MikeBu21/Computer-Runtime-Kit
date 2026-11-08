@@ -25,7 +25,7 @@ FILE_MAP = {
     "kelag": "kelag_value.txt",
 }
 
-HA_SNAPSHOT_PATH = Path("/tmp/ha_snapshot.json")
+HA_SNAPSHOT_PATH = Path("/dev/shm/ha_snapshot.json")
 OUT_DIR = Path(__file__).resolve().parent
 BATTERY_JSON = OUT_DIR / "daten.json"
 

@@ -95,7 +95,7 @@ a{{color:#6cb6ff}} table{{border-collapse:collapse;width:100%;max-width:960px}}
 th,td{{border-bottom:1px solid #2a3440;padding:.5rem .6rem;text-align:left;vertical-align:top}}
 th{{color:#9fb0c0}} h1{{font-size:1.4rem}} .muted{{color:#8b9aab}}
 </style></head><body>
-<h1>piMiner – wöchentliche Fehlerberichte</h1>
+<h1>piminer – wöchentliche Fehlerberichte</h1>
 <p class="muted">Empfang unter <code>{html.escape(str(PI_ROOT))}</code></p>
 <table><thead><tr><th>Woche (So-Datum)</th><th>Einträge</th><th>Häufigster Fehler</th></tr></thead>
 <tbody>{body}</tbody></table>
@@ -208,8 +208,8 @@ class Handler(BaseHTTPRequestHandler):
             week = "unknown"
         dest = PI_ROOT / week
         dest.mkdir(parents=True, exist_ok=True)
-        meta_name = meta_name or f"piMiner-errors-{week}.meta.json"
-        pkg_name = pkg_name or f"piMiner-errors-{week}.jsonl.gz"
+        meta_name = meta_name or f"piminer-errors-{week}.meta.json"
+        pkg_name = pkg_name or f"piminer-errors-{week}.jsonl.gz"
         (dest / Path(meta_name).name).write_bytes(meta_bytes)
         (dest / Path(pkg_name).name).write_bytes(pkg_bytes)
         if pkg_name.endswith(".gz"):

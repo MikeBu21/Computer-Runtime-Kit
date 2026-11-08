@@ -3,11 +3,12 @@
 # Liste ohne Überwachungsbot (status.py).
 set -uo pipefail
 
-ROOT="${MINER_ROOT:-/home/piminer/minersteuerung}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="${MINER_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 BASE="$ROOT/miner-dashboard"
 BACKEND="$BASE/backend"
 PYTHON="$ROOT/venv/bin/python"
-export HOME="${HOME:-/home/piminer}"
+export HOME="${HOME:-$(getent passwd "$(id -un)" | cut -d: -f6)}"
 
 ensure_graphical_env() {
   export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"

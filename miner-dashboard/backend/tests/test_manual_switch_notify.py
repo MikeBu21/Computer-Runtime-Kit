@@ -20,7 +20,7 @@ class TestManualSwitchNotify(unittest.TestCase):
     def test_pause_message_uses_chat_id(self):
         text = format_manual_switch_message(
             {"chat_id": 0, "source": "telegram"},
-            "Beispiel",
+            "Hydro 193",
             "pause",
             ip="192.0.2.10",
         )
@@ -44,13 +44,13 @@ class TestManualSwitchNotify(unittest.TestCase):
     def test_identity_includes_full_ip_without_note_number(self):
         self.assertEqual(
             device_identity(
-                {"type": "miner", "ip": "192.0.2.10", "label": "Beispiel"}
+                {"type": "miner", "ip": "192.0.2.10", "label": "Hydro 193"}
             ),
             "Hydro (192.0.2.10)",
         )
         self.assertEqual(
             device_identity(
-                {"type": "miner", "ip": "192.0.2.10", "label": "Beispiel"}
+                {"type": "miner", "ip": "192.0.2.10", "label": "Hydro 395"}
             ),
             "Hydro (192.0.2.10)",
         )

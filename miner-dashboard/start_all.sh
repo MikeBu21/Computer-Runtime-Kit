@@ -1,9 +1,10 @@
 #!/bin/bash
 # Headless-Start aller Miner-Dashboard-Dienste (systemd / Stromausfall-Autostart).
-# Pfade: /home/piminer/minersteuerung (nicht /home/piMiner/…).
+# ROOT aus MINER_ROOT oder aus dem Skriptpfad (nicht fest /home/piminer).
 set -euo pipefail
 
-ROOT="/home/piminer/minersteuerung"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="${MINER_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 BASE="$ROOT/miner-dashboard"
 BACKEND="$BASE/backend"
 LOG_DIR="${MINER_LOG_DIR:-/dev/shm/minersteuerung/logs}"

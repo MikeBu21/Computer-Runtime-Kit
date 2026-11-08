@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 BASE_DIR = Path(__file__).resolve().parent
 EM_DIR = BASE_DIR / "energy_monitor"
-HA_SNAPSHOT_PATH = Path("/tmp/ha_snapshot.json")
+HA_SNAPSHOT_PATH = Path("/dev/shm/ha_snapshot.json")
 ENLINE_PATH = EM_DIR / "enline_values.json"
 LATCH_FILE = BASE_DIR / "telegram_ha_latch.json"
 

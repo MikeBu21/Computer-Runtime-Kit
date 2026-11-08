@@ -1,4 +1,4 @@
-# Home Assistant (piMiner)
+# Home Assistant (piminer)
 
 Snapshot of the main Pi HA install used by the mining control stack.
 

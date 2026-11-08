@@ -101,14 +101,12 @@
       <p>Bitte anmelden</p>
     </div>
     <form method="post">
-      <div class="mb-3">
-        <label for="username" class="form-label">Benutzername</label>
-        <input type="text" class="form-control" id="username" name="username" required autofocus>
-      </div>
+      {% if password_required %}
       <div class="mb-3">
         <label for="password" class="form-label">Passwort</label>
-        <input type="password" class="form-control" id="password" name="password" required>
+        <input type="password" class="form-control" id="password" name="password" required autofocus>
       </div>
+      {% endif %}
       <button type="submit" class="btn btn-login">Anmelden</button>
     </form>
   </div>

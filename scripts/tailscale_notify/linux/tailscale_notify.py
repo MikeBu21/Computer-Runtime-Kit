@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""piMiner-only: Tailscale poller (stdlib only).
+"""piminer-only: Tailscale poller (stdlib only).
 
 Telegram outbound is fully disabled: no IP-change, startup, or poll messages.
 The service still polls and stores state so installs stay healthy.
@@ -336,7 +336,7 @@ def one_cycle(cfg: Dict[str, Any], state_path: Path) -> int:
 
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(
-        description="piMiner Tailscale poller (Telegram send disabled)"
+        description="piminer Tailscale poller (Telegram send disabled)"
     )
     ap.add_argument(
         "--config",
@@ -377,7 +377,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     interval = int(args.interval or cfg0.get("interval_sec") or DEFAULT_INTERVAL)
     interval = max(15, interval)
     print(
-        f"tailscale_notify (piMiner) every {interval}s host={socket.gethostname()} "
+        f"tailscale_notify (piminer) every {interval}s host={socket.gethostname()} "
         f"telegram={'on' if TELEGRAM_SEND_ENABLED else 'off'}"
     )
     while True:

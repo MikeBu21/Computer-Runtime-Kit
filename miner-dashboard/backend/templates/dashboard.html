@@ -2628,6 +2628,10 @@
         .then(([mappingData, dashData, entitiesData]) => {
           flowConfigEntities = entitiesData.entities || [];
           flowConfigDashCfg = dashData.config || {};
+          if (!flowConfigEntities.length && statusEl) {
+            statusEl.textContent = entitiesData.message || "Keine Home-Assistant-Sensoren geliefert.";
+            statusEl.className = "flow-config-status err";
+          }
           function reloadEntities() {
             fetch("/api/ha/entities")
               .then(r => r.json())
@@ -2676,7 +2680,7 @@
             };
           });
           renderFlowConfigSections();
-          if (statusEl) statusEl.textContent = "";
+          if (statusEl && flowConfigEntities.length) statusEl.textContent = "";
           overlay.classList.add("open");
           overlay.setAttribute("aria-hidden", "false");
         })

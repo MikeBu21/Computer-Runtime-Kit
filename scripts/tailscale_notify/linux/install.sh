@@ -14,7 +14,7 @@ if [[ ! -f "$CFG" ]]; then
   echo "Created $CFG — fill telegram_token + chat_ids (or token_file/chats_file)."
 fi
 
-# On piMiner, default to existing minersteuerung Telegram files if still empty.
+# On piminer, default to existing minersteuerung Telegram files if still empty.
 if [[ -f "$HOME/minersteuerung/miner-dashboard/backend/telegram_config.json" ]]; then
   python3 - <<PY
 import json

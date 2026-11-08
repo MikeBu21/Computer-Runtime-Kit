@@ -1,6 +1,6 @@
-# Tailscale notifier (piMiner only)
+# Tailscale notifier (piminer only)
 
-Runs **only on piMiner**. Polls every 60s and stores the current Tailscale snapshot.
+Runs **only on piminer**. Polls every 60s and stores the current Tailscale snapshot.
 
 **Telegram is fully disabled.** No messages are sent on IP change, startup, poll, online/offline, health, DNS, or key expiry. The service keeps running so state stays fresh; other houses get the same silence after they pull this update.
 
@@ -16,7 +16,7 @@ Each cycle still reloads the chat list from:
 
 This service does **not** call Telegram `getUpdates` (that would conflict with minerbot’s long-poll).
 
-## Install / restart (piMiner)
+## Install / restart (piminer)
 
 ```bash
 cd ~/minersteuerung/scripts/tailscale_notify/linux

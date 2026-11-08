@@ -14,7 +14,7 @@ def login_and_read_miners(playwright=None):
 
         print("🔐 Fülle Loginformular aus...")
         page.fill("input[name='username']", "miningfarm")
-        page.fill("input[name='password']", "Beispiel")
+        page.fill("input[name='password']", "myminingfarm1986")
         page.click("button[type='submit']")
 
         print("⏳ Warte auf Dashboard-Ladeanzeige...")

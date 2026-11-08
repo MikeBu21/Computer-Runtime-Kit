@@ -1,0 +1,13 @@
+[Unit]
+Description=Tailscale first-boot marker (no console prompt)
+After=local-fs.target
+ConditionPathExists=!/var/lib/tailscale-firstboot.done
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/tailscale-firstboot.sh
+TimeoutStartSec=20
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

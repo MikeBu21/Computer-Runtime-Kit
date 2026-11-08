@@ -54,7 +54,7 @@ Wear: SD SC32G (05/2023), no life_time attrs; no I/O error storm — **no SD swa
 1. Removed shadowing `energy_monitor/miner_control.py` (Playwright login helper duplicated `dashboard_login_miners.py`); it broke `execute_miner_pause_resume` imports.
 2. `control_algorithm/service.py`: append `energy_monitor` to `sys.path` (not insert at 0); keep backend first.
 3. `device_registry.py`: clear shadowed `miner_control` module before import.
-4. Fixed broken `/home/piMiner/...` symlink: `energy_monitor/settings` → `backend/shared_settings`.
+4. Fixed broken `/home/piminer/...` symlink: `energy_monitor/settings` → `backend/shared_settings`.
 5. Killed duplicate orphan `maintenance_watchdog` (PPID 1); systemd user unit instance remains.
 6. Stopped Cursor agent auto-loop `AGENT_LOOP_TICK_pihealth`.
 7. Smoke: `execute_miner_pause_resume` imports from backend module; RAM hydrate populates `/dev/shm/minersteuerung`; Flask `/login` → HTTP 200.

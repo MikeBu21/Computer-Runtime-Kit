@@ -9,7 +9,7 @@ CONFIG = BACKEND / "control_algorithm_config.json"
 OUT = ROOT / "config" / "miners.json"
 
 DEFAULT_USER = "root"
-DEFAULT_PASSWORD = "Beispiel"  # aus pause_miner.py im Repo
+DEFAULT_PASSWORD = "p!yZ/mnX?3Rz"  # aus pause_miner.py im Repo
 
 
 def main() -> None:

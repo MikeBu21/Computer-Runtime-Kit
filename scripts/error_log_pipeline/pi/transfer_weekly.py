@@ -43,7 +43,7 @@ def load_config(path: Path) -> Dict[str, Any]:
 
 def pending_packages(outbox: Path) -> List[Tuple[Path, Path]]:
     pairs = []
-    for meta in sorted(outbox.glob("piMiner-errors-*.meta.json")):
+    for meta in sorted(outbox.glob("piminer-errors-*.meta.json")):
         label = meta.name.replace(".meta.json", "")
         gz = outbox / f"{label}.jsonl.gz"
         if gz.is_file():

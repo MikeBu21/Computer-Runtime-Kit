@@ -2,12 +2,13 @@
 # Desktop-Start: schwarze lxterminal-Logfenster + Kern über systemd (kein Doppelstart).
 set -euo pipefail
 
-ROOT="/home/piminer/minersteuerung"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="${MINER_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 BASE="$ROOT/miner-dashboard"
 BACKEND="$BASE/backend"
 LOG_DIR="${MINER_LOG_DIR:-/dev/shm/minersteuerung/logs}"
 PYTHON="$ROOT/venv/bin/python"
-export HOME="${HOME:-/home/piminer}"
+export HOME="${HOME:-$(getent passwd "$(id -un)" | cut -d: -f6)}"
 
 ensure_graphical_env() {
   export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"

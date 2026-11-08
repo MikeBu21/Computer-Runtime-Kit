@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Collect 14-day control error lines → JSONL package in buffer/outbox."""
+"""Collect 14-day control error lines → JSONL package in buffer/outbox (only if any)."""
 from __future__ import annotations
 
 import argparse
@@ -223,7 +223,7 @@ def write_package(
 ) -> Tuple[Path, Path]:
     outbox.mkdir(parents=True, exist_ok=True)
     buffer.mkdir(parents=True, exist_ok=True)
-    base = f"piMiner-errors-{label}"
+    base = f"piminer-errors-{label}"
     jsonl_path = buffer / f"{base}.jsonl"
     with jsonl_path.open("w", encoding="utf-8") as f:
         for ev in events:
@@ -293,6 +293,9 @@ def main() -> int:
     for p in files:
         events.extend(extract_errors(p, start, end))
     events.sort(key=lambda e: e.get("ts") or "")
+    if not events:
+        print(f"no errors in last {days} days — nothing queued (files={len(files)})")
+        return 0
 
     # stamp period_days in write via temporary meta field after
     gz, meta = write_package(

@@ -1,7 +1,7 @@
-# Agent-Hinweise (piMiner / Miner-Steuerung)
+# Agent-Hinweise (piminer / Miner-Steuerung)
 
 **Pfad Pi:** `/home/piminer/minersteuerung`  
-**GitHub:** https://github.com/MikeBu21/piMiner (Branch `main`, Commit `959230b`+)
+**GitHub:** https://github.com/MikeBu21/piminer (Branch `main`, Commit `959230b`+)
 
 ## Steuerungsalgorithmus – zuerst lesen
 

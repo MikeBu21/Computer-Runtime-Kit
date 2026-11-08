@@ -1985,7 +1985,7 @@ def apply_planning_hold(settings: Optional[Dict[str, Any]] = None) -> Dict[str, 
 def apply_community_hold(settings: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Energiegemeinschaft ohne PV: frische Einspeisung der Mitglieder als Zukauf.
 
-    Haus Martin, Ludwig und weitere Mitglieder werden addiert. Unter 0,2 kW wird
+    Alle Mitglieder der Gemeinschaft werden addiert. Unter 0,2 kW wird
     nichts geschrieben. Mit PV-Anlage ist der Schalter aus, dann passiert hier nichts.
     """
     if settings is None:

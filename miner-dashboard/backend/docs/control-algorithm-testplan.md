@@ -52,7 +52,7 @@ Erwartung: `pv_yield_today_kwh`, `info_messages`, `eta_message`, `devices`
 ## Unit-Tests
 
 ```bash
-cd /home/piMiner/miner-dashboard/backend
+cd /home/piminer/miner-dashboard/backend
 ./venv/bin/python -m pytest tests/test_control_algorithm.py tests/test_oms_pv_forecast.py -v
 # oder
 ./venv/bin/python -m unittest tests.test_control_algorithm tests.test_oms_pv_forecast

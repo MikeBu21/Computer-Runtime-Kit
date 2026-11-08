@@ -14,7 +14,18 @@ CONFIG_PATHS = (
     BACKEND_DIR / "ha_entity_mapping.json",
 )
 
-HA_SNAPSHOT_PATH = Path("/tmp/ha_snapshot.json")
+HA_SNAPSHOT_PATH = Path("/dev/shm/ha_snapshot.json")
+# Dieselbe Auswahl wie in der Datenbrücke: Inverter 2, Solarman und Fronius.
+INVERTER_DEVICE_NAMES = {"inverter 2"}
+KEEP_NAME_PARTS = ("solarman", "fronius", "solarnet", "symo", "gen24", "wechselrichter")
+BANNED_NAME_PARTS = (
+    "osswald",
+    "oswald",
+    "heizkörper sofa",
+    "heizkorper sofa",
+    "heizkorper_sofa",
+    "fischteich",
+)
 
 FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     "kelag": {
@@ -246,6 +257,23 @@ def mapped_entity_ids(cfg: Optional[Dict[str, Any]] = None) -> set[str]:
     return ids
 
 
+def _banned_entity(item: Dict[str, Any]) -> bool:
+    folded = " ".join(
+        str(item.get(key) or "") for key in ("entity_id", "name", "device")
+    ).casefold()
+    return any(part in folded for part in BANNED_NAME_PARTS)
+
+
+def _is_inverter_entity(item: Dict[str, Any]) -> bool:
+    device = str(item.get("device") or "").casefold().strip()
+    folded = " ".join(
+        str(item.get(key) or "") for key in ("device", "entity_id", "name")
+    ).casefold()
+    if device in INVERTER_DEVICE_NAMES or any(part in folded for part in KEEP_NAME_PARTS):
+        return True
+    return "192_168_1_176" in folded or "192.168.1.176" in folded
+
+
 def list_ha_entities(
     snapshot: Optional[Dict[str, Any]] = None,
     *,
@@ -290,7 +318,9 @@ def list_ha_entities(
                 or "",
                 "device_class": entity.get("device_class")
                 or attrs.get("device_class"),
-                "available": state_str not in ("unavailable", "unknown", ""),
+                # "unknown" bleibt wählbar: neu angelegte Sensoren haben oft noch keinen Wert.
+                # Nur "unavailable" ist tot und verschwindet aus der Liste.
+                "available": state_str != "unavailable",
             }
         )
 
@@ -303,6 +333,7 @@ def list_ha_entities(
         add_entity(entity_id, entity, "—")
 
     items.sort(key=lambda x: (x["device"].lower(), x["name"].lower(), x["entity_id"]))
+    items = [item for item in items if _is_inverter_entity(item) and not _banned_entity(item)]
     if available_only:
         keep = set(keep_entity_ids or ())
         items = [

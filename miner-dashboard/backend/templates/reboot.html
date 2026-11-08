@@ -12,11 +12,21 @@
     <p style="color: var(--muted); margin-bottom: 1.25rem;">
       ⚠️ Der Neustart kann etwa 1–2 Minuten dauern. Das Dashboard ist danach wieder erreichbar.
     </p>
+    {% if error %}
+    <p style="color: #b42318; margin-bottom: 1.25rem;">{{ error }}</p>
+    {% endif %}
+    {% if scheduled %}
+    <p style="margin-bottom: 1.25rem;">
+      Der Neustart wurde an systemd übergeben. Der Raspberry Pi fährt in wenigen Sekunden herunter
+      und ist nach ein bis zwei Minuten wieder erreichbar. Diese Seite bricht ab, sobald der Pi ausgeht.
+    </p>
+    {% else %}
     <form method="post" onsubmit="return confirm('Raspberry Pi wirklich neu starten?');">
       <div class="action-row">
         <button type="submit" class="btn-danger-custom">🔁 Jetzt neu starten</button>
         <a href="/" class="btn-secondary-custom">Abbrechen</a>
       </div>
     </form>
+    {% endif %}
   </div>
 {% endblock %}

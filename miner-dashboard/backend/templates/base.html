@@ -578,7 +578,7 @@
           </div>
         </div>
 
-        {% set calc_paths = ['/grundverbrauchsrechner', '/statistik-konfigurieren', '/fehlerberichte'] %}
+        {% set calc_paths = ['/grundverbrauchsrechner', '/statistik-konfigurieren'] %}
         {% set calc_open = request.path in calc_paths %}
         <div class="nav-group" data-nav-group>
           <button type="button" class="nav-group-toggle" aria-expanded="{{ 'true' if calc_open else 'false' }}" aria-controls="nav_calc_group" data-nav-group-toggle>
@@ -588,17 +588,18 @@
           <div id="nav_calc_group" class="nav-group-body{% if calc_open %} is-open{% endif %}" data-nav-group-body {% if not calc_open %}hidden{% endif %}>
             <a class="nav-link nav-link-leaf{% if request.path == '/grundverbrauchsrechner' %} active{% endif %}" href="/grundverbrauchsrechner">🧮 Grundverbrauchsrechner</a>
             <a class="nav-link nav-link-leaf{% if request.path == '/statistik-konfigurieren' %} active{% endif %}" href="/statistik-konfigurieren">📈 Statistik konfigurieren</a>
-            <a class="nav-link nav-link-leaf{% if request.path == '/fehlerberichte' %} active{% endif %}" href="/fehlerberichte">📋 Fehlerbericht</a>
           </div>
         </div>
 
+        {% set other_paths = ['/fehlerberichte'] %}
+        {% set other_open = request.path in other_paths %}
         <div class="nav-group" data-nav-group>
-          <button type="button" class="nav-group-toggle" aria-expanded="false" aria-controls="nav_other_group" data-nav-group-toggle>
+          <button type="button" class="nav-group-toggle" aria-expanded="{{ 'true' if other_open else 'false' }}" aria-controls="nav_other_group" data-nav-group-toggle>
             <span>📦 Sonstige</span>
             <span class="nav-group-caret" aria-hidden="true">▸</span>
           </button>
-          <div id="nav_other_group" class="nav-group-body" data-nav-group-body hidden>
-            <span class="nav-link nav-link-leaf" style="opacity:0.55; cursor:default;">Noch keine Einträge</span>
+          <div id="nav_other_group" class="nav-group-body{% if other_open %} is-open{% endif %}" data-nav-group-body {% if not other_open %}hidden{% endif %}>
+            <a class="nav-link nav-link-leaf{% if request.path == '/fehlerberichte' %} active{% endif %}" href="/fehlerberichte">📋 Fehlerbericht</a>
           </div>
         </div>
       </div>

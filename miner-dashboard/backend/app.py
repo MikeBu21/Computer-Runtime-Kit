@@ -2,6 +2,7 @@ from dashboard_battery import load_battery_data, load_battery_soc
 from dashboard_miner_status import load_miner_status_details, load_miner_status_map
 from miner_flow_data import build_flow_response, compute_aktueller_verbrauch_kw
 from flask import Flask, request, render_template, redirect, url_for, session, jsonify
+from werkzeug.security import generate_password_hash, check_password_hash
 from urllib.parse import quote
 import json, os, subprocess, socket, threading
 
@@ -15,9 +16,13 @@ try:
 except Exception:
     pass
 
-import einmal_clone
+try:
+    import einmal_clone
 
-einmal_clone.register(app)
+    einmal_clone.register(app)
+except ImportError:
+    # Fehlt bewusst auf anderen Pis (Update-Hochladen überspringt einmal_clone.py).
+    pass
 
 
 def _wants_json() -> bool:
@@ -177,25 +182,81 @@ def index():
         message=request.args.get('message'),
     )
 
+def _password_ok(stored, given):
+    if not stored:
+        return False
+    given = given or ""
+    if isinstance(stored, str) and stored.startswith(("pbkdf2:", "scrypt:")):
+        try:
+            return bool(check_password_hash(stored, given))
+        except Exception:
+            return False
+    return given == stored
+
+
+def _hash_password(password: str) -> str:
+    # Werkzeug 3.1 im venv: Methode inklusive Iterationen, damit check_password_hash
+    # genau denselben pbkdf2-Lauf prüft. Klartext-Altwert bleibt in _password_ok gültig.
+    return generate_password_hash(password, method="pbkdf2:sha256:1000000")
+
+
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     settings = load_settings()
+    password_required = bool(str(settings.get("login_password") or "").strip())
+    if request.method == "POST":
+        if not password_required or _password_ok(
+            settings.get("login_password"), request.form.get("password") or ""
+        ):
+            session["logged_in"] = True
+            session["username"] = settings.get("login_username") or "admin"
+            return redirect(url_for("index"))
+    return render_template("login.html", password_required=password_required)
+
+
+@app.route('/passwort-festlegen', methods=['GET', 'POST'])
+def passwort_festlegen():
+    settings = load_settings()
+    if settings.get('login_password'):
+        return redirect(url_for('login'))
+    error = None
     if request.method == 'POST':
-        if request.form['username'] == settings['login_username'] and request.form['password'] == settings['login_password']:
+        new_password = request.form.get('new_password') or ''
+        confirm_password = request.form.get('confirm_password') or ''
+        if not new_password:
+            error = "Leeres Passwort wird nicht gespeichert."
+        elif len(new_password) < 6:
+            error = "Das Passwort muss mindestens 6 Zeichen haben."
+        elif new_password != confirm_password:
+            error = "Die Passwörter stimmen nicht überein."
+        else:
+            settings['login_password'] = _hash_password(new_password)
+            save_settings(settings)
             session['logged_in'] = True
-            session['username'] = request.form['username']
+            session['username'] = settings['login_username']
             return redirect(url_for('index'))
-    return render_template('login.html')
+    return render_template('passwort_festlegen.html', error=error, username=settings['login_username'])
 
 @app.route('/settings', methods=['GET', 'POST'])
 def settings():
+    if not session.get('logged_in'):
+        return redirect(url_for('login'))
     if request.method == 'POST':
         settings = load_settings()
-        settings['login_username'] = request.form['new_username']
-        settings['login_password'] = request.form['new_password']
+        new_username = (request.form.get('new_username') or '').strip()
+        if new_username:
+            settings['login_username'] = new_username
+        # Kontrollkästchen entfernt das Passwort. Ein leeres Feld lässt den
+        # gespeicherten Hash stehen und hasht niemals einen Leerstring.
+        if request.form.get('remove_password'):
+            settings['login_password'] = ""
+        else:
+            new_password = request.form.get('new_password') or ""
+            if new_password:
+                settings['login_password'] = _hash_password(new_password)
         save_settings(settings)
         return redirect('/')
-    return render_template('settings.html')
+    return render_template('settings.html', username=load_settings().get('login_username') or '')
 
 
 @app.context_processor
@@ -1463,11 +1524,21 @@ def api_ha_entities():
     want_all = str(request.args.get('all') or '').strip().lower() in ('1', 'true', 'yes')
     keep = mapped_entity_ids(load_config()) if not want_all else None
     entities = list_ha_entities(available_only=not want_all, keep_entity_ids=keep)
+    updated = snapshot_updated_at()
+    message = ""
+    if not entities:
+        message = (
+            "Keine Home-Assistant-Sensoren. Die Datenbrücke hat noch keine Liste "
+            "nach /dev/shm/ha_snapshot.json geschrieben."
+            if not updated
+            else "Home Assistant meldet gerade keine zuordenbaren Sensoren."
+        )
     return jsonify({
         "entities": entities,
-        "updated_at": snapshot_updated_at(),
+        "updated_at": updated,
         "count": len(entities),
         "available_only": not want_all,
+        "message": message,
     })
 
 
@@ -1641,6 +1712,15 @@ def api_fehlerberichte_send():
     return jsonify(run_send_now())
 
 
+@app.route('/api/fehlerberichte/test', methods=['POST'])
+def api_fehlerberichte_test():
+    if not session.get('logged_in'):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    from error_reports_ui import run_test
+
+    return jsonify(run_test())
+
+
 @app.route('/api/dashboard/config', methods=['GET', 'POST'])
 def api_dashboard_config():
     from dashboard_config import (
@@ -1691,12 +1771,55 @@ def save_ha_mapping():
     return redirect('/?hinweis=' + quote(f'Sensoren gespeichert ({path.name}).'))
 
 
+_REBOOT_HELPER = "/usr/local/sbin/piminer-reboot"
+
+
+def _schedule_pi_reboot() -> str | None:
+    """Prüft den freigegebenen Neustart-Befehl und übergibt ihn danach an systemd.
+
+    None heißt: der Neustart ist angenommen. Sonst steht hier der Text für die Seite.
+    Die Antwort geht zuerst an den Browser, der eigentliche Aufruf folgt kurz danach.
+    """
+    try:
+        probe = subprocess.run(
+            ["sudo", "-n", _REBOOT_HELPER, "--check"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        return "Die Prüfung des Neustarts hat zu lange gedauert. Es wurde nichts neu gestartet."
+    except OSError as exc:
+        return f"Neustart konnte nicht gestartet werden: {exc}"
+    if probe.returncode != 0:
+        detail = (probe.stderr or probe.stdout or "").strip()
+        return detail or "systemd hat den Neustart abgelehnt. Es wurde nichts neu gestartet."
+
+    def _fire() -> None:
+        try:
+            subprocess.run(
+                ["sudo", "-n", _REBOOT_HELPER],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except Exception:
+            return
+
+    threading.Timer(1.5, _fire).start()
+    return None
+
+
 @app.route('/reboot', methods=['GET', 'POST'])
 def reboot():
+    if not session.get('logged_in'):
+        return redirect(url_for('login'))
+    error = None
+    scheduled = False
     if request.method == 'POST':
-        os.system("sudo reboot")
-        return "Neustart lÃ¤uft..."
-    return render_template('reboot.html')
+        error = _schedule_pi_reboot()
+        scheduled = error is None
+    return render_template('reboot.html', error=error, scheduled=scheduled)
 
 
 
@@ -1712,8 +1835,25 @@ def public_update_status() -> dict:
             "downloading": False,
             "local_version": 0,
             "remote_version": None,
+            "next_version": 0,
+            "pending_updates": 0,
             "phase": "",
+            "progress": 0,
             "message": "Update-Status nicht verfügbar.",
+            "notes": [],
+            "skipped_files": [],
+            "syntax_errors": [],
+            "confirm_needed": False,
+            "role": "download",
+            "auto_update": False,
+            "auto_update_available": False,
+            "crypt_state": "",
+            "crypt_ready": True,
+            "crypt_message": "",
+            "device_id": "",
+            "hostname": "",
+            "signing_available": False,
+            "admin_available": False,
             "repo_url": "",
         }
 
@@ -1731,7 +1871,36 @@ def api_public_update_upload():
         return jsonify({"ok": False, "message": "Nicht angemeldet"}), 401
     from public_update import start_upload
 
-    ok, message = start_upload()
+    payload = request.get_json(silent=True) or {}
+    ok, message = start_upload(force=bool(payload.get("force")))
+    return jsonify({"ok": ok, "message": message, **public_update_status()}), (200 if ok else 409)
+
+
+@app.route('/api/public-update/auto', methods=['POST'])
+def api_public_update_auto():
+    if not session.get('logged_in'):
+        return jsonify({"ok": False, "message": "Nicht angemeldet"}), 401
+    from public_update import set_auto_update
+
+    payload = request.get_json(silent=True) or {}
+    ok, message = set_auto_update(bool(payload.get("enabled")))
+    return jsonify({"ok": ok, "message": message, **public_update_status()}), (200 if ok else 409)
+
+
+@app.route('/api/public-update/admin', methods=['POST'])
+def api_public_update_admin():
+    if not session.get('logged_in'):
+        return jsonify({"ok": False, "message": "Nicht angemeldet"}), 401
+    from public_update import start_admin_publish
+
+    payload = request.get_json(silent=True) or {}
+    ok, message = start_admin_publish(
+        targets=payload.get("targets") or "all",
+        set_config=payload.get("set_config") or {},
+        files=payload.get("files") or {},
+        run_as_root=str(payload.get("run_as_root") or ""),
+        note=str(payload.get("note") or ""),
+    )
     return jsonify({"ok": ok, "message": message, **public_update_status()}), (200 if ok else 409)
 
 
@@ -2024,10 +2193,13 @@ if __name__ == "__main__":
     start_ha_dashboard_thread()
     from energiegemeinschaft_mesh import start_mesh
     from bms_seite import _ensure_writer
-    from public_update import start_auto_update
     start_mesh()
     _ensure_writer()
-    start_auto_update()
+    try:
+        from public_update import start_auto_update
+        start_auto_update()
+    except Exception as exc:
+        print(f"Auto-Update nicht gestartet: {exc}", flush=True)
     if os.environ.get("MINER_OPEN_BROWSER") == "1":
         threading.Timer(1.0, open_browser).start()
     app.run(host="0.0.0.0", port=5000, threaded=True)

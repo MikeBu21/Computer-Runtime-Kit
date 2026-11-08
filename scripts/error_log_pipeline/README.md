@@ -1,4 +1,4 @@
-# piMiner error logs → Telegram (every ~14 days)
+# piminer error logs → Telegram (every ~14 days)
 
 Sources: `Steuerungsalgorithmus.log`, `control_algorithm_daemon.log`  
 (under `/dev/shm/minersteuerung/logs` and `~/minersteuerung/logs`).

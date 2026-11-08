@@ -3,8 +3,8 @@
 ## Installation (einmalig)
 
 ```bash
-chmod +x /home/piMiner/miner-dashboard/start_all.sh
-sudo cp /home/piMiner/miner-dashboard/miner-dashboard.service /etc/systemd/system/
+chmod +x /home/piminer/miner-dashboard/start_all.sh
+sudo cp /home/piminer/miner-dashboard/miner-dashboard.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable miner-dashboard.service
 sudo systemctl start miner-dashboard.service
@@ -14,7 +14,7 @@ Status prüfen:
 
 ```bash
 sudo systemctl status miner-dashboard.service
-ls -la /home/piMiner/miner-dashboard/logs/
+ls -la /home/piminer/miner-dashboard/logs/
 ```
 
 ## Hinweise
@@ -26,5 +26,5 @@ ls -la /home/piMiner/miner-dashboard/logs/
 ## Manuell starten
 
 ```bash
-/home/piMiner/miner-dashboard/start_all.sh
+/home/piminer/miner-dashboard/start_all.sh
 ```

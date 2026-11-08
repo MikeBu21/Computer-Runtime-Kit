@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from control_algorithm.config import BACKEND_DIR, CONFIG_PATH
 
 REPO_ROOT = BACKEND_DIR.parent.parent  # minersteuerung/
-GITHUB_REPO = "MikeBu21/piMiner"
+GITHUB_REPO = "MikeBu21/piminer"
 DEFAULT_BRANCH = "main"
 
 # Relativ zum Repo-Root: Dateien/Ordner die aktualisiert werden

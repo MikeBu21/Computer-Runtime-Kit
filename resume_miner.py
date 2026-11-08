@@ -2,7 +2,7 @@ import paramiko
 
 miner_ip = "192.168.1.128"
 miner_user = "root"
-miner_password = "Beispiel"
+miner_password = "p!yZ/mnX?3Rz"
 
 def resume_miner():
     ssh = paramiko.SSHClient()

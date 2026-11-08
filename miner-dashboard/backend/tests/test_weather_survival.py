@@ -192,7 +192,7 @@ class TestWeatherSurvival:
             "weather_context": weather_context(cfg, state, days=7),
         }
         live = {"soc_percent": 55, "pv_kw": 0}
-        plan = build_weekly_energy_plan(cfg, state, live, "/home/piMiner/miner-dashboard/backend", today)
+        plan = build_weekly_energy_plan(cfg, state, live, "/home/piminer/miner-dashboard/backend", today)
         assert len(plan.get("days") or []) == planning_horizon_days(cfg)
         today_hours = plan["days"][0]["hours"]
         assert len(today_hours) == 24

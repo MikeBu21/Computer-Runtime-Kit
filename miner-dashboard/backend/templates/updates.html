@@ -10,6 +10,20 @@
 
   <div class="panel" id="public_update_panel" style="max-width: 720px;">
     <h5 class="panel-title">Öffentliches Update</h5>
+    <div style="display:grid; gap:0.3rem; margin-bottom:0.9rem; font-size:0.9rem;">
+      <div id="public_update_role" style="font-weight:700;">
+        {% if public_update.role == "publisher" %}Dieser Pi veröffentlicht Updates{% else %}Dieser Pi lädt Updates nur herunter{% endif %}
+      </div>
+      <div id="public_update_versions" style="color: var(--muted);">
+        Installiert {{ public_update.local_version }} · Öffentlich {{ public_update.remote_version if public_update.remote_version is not none else "nicht prüfbar" }}
+      </div>
+      <div id="public_update_crypt" style="color: {% if public_update.crypt_ready %}#00c853{% else %}#ffb300{% endif %};">
+        {% if public_update.crypt_state == "ready" %}Verschlüsselte Ordner bereit{% elif public_update.crypt_ready %}{{ public_update.crypt_message }}{% else %}Wartet auf Entschlüsselung – Update läuft danach automatisch weiter{% endif %}
+      </div>
+      <div id="public_update_device" style="color: var(--muted); font-size:0.8rem;">
+        Gerät: {{ public_update.hostname }}{% if public_update.device_id %} · ID {{ public_update.device_id }}{% endif %}
+      </div>
+    </div>
     <p id="public_update_message" style="color: var(--muted); margin-bottom: 0.9rem;">{{ public_update.message }}</p>
     <div id="public_update_progress_wrap" hidden style="margin: 0 0 0.9rem;">
       <div style="display:flex; justify-content:space-between; gap:0.75rem; margin-bottom:0.35rem;">
@@ -28,10 +42,52 @@
         {% endif %}
       </button>
       {% if public_update.upload_allowed %}
-      <button type="button" class="btn-primary-custom" id="public_upload_btn">Update hochladen</button>
+      <button type="button" class="btn-primary-custom" id="public_upload_btn">Update hochladen (Version {{ public_update.next_version }})</button>
+      {% endif %}
+      {% if public_update.auto_update_available %}
+      <button type="button" id="auto_update_btn" aria-pressed="{{ 'true' if public_update.auto_update else 'false' }}"
+              class="{{ 'btn-primary-custom' if public_update.auto_update else 'btn-secondary-custom' }}">
+        Auto-Update: {{ "an" if public_update.auto_update else "aus" }}
+      </button>
       {% endif %}
     </div>
+    {% if public_update.auto_update_available %}
+    <p style="color: var(--muted); font-size: 0.8rem; margin: 0.5rem 0 0;">
+      Auto-Update lädt neue Versionen und Einstellungs-Pakete selbst. Nach jedem Einschalten ist es wieder an.
+    </p>
+    {% endif %}
+    <ul id="public_update_notes" style="margin: 0.9rem 0 0; padding-left: 1.1rem; color: var(--muted); font-size: 0.85rem;" {% if not public_update.notes %}hidden{% endif %}>
+      {% for note in public_update.notes %}<li>{{ note }}</li>{% endfor %}
+    </ul>
   </div>
+
+  {% if public_update.role == "publisher" %}
+  <div class="panel" id="admin_package_panel" style="max-width: 720px; margin-top: 1rem;">
+    <h5 class="panel-title">Einstellungen an Pis senden</h5>
+    <p style="color: var(--muted); font-size: 0.85rem;">
+      Das Paket wird signiert und verschlüsselt veröffentlicht. Die Pis übernehmen es beim nächsten
+      „Update herunterladen“. Ziele: <code>alle</code> oder Hostnamen bzw. Geräte-IDs, durch Komma getrennt.
+    </p>
+    {% if not public_update.admin_available %}
+    <p style="color:#ffb300;">Signatur- oder Netzwerkschlüssel fehlt auf diesem Pi.</p>
+    {% endif %}
+    <div style="display:grid; gap:0.6rem;">
+      <label>Ziele <input type="text" id="admin_targets" value="alle" style="width:100%;"></label>
+      <label>Telegram-Token für Fehlerberichte (leer = unverändert)
+        <input type="password" id="admin_error_token" autocomplete="off" style="width:100%;"></label>
+      <label>Chat-IDs für Fehlerberichte (Komma, leer = unverändert)
+        <input type="text" id="admin_error_chats" style="width:100%;"></label>
+      <label>Weitere Einstellungen als JSON <span style="color:var(--muted); font-size:0.8rem;">{"pfad/datei.json": {"schlüssel": "wert"}}</span>
+        <textarea id="admin_set_config" rows="4" style="width:100%; font-family:monospace;"></textarea></label>
+      <label>Systemdatei-Pfad (optional) <input type="text" id="admin_file_path" placeholder="/etc/..." style="width:100%;"></label>
+      <label>Systemdatei-Inhalt <textarea id="admin_file_content" rows="4" style="width:100%; font-family:monospace;"></textarea></label>
+      <label>Dateirechte (optional, z. B. 755) <input type="text" id="admin_file_mode" style="width:8rem;"></label>
+      <label>Root-Skript, einmalig (optional) <textarea id="admin_root_script" rows="4" style="width:100%; font-family:monospace;"></textarea></label>
+      <label>Notiz <input type="text" id="admin_note" style="width:100%;"></label>
+      <div><button type="button" class="btn-primary-custom" id="admin_publish_btn" {% if not public_update.admin_available %}disabled{% endif %}>Einstellungen an Pis senden</button></div>
+    </div>
+  </div>
+  {% endif %}
 {% endblock %}
 
 {% block extra_scripts %}
@@ -43,10 +99,17 @@
       const progressBar = document.getElementById("public_update_progress_bar");
       const progressPct = document.getElementById("public_update_progress_pct");
       const progressLabel = document.getElementById("public_update_progress_label");
+      const notesEl = document.getElementById("public_update_notes");
+      const roleEl = document.getElementById("public_update_role");
+      const versionsEl = document.getElementById("public_update_versions");
+      const cryptEl = document.getElementById("public_update_crypt");
       let pollTimer = null;
+      let nextVersion = {{ public_update.next_version|tojson }};
+      let confirmAsked = false;
 
       const PHASE_PCT = {
-        start: 8, export: 28, scan: 48, push: 78, apply: 78, setup: 88, fetch: 35, done: 100, error: 100,
+        start: 8, wait_crypt: 10, export: 28, scan: 48, push: 70, verify: 85, fetch: 30, backup: 45,
+        apply: 60, system: 72, admin: 78, setup: 88, rollback: 95, done: 100, error: 100,
       };
 
       function setProgress(visible, percent, label) {
@@ -58,38 +121,87 @@
         if (progressLabel && label) progressLabel.textContent = label;
       }
 
+      function uploadLabel() {
+        return "Update hochladen (Version " + nextVersion + ")";
+      }
+
       function ensureUploadButton(allowed) {
         let button = document.getElementById("public_upload_btn");
         if (!allowed) {
           if (button) button.remove();
           return;
         }
-        if (button) return;
+        if (button) {
+          button.textContent = uploadLabel();
+          return;
+        }
         if (!downloadBtn) return;
         button = document.createElement("button");
         button.type = "button";
         button.id = "public_upload_btn";
         button.className = "btn-primary-custom";
-        button.textContent = "Update hochladen";
+        button.textContent = uploadLabel();
         button.addEventListener("click", onUpload);
         downloadBtn.insertAdjacentElement("afterend", button);
       }
 
+      function renderNotes(notes) {
+        if (!notesEl) return;
+        notesEl.innerHTML = "";
+        (notes || []).forEach(function (note) {
+          const li = document.createElement("li");
+          li.textContent = note;
+          notesEl.appendChild(li);
+        });
+        notesEl.hidden = !(notes && notes.length);
+      }
+
+      function renderInfo(data) {
+        if (roleEl) roleEl.textContent = data.role === "publisher" ? "Dieser Pi veröffentlicht Updates" : "Dieser Pi lädt Updates nur herunter";
+        if (versionsEl) {
+          const remote = (data.remote_version === null || data.remote_version === undefined) ? "nicht prüfbar" : data.remote_version;
+          versionsEl.textContent = "Installiert " + (data.local_version || 0) + " · Öffentlich " + remote;
+        }
+        if (cryptEl) {
+          if (data.crypt_state === "ready") {
+            cryptEl.textContent = "Verschlüsselte Ordner bereit";
+            cryptEl.style.color = "#00c853";
+          } else if (data.crypt_ready) {
+            cryptEl.textContent = data.crypt_message || "";
+            cryptEl.style.color = "#00c853";
+          } else {
+            cryptEl.textContent = "Wartet auf Entschlüsselung – Update läuft danach automatisch weiter";
+            cryptEl.style.color = "#ffb300";
+          }
+        }
+        if (data.next_version) nextVersion = data.next_version;
+        const autoBtn = document.getElementById("auto_update_btn");
+        if (autoBtn) {
+          const on = Boolean(data.auto_update);
+          autoBtn.textContent = "Auto-Update: " + (on ? "an" : "aus");
+          autoBtn.setAttribute("aria-pressed", on ? "true" : "false");
+          autoBtn.className = on ? "btn-primary-custom" : "btn-secondary-custom";
+        }
+      }
+
       function applyStatus(data) {
         const phase = String(data.phase || "");
-        // Bei Fehler die Job-Meldung behalten (nicht durch Status-Hinweis ersetzen).
         if (messageEl && data.message) {
-          if (phase === "error" || data.uploading || data.downloading || phase === "done" || !messageEl.dataset.lockedError) {
+          if (phase === "error" || phase === "confirm" || data.uploading || data.downloading || phase === "done" || !messageEl.dataset.lockedError) {
             messageEl.textContent = data.message;
           }
           if (phase === "error") messageEl.dataset.lockedError = "1";
           if (phase !== "error") delete messageEl.dataset.lockedError;
         }
+        renderInfo(data);
+        renderNotes(data.notes);
         ensureUploadButton(Boolean(data.upload_allowed));
         const busy = Boolean(data.uploading || data.downloading);
         if (downloadBtn) downloadBtn.disabled = busy;
         const uploadBtn = document.getElementById("public_upload_btn");
         if (uploadBtn) uploadBtn.disabled = busy;
+        const adminBtn = document.getElementById("admin_publish_btn");
+        if (adminBtn) adminBtn.disabled = busy || !data.admin_available;
         if (busy) {
           const pct = (data.progress != null) ? Number(data.progress) : (PHASE_PCT[phase] != null ? PHASE_PCT[phase] : 20);
           if (progressBar) progressBar.style.background = "linear-gradient(90deg, #00e676, #00c853)";
@@ -110,6 +222,14 @@
           clearInterval(pollTimer);
           pollTimer = null;
         }
+        if (phase === "confirm" && data.confirm_needed && !confirmAsked) {
+          confirmAsked = true;
+          if (window.confirm(data.message || "Syntaxfehler gefunden. Trotzdem veröffentlichen?")) {
+            setProgress(true, 5, "Upload wird gestartet…");
+            postUpdate("/api/public-update/upload", { force: true });
+          }
+        }
+        if (phase !== "confirm") confirmAsked = false;
       }
 
       async function refreshUpdateStatus() {
@@ -122,16 +242,18 @@
         }
       }
 
-      async function postUpdate(url) {
+      async function postUpdate(url, body) {
         try {
           const response = await fetch(url, {
             method: "POST",
             credentials: "same-origin",
-            headers: { "Accept": "application/json" },
+            headers: { "Accept": "application/json", "Content-Type": "application/json" },
+            body: JSON.stringify(body || {}),
           });
           const data = await response.json();
           applyStatus(data);
           if (window.showAppToast) window.showAppToast(data.message || "", data.ok ? "ok" : "error");
+          if (data.ok && !pollTimer) pollTimer = setInterval(refreshUpdateStatus, 1200);
         } catch (err) {
           if (messageEl) messageEl.textContent = "Anfrage fehlgeschlagen: " + (err.message || err);
           if (window.showAppToast) window.showAppToast("Anfrage fehlgeschlagen", "error");
@@ -142,21 +264,89 @@
       function onUpload() {
         const button = document.getElementById("public_upload_btn");
         if (!button || button.disabled) return;
+        if (!window.confirm("Version " + nextVersion + " veröffentlichen? Alle Pis können sie dann laden.")) return;
         setProgress(true, 5, "Upload wird gestartet…");
         if (messageEl) messageEl.textContent = "Upload wird gestartet…";
         button.disabled = true;
-        postUpdate("/api/public-update/upload");
+        postUpdate("/api/public-update/upload", {});
+      }
+
+      function valueOf(id) {
+        const el = document.getElementById(id);
+        return el ? String(el.value || "").trim() : "";
+      }
+
+      function onAdminPublish() {
+        const targets = valueOf("admin_targets") || "alle";
+        const setConfig = {};
+        const extra = valueOf("admin_set_config");
+        if (extra) {
+          try {
+            Object.assign(setConfig, JSON.parse(extra));
+          } catch (err) {
+            window.alert("Einstellungs-JSON ist ungültig: " + err.message);
+            return;
+          }
+        }
+        const token = valueOf("admin_error_token");
+        const chats = valueOf("admin_error_chats");
+        if (token || chats) {
+          const key = "scripts/error_log_pipeline/pi/config.json";
+          setConfig[key] = setConfig[key] || {};
+          if (token) setConfig[key].telegram_token = token;
+          if (chats) setConfig[key].chat_ids = chats.split(/[\s,]+/).filter(Boolean);
+        }
+        const files = {};
+        const filePath = valueOf("admin_file_path");
+        if (filePath) {
+          const content = document.getElementById("admin_file_content").value || "";
+          const bytes = new TextEncoder().encode(content);
+          let binary = "";
+          bytes.forEach(function (b) { binary += String.fromCharCode(b); });
+          files[filePath] = { content_b64: btoa(binary) };
+          const mode = valueOf("admin_file_mode");
+          if (mode) files[filePath].mode = mode;
+          const toAll = ["alle", "all"].includes(targets.toLowerCase());
+          if (toAll && filePath.indexOf("/etc/tailscale/") === 0) {
+            if (!window.confirm("Ein Tailscale-Schlüssel an ALLE Pis bringt viele Pis unter einen Schlüssel. Wirklich an alle senden?")) return;
+          }
+        }
+        const rootScript = document.getElementById("admin_root_script") ? document.getElementById("admin_root_script").value : "";
+        if (!Object.keys(setConfig).length && !Object.keys(files).length && !rootScript.trim()) {
+          window.alert("Das Paket ist leer.");
+          return;
+        }
+        if (!window.confirm("Paket an " + targets + " senden?")) return;
+        setProgress(true, 5, "Admin-Paket wird veröffentlicht…");
+        postUpdate("/api/public-update/admin", {
+          targets: targets,
+          set_config: setConfig,
+          files: files,
+          run_as_root: rootScript,
+          note: valueOf("admin_note"),
+        });
+        const tokenEl = document.getElementById("admin_error_token");
+        if (tokenEl) tokenEl.value = "";
       }
 
       if (downloadBtn) {
         downloadBtn.addEventListener("click", function () {
           setProgress(true, 5, "Download wird gestartet…");
           if (messageEl) messageEl.textContent = "Download wird gestartet…";
-          postUpdate("/api/public-update/download");
+          postUpdate("/api/public-update/download", {});
         });
       }
       const existingUpload = document.getElementById("public_upload_btn");
       if (existingUpload) existingUpload.addEventListener("click", onUpload);
+      const adminBtn = document.getElementById("admin_publish_btn");
+      if (adminBtn) adminBtn.addEventListener("click", onAdminPublish);
+      const autoBtn = document.getElementById("auto_update_btn");
+      if (autoBtn) {
+        autoBtn.addEventListener("click", function () {
+          const on = autoBtn.getAttribute("aria-pressed") === "true";
+          postUpdate("/api/public-update/auto", { enabled: !on });
+        });
+      }
       refreshUpdateStatus();
     })();
   </script>

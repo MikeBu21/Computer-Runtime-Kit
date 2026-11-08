@@ -1,0 +1,14 @@
+[Unit]
+Description=Use the Tailscale auth key from /etc/tailscale/authkey
+After=network-online.target tailscaled.service
+Wants=network-online.target
+ConditionPathExists=!/var/lib/tailscale-firstboot.done
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/tailscale-token-apply.sh
+RemainAfterExit=yes
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target

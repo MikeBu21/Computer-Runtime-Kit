@@ -17,6 +17,7 @@ import threading
 import time
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from energiegemeinschaft import BACKEND_DIR, SETTINGS_FILE, load_settings as load_page_settings
@@ -37,22 +38,78 @@ _last_good: Dict[str, Any] = {}
 
 
 def generate_invite_code() -> str:
+    """16 Zeichen aus 32 Symbolen = 80 Bit aus dem Kernel-Zufall (secrets/os.urandom).
+
+    Der Code ist zugleich HMAC-Schlüssel der Mesh-Pakete, darf also nicht erratbar sein.
+    """
     import secrets
 
-    raw = "".join(secrets.choice(_ALPHABET) for _ in range(8))
-    return f"EG-{raw[:4]}-{raw[4:]}"
+    raw = "".join(secrets.choice(_ALPHABET) for _ in range(16))
+    return "EG-" + "-".join(raw[i : i + 4] for i in range(0, 16, 4))
 
 
 def code_is_valid(code: str) -> bool:
+    """EG-XXXX-XXXX-XXXX-XXXX; ältere Codes EG-XXXX-XXXX bleiben zum Beitreten gültig."""
     parts = (code or "").strip().upper().split("-")
-    if len(parts) != 3 or parts[0] != "EG":
+    if len(parts) not in (3, 5) or parts[0] != "EG":
         return False
-    left, right = parts[1], parts[2]
-    return (
-        len(left) == 4
-        and len(right) == 4
-        and all(ch in _ALPHABET for ch in left + right)
-    )
+    groups = parts[1:]
+    return all(len(g) == 4 and all(ch in _ALPHABET for ch in g) for g in groups)
+
+
+def device_fingerprint() -> str:
+    """Kennung der Hardware, nicht des Images: geklonte SD-Karten teilen machine-id
+    und Einstellungen, aber nicht die Seriennummer des Raspberry Pi."""
+    sources: List[str] = []
+    for path in ("/sys/firmware/devicetree/base/serial-number", "/proc/device-tree/serial-number"):
+        try:
+            text = Path(path).read_bytes().decode("ascii", errors="ignore").strip("\x00 \n")
+        except OSError:
+            continue
+        if text:
+            sources.append(text)
+            break
+    if not sources:
+        try:
+            for line in Path("/proc/cpuinfo").read_text(encoding="utf-8", errors="ignore").splitlines():
+                if line.lower().startswith("serial") and ":" in line:
+                    serial = line.split(":", 1)[1].strip()
+                    if serial.strip("0"):
+                        sources.append(serial)
+                    break
+        except OSError:
+            pass
+    if not sources:
+        sources.append(f"{uuid.getnode():012x}")
+    return hashlib.sha256("|".join(sources).encode("utf-8")).hexdigest()[:32]
+
+
+def ensure_device_code() -> bool:
+    """Auf neu geflashter/geklonter Hardware einen eigenen Kopplungscode erzeugen.
+
+    Liegt ein Code ohne ``code_device`` vor (laufendes Gerät von vor diesem Update),
+    wird er übernommen, damit eine bestehende Gemeinschaft nicht abreißt.
+    Gibt True zurück, wenn ein neuer Code erzeugt wurde.
+    """
+    fingerprint = device_fingerprint()
+    with _lock:
+        status, data = _load_settings_document()
+        if status == "unreadable":
+            return False
+        stored = str(data.get("code_device") or "")
+        if stored == fingerprint:
+            return False
+        if not stored and code_is_valid(str(data.get("invite_code") or "")):
+            data["code_device"] = fingerprint
+            _write_raw(data)
+            return False
+        # Written directly: _update() would restore the cloned code and old invite_codes.
+        data["invite_code"] = generate_invite_code()
+        data["invite_codes"] = []
+        data["node_name"] = ""
+        data["code_device"] = fingerprint
+        _write_raw(data)
+        return True
 
 
 def _canonical(payload: Dict[str, Any]) -> bytes:
@@ -289,7 +346,7 @@ def _update(mutator) -> Dict[str, Any]:
 def set_invite_code(code: str) -> str:
     text = code.strip().upper()
     if not code_is_valid(text):
-        raise ValueError("Code hat die Form EG-XXXX-XXXX.")
+        raise ValueError("Code hat die Form EG-XXXX-XXXX-XXXX-XXXX.")
 
     def mutate(data: Dict[str, Any]) -> None:
         previous = str(data.get("invite_code") or "")
@@ -1239,6 +1296,11 @@ def start_mesh() -> None:
         if _started:
             return
         _started = True
+    try:
+        if ensure_device_code():
+            print("[Energiegemeinschaft] neue Hardware erkannt – eigener Kopplungscode erzeugt")
+    except OSError as exc:
+        print(f"[Energiegemeinschaft] Kopplungscode-Prüfung: {exc}")
     collapse_stored_duplicates()
     threading.Thread(target=_tick_loop, name="eg-mesh-tick", daemon=True).start()
 

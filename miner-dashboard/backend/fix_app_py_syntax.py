@@ -22,7 +22,7 @@ LOAD_SETTINGS_BLOCK = '''def load_settings():
         "avg_kw": "n/a",
         "smartmeter_url": "",
         "login_username": "miningfarm",
-        "login_password": "Beispiel",
+        "login_password": "myminingfarm1986",
     }
 
     if os.path.exists(SETTINGS_FILE):

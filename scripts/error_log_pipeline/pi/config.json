@@ -11,5 +11,6 @@
   "chats_file": "",
   "telegram_token": "",
   "chat_ids": [],
+  "user_chat_id": "",
   "schedule_note": "Standard: keine Empfänger konfiguriert."
 }

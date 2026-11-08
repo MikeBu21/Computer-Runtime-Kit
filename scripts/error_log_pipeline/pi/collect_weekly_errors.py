@@ -273,7 +273,7 @@ def write_package(
 ) -> Tuple[Path, Path]:
     outbox.mkdir(parents=True, exist_ok=True)
     buffer.mkdir(parents=True, exist_ok=True)
-    base = f"piMiner-errors-{label}"
+    base = f"piminer-errors-{label}"
     jsonl_path = buffer / f"{base}.jsonl"
     with jsonl_path.open("w", encoding="utf-8") as f:
         for ev in events:

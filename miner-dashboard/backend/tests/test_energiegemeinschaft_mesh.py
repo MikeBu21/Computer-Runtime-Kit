@@ -29,8 +29,41 @@ class TestEnergiegemeinschaftMesh(unittest.TestCase):
         code = generate_invite_code()
         self.assertTrue(code_is_valid(code))
         self.assertTrue(code.startswith("EG-"))
-        self.assertEqual(len(code), 12)
+        self.assertEqual(len(code), 22)
         self.assertTrue(code_is_valid("EG-7K2M-Q4HP"))
+        self.assertTrue(code_is_valid("EG-7K2M-Q4HP-AB23-ZZ99"))
+        self.assertFalse(code_is_valid("EG-7K2M-Q4HP-AB23"))
+        self.assertEqual(len({generate_invite_code() for _ in range(2000)}), 2000)
+
+    def test_cloned_image_gets_own_code_existing_device_keeps_it(self):
+        import tempfile
+        from pathlib import Path
+
+        import energiegemeinschaft_mesh as mesh
+
+        path = Path(tempfile.mkstemp(suffix=".json")[1])
+        try:
+            with patch.object(mesh, "SETTINGS_FILE", path):
+                # running device from before the update: code is adopted, not replaced
+                path.write_text(json.dumps({"invite_code": "EG-AAAA-BBBB", "node_name": "a", "members": {}}), encoding="utf-8")
+                with patch.object(mesh, "device_fingerprint", return_value="pi-a"):
+                    self.assertFalse(mesh.ensure_device_code())
+                    self.assertFalse(mesh.ensure_device_code())
+                stored = json.loads(path.read_text(encoding="utf-8"))
+                self.assertEqual((stored["invite_code"], stored["code_device"]), ("EG-AAAA-BBBB", "pi-a"))
+                # same SD card image on other hardware: fresh code, old codes dropped
+                stored["invite_codes"] = ["EG-CCCC-DDDD"]
+                path.write_text(json.dumps(stored), encoding="utf-8")
+                with patch.object(mesh, "device_fingerprint", return_value="pi-b"):
+                    self.assertTrue(mesh.ensure_device_code())
+                stored = json.loads(path.read_text(encoding="utf-8"))
+                self.assertNotEqual(stored["invite_code"], "EG-AAAA-BBBB")
+                self.assertEqual(len(stored["invite_code"]), 22)
+                self.assertEqual(stored["invite_codes"], [])
+                self.assertEqual(stored["node_name"], "")
+                self.assertEqual(mesh.accepted_codes(), [stored["invite_code"]])
+        finally:
+            path.unlink(missing_ok=True)
 
     def test_feed_packet_carries_export_and_soc_and_checks_out(self):
         code = "EG-7K2M-Q4HP"
@@ -156,7 +189,7 @@ class TestEnergiegemeinschaftMesh(unittest.TestCase):
             with patch.object(mesh, "SETTINGS_FILE", path):
                 mesh._remember_member("raspberrypi2-1", "100.91.87.103", 1.2, 70, 4.5)
                 mesh.update_member_field("raspberrypi2-1", "alias", "Haus Martin")
-                mesh._remember_member("piMiner", "100.105.158.95", 0.0, 70, None)
+                mesh._remember_member("piminer", "100.105.158.95", 0.0, 70, None)
                 mesh._remember_member("raspberrypi", "100.91.87.103", 1.4, 71, 4.6)
                 mesh._remember_member("piminer", "100.105.158.95", 0.1, 69, None)
                 stored = json.loads(path.read_text(encoding="utf-8"))["members"]

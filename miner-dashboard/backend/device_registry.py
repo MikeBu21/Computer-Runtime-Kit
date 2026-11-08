@@ -14,7 +14,7 @@ BACKEND_DIR = Path(__file__).resolve().parent
 MINERS_PATH = BACKEND_DIR / "miners.json"
 HA_DEVICES_PATH = BACKEND_DIR / "ha_devices.json"
 GPIO_PINS_PATH = BACKEND_DIR / "gpio_pins.json"
-HA_SNAPSHOT_PATH = Path("/tmp/ha_snapshot.json")
+HA_SNAPSHOT_PATH = Path("/dev/shm/ha_snapshot.json")
 
 
 def load_miners_raw() -> List[Dict[str, Any]]:

@@ -36,7 +36,7 @@ def switch_verb(action: str) -> str:
 
 
 def _strip_trailing_number(name: str) -> str:
-    """Notiz wie 'Beispiel' → 'Hydro'; die Zahl steht nicht mehr in der Nachricht."""
+    """Notiz wie 'Hydro 193' → 'Hydro'; die Zahl steht nicht mehr in der Nachricht."""
     cleaned = re.sub(r"\s+\d+$", "", str(name or "").strip())
     return cleaned or str(name or "").strip()
 

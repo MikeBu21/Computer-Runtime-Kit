@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 14-day error collect → Telegram to all known chats (systemd user timers).
+# Fehlerberichte → Telegram als stiller Hintergrunddienst (systemd user service).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
@@ -12,70 +12,49 @@ mkdir -p "$UNIT_DIR" \
 chmod +x "$ROOT"/collect_errors.py "$ROOT"/send_telegram.py "$ROOT"/install.sh
 [[ -f "$CFG" ]] || cp "$ROOT/config.json.example" "$CFG"
 
-# Disable old weekly / central-PC units if present
+# Old weekly / central-PC units and the former 14-day + daily-retry timers
 systemctl --user disable --now error-log-viewer.service 2>/dev/null || true
-systemctl --user disable --now error-log-collect.timer error-log-transfer.timer 2>/dev/null || true
+systemctl --user disable --now error-log-collect.timer error-log-send.timer error-log-transfer.timer 2>/dev/null || true
 rm -f "$UNIT_DIR/error-log-viewer.service" \
-  "$UNIT_DIR/error-log-collect.service" "$UNIT_DIR/error-log-collect.timer" \
+  "$UNIT_DIR/error-log-collect.timer" \
+  "$UNIT_DIR/error-log-send.timer" \
   "$UNIT_DIR/error-log-transfer.service" "$UNIT_DIR/error-log-transfer.timer" \
   "$UNIT_DIR/default.target.wants/error-log-viewer.service" \
   "$UNIT_DIR/timers.target.wants/error-log-collect.timer" \
+  "$UNIT_DIR/timers.target.wants/error-log-send.timer" \
   "$UNIT_DIR/timers.target.wants/error-log-transfer.timer" 2>/dev/null || true
 
-# Collect + Telegram send every 14 days at 03:15
+# Manual one-shot collect (the daemon collects every 14 days by itself)
 cat > "$UNIT_DIR/error-log-collect.service" <<EOF
 [Unit]
-Description=Collect 14-day piMiner control errors and send via Telegram
-After=network-online.target
+Description=Collect 14-day piminer control errors into the outbox (manual)
 
 [Service]
 Type=oneshot
 WorkingDirectory=$ROOT
 Environment=ERROR_LOG_PIPELINE_CONFIG=$CFG
 ExecStart=/usr/bin/python3 $ROOT/collect_errors.py
-ExecStartPost=/usr/bin/python3 $ROOT/send_telegram.py
 EOF
 
-cat > "$UNIT_DIR/error-log-collect.timer" <<EOF
-[Unit]
-Description=piMiner error-log → Telegram every 14 days (03:15)
-
-[Timer]
-OnCalendar=*-*-01,15 03:15:00
-Persistent=true
-Unit=error-log-collect.service
-
-[Install]
-WantedBy=timers.target
-EOF
-
-# Daily retry for outbox if Telegram send failed
 cat > "$UNIT_DIR/error-log-send.service" <<EOF
 [Unit]
-Description=Retry Telegram send of buffered piMiner error packages
+Description=piminer Fehlerberichte → Telegram (stiller Hintergrunddienst)
+After=network-online.target
 
 [Service]
-Type=oneshot
+Type=simple
 WorkingDirectory=$ROOT
 Environment=ERROR_LOG_PIPELINE_CONFIG=$CFG
-ExecStart=/usr/bin/python3 $ROOT/send_telegram.py
-EOF
-
-cat > "$UNIT_DIR/error-log-send.timer" <<EOF
-[Unit]
-Description=Daily retry error-log Telegram send (06:30)
-
-[Timer]
-OnCalendar=*-*-* 06:30:00
-Persistent=true
-Unit=error-log-send.service
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 $ROOT/send_telegram.py --daemon
+Restart=always
+RestartSec=30
 
 [Install]
-WantedBy=timers.target
+WantedBy=default.target
 EOF
 
 systemctl --user daemon-reload
-systemctl --user enable --now error-log-collect.timer error-log-send.timer
-echo "Timers:"
-systemctl --user list-timers 'error-log-*' --no-pager || true
-echo "Schedule: 1st and 15th of each month at 03:15 (~14 days), retry daily 06:30"
+systemctl --user enable --now error-log-send.service
+systemctl --user --no-pager status error-log-send.service | head -5 || true
+echo "Fehlerberichte: alle 14 Tage sammeln, nur mit Einträgen senden, bei Telegram-Fehler Pause + erneuter Versuch"

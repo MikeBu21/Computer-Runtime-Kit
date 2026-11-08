@@ -387,7 +387,7 @@ def run_repair() -> Dict[str, Any]:
     if settings.is_symlink() or settings.exists():
         try:
             resolved = settings.resolve()
-            if not resolved.exists() or "piMiner" in str(settings.readlink() if settings.is_symlink() else ""):
+            if not resolved.exists() or "piminer" in str(settings.readlink() if settings.is_symlink() else ""):
                 if settings.exists() or settings.is_symlink():
                     settings.unlink()
                 settings.symlink_to(target)

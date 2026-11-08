@@ -3,7 +3,8 @@
 # Kein manuelles Flask-Kommando nötig — vor Dienststart ausführen.
 set -euo pipefail
 
-ROOT="/home/piminer/minersteuerung"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="${MINER_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 BACKEND="$ROOT/miner-dashboard/backend"
 PYTHON="$ROOT/venv/bin/python"
 LOG_DIR="${MINER_LOG_DIR:-/dev/shm/minersteuerung/logs}"
