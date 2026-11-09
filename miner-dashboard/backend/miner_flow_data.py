@@ -267,6 +267,27 @@ def _collect_role_contributions(
         if val is not None:
             details.append({"point": f"custom:{fid}", "role": role, "kw": float(val)})
 
+    # Zusätzliche Wechselrichter (nicht der Steuer-Logger) direkt über Solarman
+    try:
+        from bms_seite import extra_inverter_flow_values
+
+        for extra in extra_inverter_flow_values():
+            fid = str(extra.get("flow_field_id") or "")
+            if not fid:
+                continue
+            kw = extra.get("kw")
+            add_to_role_sum(sums, extra.get("role") or "erzeugung", kw)
+            display = "n/a" if kw is None else f"{float(kw):.2f}"
+            entry = dict(custom_fields.get(fid) or {})
+            entry["value_kw"] = kw
+            entry["display"] = display
+            entry["role"] = extra.get("role") or "erzeugung"
+            custom_fields[fid] = entry
+            if kw is not None:
+                details.append({"point": f"custom:{fid}", "role": entry["role"], "kw": float(kw)})
+    except Exception:
+        pass
+
     return sums, custom_fields, details
 
 

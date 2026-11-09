@@ -8,6 +8,9 @@ import json, os, subprocess, socket, threading
 
 app = Flask(__name__)
 app.secret_key = 'supersecretkey'
+# Templates ohne Dienst-Neustart neu laden (sonst bleiben Drag/UI-Fixes unsichtbar)
+app.config["TEMPLATES_AUTO_RELOAD"] = True
+app.jinja_env.auto_reload = True
 
 try:
     from ram_cache import setup_runtime_dirs
@@ -674,6 +677,59 @@ def api_bms_netzbezug_settings():
         updates["modbus_unit"] = form.get("modbus_unit") or 1
     saved = save_settings(updates)
     return jsonify({"ok": True, "message": "Gespeichert.", **saved})
+
+
+@app.route('/api/bms-netzbezug/mac-scan', methods=['POST'])
+def api_bms_netzbezug_mac_scan():
+    from bms_seite import track_logger
+
+    payload = request.get_json(silent=True) or {}
+    host = (
+        request.form.get("modbus_host")
+        or request.form.get("host")
+        or payload.get("modbus_host")
+        or payload.get("host")
+        or ""
+    )
+    result = track_logger(str(host or "").strip() or None, persist=True)
+    code = 200 if result.get("ok") else 404
+    return jsonify(result), code
+
+
+@app.route('/api/bms-netzbezug/inverters/scan', methods=['POST'])
+def api_bms_inverters_scan():
+    from bms_seite import scan_inverters
+
+    return jsonify(scan_inverters())
+
+
+@app.route('/api/bms-netzbezug/inverters/add', methods=['POST'])
+def api_bms_inverters_add():
+    from bms_seite import add_tracked_inverter
+
+    payload = request.get_json(silent=True) or {}
+    mac = request.form.get("mac") or payload.get("mac") or ""
+    name = request.form.get("name") or payload.get("name") or ""
+    serial_raw = request.form.get("serial") or payload.get("serial") or 0
+    try:
+        serial = int(serial_raw or 0)
+    except (TypeError, ValueError):
+        serial = 0
+    result = add_tracked_inverter(str(mac), str(name), serial)
+    code = 200 if result.get("ok") or result.get("need_serial") else 400
+    return jsonify(result), code
+
+
+@app.route('/api/bms-netzbezug/inverters/delete', methods=['POST'])
+def api_bms_inverters_delete():
+    from bms_seite import delete_tracked_inverter
+
+    payload = request.get_json(silent=True) or {}
+    mac = request.form.get("mac") or payload.get("mac") or ""
+    confirm = str(request.form.get("confirm") or payload.get("confirm") or "").lower() in ("1", "true", "yes", "ja")
+    result = delete_tracked_inverter(str(mac), confirm_control=confirm)
+    code = 200 if result.get("ok") or result.get("needs_confirm") else 400
+    return jsonify(result), code
 
 @app.route('/smartmeter', methods=['GET', 'POST'])
 def smartmeter():

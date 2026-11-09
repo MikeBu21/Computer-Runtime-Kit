@@ -22,11 +22,48 @@ from zoneinfo import ZoneInfo
 
 BACKEND_DIR = Path(__file__).resolve().parent
 SETTINGS_FILE = BACKEND_DIR / "bms_test_settings.json"
-HA_CONFIG_ENTRIES = BACKEND_DIR.parents[1] / "homeassistant" / "config" / ".storage" / "core.config_entries"
-HA_DEVICE_REGISTRY = BACKEND_DIR.parents[1] / "homeassistant" / "config" / ".storage" / "core.device_registry"
 LOG_FILE = BACKEND_DIR / "bms_test_log.json"
 DAUERZUKAUF_TEST_FILE = BACKEND_DIR / "dauerzukauf_test.json"
 TZ = ZoneInfo("Europe/Vienna")
+
+# Solarman-Logger-Discovery (MAC/IP/Serial). Verbindung/Modbus läuft über Port 8899.
+LOGGER_DISCOVERY_PORT = 48899
+LOGGER_DISCOVERY_TIMEOUT = 1.5
+LOGGER_DISCOVERY_MESSAGES = (b"WIFIKIT-214028-READ", b"HF-A11ASSISTHREAD")
+# Stündliche MAC-Prüfung: IP-Wechsel → Settings + Home Assistant nachziehen.
+LOGGER_TRACK_GAP_SEC = 3600
+DEFAULT_LOGGER_MAC = "d4:27:87:0a:d7:b4"
+
+
+def _ha_storage_dir() -> Optional[Path]:
+    """Live-Home-Assistant zuerst, dann Repo-Kopie."""
+    candidates = (
+        Path.home() / "homeassistant" / "config" / ".storage",
+        BACKEND_DIR.parents[1] / "homeassistant" / "config" / ".storage",
+    )
+    for path in candidates:
+        if (path / "core.config_entries").is_file():
+            return path
+    return None
+
+
+def _ha_config_entries_path() -> Path:
+    root = _ha_storage_dir()
+    if root is not None:
+        return root / "core.config_entries"
+    return BACKEND_DIR.parents[1] / "homeassistant" / "config" / ".storage" / "core.config_entries"
+
+
+def _ha_device_registry_path() -> Path:
+    root = _ha_storage_dir()
+    if root is not None:
+        return root / "core.device_registry"
+    return BACKEND_DIR.parents[1] / "homeassistant" / "config" / ".storage" / "core.device_registry"
+
+
+# Rückwärtskompatibel für bestehenden Code.
+HA_CONFIG_ENTRIES = _ha_config_entries_path()
+HA_DEVICE_REGISTRY = _ha_device_registry_path()
 
 SOC_EMPTY = 10.0
 SOC_FULL = 98.0
@@ -334,6 +371,12 @@ def default_settings() -> Dict[str, Any]:
         "modbus_host": "",
         "modbus_port": 502,
         "modbus_unit": 1,
+        "logger_ip": "",
+        "logger_mac": "",
+        "logger_serial": 0,
+        "logger_tracked_at": "",
+        "tracked_inverters": [],
+        "control_tracking_removed": False,
         "release_pending": False,
         "planning_hold": False,
         "community_hold": False,
@@ -494,6 +537,842 @@ def _host(value: Any) -> str:
     return text
 
 
+def _format_mac(value: Any) -> str:
+    text = str(value or "").strip().lower().replace("-", "").replace(":", "").replace(".", "")
+    if len(text) != 12 or any(ch not in "0123456789abcdef" for ch in text):
+        return ""
+    return ":".join(text[i : i + 2] for i in range(0, 12, 2))
+
+
+def _parse_discovery_payload(payload: bytes) -> Optional[Dict[str, Any]]:
+    parts = payload.decode("utf-8", errors="ignore").strip().split(",")
+    if len(parts) != 3:
+        return None
+    ip = _host(parts[0])
+    mac = _format_mac(parts[1])
+    try:
+        serial = int(parts[2])
+    except (TypeError, ValueError):
+        serial = 0
+    if not ip or not mac or not serial:
+        return None
+    return {"ip": ip, "mac": mac, "serial": serial, "port": 8899}
+
+
+def _discovery_targets(preferred_host: str = "") -> List[str]:
+    """Unicast- und Broadcast-Ziele für die Logger-Suche."""
+    targets: List[str] = []
+    preferred = _host(preferred_host)
+    if preferred:
+        targets.append(preferred)
+    targets.append("255.255.255.255")
+    try:
+        hostname = socket.gethostname()
+        for info in socket.getaddrinfo(hostname, None, socket.AF_INET, socket.SOCK_DGRAM):
+            ip = _host(info[4][0])
+            if not ip or ip.startswith("127."):
+                continue
+            parts = ip.split(".")
+            if len(parts) == 4:
+                targets.append(".".join(parts[:3] + ["255"]))
+    except OSError:
+        pass
+    out: List[str] = []
+    for item in targets:
+        if item and item not in out:
+            out.append(item)
+    return out
+
+
+def _collect_discovery(
+    host: str = "",
+    timeout: float = LOGGER_DISCOVERY_TIMEOUT,
+    stop_mac: str = "",
+) -> List[Dict[str, Any]]:
+    """Alle Solarman-Logger einsammeln, die im Zeitfenster antworten. Eine MAC pro Gerät."""
+    want_mac = _format_mac(stop_mac)
+    found: Dict[str, Dict[str, Any]] = {}
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    sock.settimeout(max(0.2, float(timeout) / 4.0))
+    try:
+        for target in _discovery_targets(host):
+            for message in LOGGER_DISCOVERY_MESSAGES:
+                try:
+                    sock.sendto(message, (target, LOGGER_DISCOVERY_PORT))
+                except OSError:
+                    continue
+        deadline = time.monotonic() + float(timeout)
+        while time.monotonic() < deadline:
+            try:
+                payload, _addr = sock.recvfrom(256)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            item = _parse_discovery_payload(payload)
+            if not item:
+                continue
+            found[item["mac"]] = item
+            if want_mac and item["mac"] == want_mac:
+                break
+    finally:
+        sock.close()
+    return list(found.values())
+
+
+def discover_loggers(timeout: float = LOGGER_DISCOVERY_TIMEOUT) -> List[Dict[str, Any]]:
+    """Alle Logger im lokalen Netz (Broadcast), nicht nur die bekannte MAC."""
+    return _collect_discovery("", timeout=timeout)
+
+
+def discover_logger(
+    host: str = "",
+    timeout: float = LOGGER_DISCOVERY_TIMEOUT,
+    mac: str = "",
+) -> Optional[Dict[str, Any]]:
+    """Einen Logger per Solarman-UDP finden (IP und/oder Broadcast), optional nach MAC filtern."""
+    want_mac = _format_mac(mac)
+    items = _collect_discovery(host, timeout=timeout, stop_mac=want_mac)
+    preferred = _host(host)
+    for found in items:
+        if want_mac and found["mac"] != want_mac:
+            continue
+        if preferred and preferred not in ("255.255.255.255", "<broadcast>"):
+            if found["ip"] != preferred and not want_mac:
+                continue
+        return found
+    if want_mac:
+        return _discover_logger_via_arp(want_mac, timeout=timeout)
+    return None
+
+
+def _unicast_discover(host: str, timeout: float = 1.0) -> Optional[Dict[str, Any]]:
+    """Nur Unicast an eine bekannte IP — ohne Broadcast/ARP-Rekursion."""
+    target = _host(host)
+    if not target:
+        return None
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.settimeout(max(0.2, float(timeout) / 2.0))
+    try:
+        for message in LOGGER_DISCOVERY_MESSAGES:
+            try:
+                sock.sendto(message, (target, LOGGER_DISCOVERY_PORT))
+            except OSError:
+                continue
+        deadline = time.monotonic() + float(timeout)
+        while time.monotonic() < deadline:
+            try:
+                payload, _addr = sock.recvfrom(256)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            found = _parse_discovery_payload(payload)
+            if found and found["ip"] == target:
+                return found
+    finally:
+        sock.close()
+    return None
+
+
+def _discover_logger_via_arp(mac: str, timeout: float = LOGGER_DISCOVERY_TIMEOUT) -> Optional[Dict[str, Any]]:
+    """Fallback: Nachbarschaftstabelle nach MAC durchsuchen und per Unicast bestätigen."""
+    want = _format_mac(mac)
+    if not want:
+        return None
+    try:
+        text = Path("/proc/net/arp").read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return None
+    for line in text.splitlines()[1:]:
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        ip, hw = _host(parts[0]), _format_mac(parts[3])
+        if ip and hw == want:
+            confirmed = _unicast_discover(ip, timeout=min(1.0, timeout))
+            if confirmed and _format_mac(confirmed.get("mac")) == want:
+                return confirmed
+            return {"ip": ip, "mac": want, "serial": 0, "port": 8899}
+    return None
+
+
+def _atomic_json_write(path: Path, payload: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def _ha_entry_ids_for_mac(mac: str) -> List[str]:
+    """Config-Entry-IDs aus der Geräte-Registry, die zu dieser Logger-MAC gehören."""
+    mac_text = _format_mac(mac)
+    if not mac_text:
+        return []
+    path = _ha_device_registry_path()
+    if not path.is_file():
+        return []
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    devices = raw.get("data", {}).get("devices") if isinstance(raw, dict) else None
+    if not isinstance(devices, list):
+        return []
+    out: List[str] = []
+    for device in devices:
+        if not isinstance(device, dict):
+            continue
+        connections = device.get("connections") or []
+        has_mac = any(
+            isinstance(item, list) and len(item) > 1 and item[0] == "mac" and _format_mac(item[1]) == mac_text
+            for item in connections
+        )
+        if not has_mac:
+            continue
+        for entry_id in device.get("config_entries") or []:
+            text = str(entry_id or "").strip()
+            if text and text not in out:
+                out.append(text)
+    return out
+
+
+def sync_logger_to_ha(ip: str, mac: str, serial: int = 0) -> Dict[str, Any]:
+    """Logger-IP und MAC in Home-Assistant Config/Device-Registry nachziehen."""
+    host = _host(ip)
+    mac_text = _format_mac(mac)
+    result = {
+        "ok": False,
+        "config_updated": False,
+        "device_updated": False,
+        "ha_restarted": False,
+        "message": "",
+    }
+    if not host or not mac_text:
+        result["message"] = "IP oder MAC fehlt."
+        return result
+    try:
+        serial_num = int(serial or 0)
+    except (TypeError, ValueError):
+        serial_num = 0
+
+    config_path = _ha_config_entries_path()
+    device_path = _ha_device_registry_path()
+    mac_entry_ids = set(_ha_entry_ids_for_mac(mac_text))
+    touched_entries: List[str] = []
+
+    if config_path.is_file():
+        try:
+            raw = json.loads(config_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            raw = None
+        entries = raw.get("data", {}).get("entries") if isinstance(raw, dict) else None
+        if isinstance(entries, list):
+            changed = False
+            for entry in entries:
+                if not isinstance(entry, dict) or entry.get("domain") != "solarman":
+                    continue
+                entry_id = str(entry.get("entry_id") or "")
+                blob = _entry_blob(entry)
+                old_host = _host(blob.get("host") or blob.get("ip") or blob.get("inverter_host") or entry.get("title"))
+                try:
+                    old_serial = int(blob.get("serial") or 0)
+                except (TypeError, ValueError):
+                    old_serial = 0
+                match = (
+                    entry_id in mac_entry_ids
+                    or (old_host and old_host == host)
+                    or (serial_num and old_serial and old_serial == serial_num)
+                )
+                # Fallback: genau ein Solarman-Eintrag mit Host → dem zuordnen
+                if not match and not mac_entry_ids and old_host and not touched_entries:
+                    solarman_with_host = [
+                        item for item in entries
+                        if isinstance(item, dict)
+                        and item.get("domain") == "solarman"
+                        and _host(_entry_blob(item).get("host") or item.get("title"))
+                    ]
+                    if len(solarman_with_host) == 1 and solarman_with_host[0] is entry:
+                        match = True
+                if not match:
+                    continue
+                data = entry.setdefault("data", {})
+                options = entry.setdefault("options", {})
+                if not isinstance(data, dict):
+                    entry["data"] = {}
+                    data = entry["data"]
+                if not isinstance(options, dict):
+                    entry["options"] = {}
+                    options = entry["options"]
+                if data.get("host") != host:
+                    data["host"] = host
+                    changed = True
+                if options.get("host") != host:
+                    options["host"] = host
+                    changed = True
+                if entry.get("title") in ("", None, old_host) or str(entry.get("title") or "").startswith("192.168."):
+                    if entry.get("title") != host:
+                        entry["title"] = host
+                        changed = True
+                if serial_num and data.get("serial") != serial_num:
+                    data["serial"] = serial_num
+                    changed = True
+                if data.get("port") in (None, "", 0):
+                    data["port"] = 8899
+                    changed = True
+                touched_entries.append(entry_id)
+            if changed:
+                _atomic_json_write(config_path, raw)
+                result["config_updated"] = True
+
+    if device_path.is_file():
+        try:
+            raw = json.loads(device_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            raw = None
+        devices = raw.get("data", {}).get("devices") if isinstance(raw, dict) else None
+        if isinstance(devices, list):
+            changed = False
+            for device in devices:
+                if not isinstance(device, dict):
+                    continue
+                identifiers = device.get("identifiers") or []
+                solarman = any(
+                    isinstance(item, list) and item and item[0] == "solarman" for item in identifiers
+                )
+                if not solarman:
+                    continue
+                config_ids = [str(item) for item in (device.get("config_entries") or [])]
+                connections = device.get("connections") if isinstance(device.get("connections"), list) else []
+                has_mac = any(
+                    isinstance(item, list) and len(item) > 1 and item[0] == "mac" and _format_mac(item[1]) == mac_text
+                    for item in connections
+                )
+                text = " ".join(
+                    str(device.get(key) or "")
+                    for key in ("name", "name_by_user", "configuration_url", "serial_number")
+                )
+                linked = any(item and item in config_ids for item in touched_entries)
+                serial_hit = serial_num and (
+                    str(serial_num) in text
+                    or any(
+                        isinstance(item, list) and len(item) > 1 and str(item[1]) == str(serial_num)
+                        for item in identifiers
+                    )
+                )
+                host_hit = host and host in text
+                if not (has_mac or linked or serial_hit or host_hit):
+                    continue
+                if not isinstance(device.get("connections"), list):
+                    device["connections"] = []
+                    connections = device["connections"]
+                mac_conn = ["mac", mac_text]
+                if mac_conn not in connections:
+                    connections[:] = [
+                        item for item in connections
+                        if not (isinstance(item, list) and item and item[0] == "mac")
+                    ]
+                    connections.append(mac_conn)
+                    changed = True
+                if serial_num and str(device.get("serial_number") or "") != str(serial_num):
+                    device["serial_number"] = str(serial_num)
+                    changed = True
+                if serial_num:
+                    serial_id = ["solarman", str(serial_num)]
+                    if isinstance(identifiers, list) and serial_id not in identifiers:
+                        identifiers.append(serial_id)
+                        device["identifiers"] = identifiers
+                        changed = True
+                new_url = f"http://{host}/config_hide.html"
+                if device.get("configuration_url") != new_url:
+                    device["configuration_url"] = new_url
+                    changed = True
+                if str(device.get("name") or "").startswith("192.168.") and device.get("name") != host:
+                    device["name"] = host
+                    changed = True
+            if changed:
+                _atomic_json_write(device_path, raw)
+                result["device_updated"] = True
+
+    if result["config_updated"]:
+        result["ha_restarted"] = _restart_home_assistant()
+
+    result["ok"] = True
+    result["ip"] = host
+    result["mac"] = mac_text
+    result["serial"] = serial_num
+    parts = []
+    if result["config_updated"]:
+        parts.append("HA-Config")
+    if result["device_updated"]:
+        parts.append("Geräte-Registry")
+    if result["ha_restarted"]:
+        parts.append("HA neu gestartet")
+    result["message"] = (
+        "Home Assistant aktualisiert (" + ", ".join(parts) + ")."
+        if parts
+        else "Home Assistant war schon aktuell."
+    )
+    return result
+
+
+def _restart_home_assistant() -> bool:
+    """HA neu laden, damit geänderte Logger-IP aus der Config greift."""
+    try:
+        import subprocess
+
+        env = dict(**{k: v for k, v in __import__("os").environ.items()})
+        uid = __import__("os").getuid()
+        env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{uid}")
+        env.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path=/run/user/{uid}/bus")
+        proc = subprocess.run(
+            ["systemctl", "--user", "restart", "home-assistant.service"],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        return proc.returncode == 0
+    except Exception:
+        return False
+
+
+def track_logger(host: Optional[str] = None, persist: bool = True) -> Dict[str, Any]:
+    """Logger per MAC/Broadcast finden, speichern und bei IP-Wechsel nach HA schreiben."""
+    # load_settings ohne frischen HA-Overwrite der getrackten IP: Rohdaten + Defaults
+    settings = load_settings()
+    mac = _format_mac(settings.get("logger_mac")) or DEFAULT_LOGGER_MAC
+    target = _host(host) or _host(settings.get("logger_ip")) or _host(settings.get("modbus_host"))
+    found = discover_logger(target, mac=mac)
+    if not found and target:
+        found = discover_logger(target, mac="")
+    if not found:
+        return {
+            "ok": False,
+            "message": (
+                f"Kein Logger mit MAC {mac} gefunden "
+                f"(Discovery Port {LOGGER_DISCOVERY_PORT}, stündliche Prüfung)."
+            ),
+            "mac": mac,
+            "ip": target or "",
+        }
+    previous = {
+        "ip": _host(settings.get("logger_ip") or settings.get("modbus_host")),
+        "mac": _format_mac(settings.get("logger_mac")),
+        "serial": int(settings.get("logger_serial") or 0),
+    }
+    changed = (
+        previous["ip"] != found["ip"]
+        or previous["mac"] != found["mac"]
+        or (int(found["serial"]) and previous["serial"] != int(found["serial"]))
+    )
+    settings["logger_ip"] = found["ip"]
+    settings["logger_mac"] = found["mac"]
+    if int(found["serial"]):
+        settings["logger_serial"] = int(found["serial"])
+    settings["logger_tracked_at"] = datetime.now(TZ).isoformat(timespec="seconds")
+    # Getrackte IP ist führend für Modbus
+    settings["modbus_host"] = found["ip"]
+    if int(settings.get("modbus_port") or 0) in (0, 502) and _family(str(settings.get("inverter") or "")) == "deye":
+        settings["modbus_port"] = 8899
+    ha = {"ok": True, "message": "Unverändert — kein HA-Sync nötig."}
+    if changed or not previous["ip"]:
+        ha = sync_logger_to_ha(found["ip"], found["mac"], int(settings.get("logger_serial") or 0))
+    if persist:
+        _persist_settings(settings)
+    return {
+        "ok": True,
+        "changed": changed,
+        "ip": found["ip"],
+        "mac": found["mac"],
+        "serial": int(settings.get("logger_serial") or 0),
+        "port": 8899,
+        "tracked_at": settings["logger_tracked_at"],
+        "interval_sec": LOGGER_TRACK_GAP_SEC,
+        "ha": ha,
+        "message": (
+            f"Logger {found['ip']} · MAC {found['mac']}"
+            + (" · aktualisiert" if changed else " · unverändert")
+            + f". {ha.get('message') or ''}"
+        ).strip(),
+    }
+
+
+PV_POWER_REGISTERS = (0x00BA, 0x00BB, 0x00BC, 0x00BD)
+_last_discovery: List[Dict[str, Any]] = []
+_pv_cache: Dict[str, Optional[float]] = {}
+_pv_poller_started = False
+
+
+def _normalize_tracked_inverter(raw: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(raw, dict):
+        return None
+    mac = _format_mac(raw.get("mac"))
+    if not mac:
+        return None
+    try:
+        serial = int(raw.get("serial") or 0)
+    except (TypeError, ValueError):
+        serial = 0
+    try:
+        pv_kw = float(raw["pv_kw"]) if raw.get("pv_kw") not in (None, "") else None
+    except (TypeError, ValueError):
+        pv_kw = None
+    return {
+        "id": str(raw.get("id") or ("wr" + mac.replace(":", ""))),
+        "name": str(raw.get("name") or "Wechselrichter").strip() or "Wechselrichter",
+        "mac": mac,
+        "serial": serial,
+        "ip": _host(raw.get("ip")),
+        "port": 8899,
+        "unit": _unit(raw.get("unit") or 1),
+        "role": "erzeugung",
+        "control": bool(raw.get("control")),
+        "flow_field_id": str(raw.get("flow_field_id") or ""),
+        "tracked_at": str(raw.get("tracked_at") or ""),
+        "pv_kw": pv_kw,
+    }
+
+
+def _seed_control_inverter(items: List[Dict[str, Any]], settings: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Bekannten Steuer-Logger in die Liste nehmen, ohne einen zweiten Erzeugungs-Punkt."""
+    if settings.get("control_tracking_removed"):
+        return items
+    mac = _format_mac(settings.get("logger_mac"))
+    if not mac:
+        return items
+    if any(item["mac"] == mac for item in items):
+        for item in items:
+            if item["mac"] == mac:
+                item["control"] = True
+                if not item.get("ip"):
+                    item["ip"] = _host(settings.get("logger_ip") or settings.get("modbus_host"))
+                if not item.get("serial"):
+                    item["serial"] = int(settings.get("logger_serial") or 0)
+                if not item.get("tracked_at"):
+                    item["tracked_at"] = str(settings.get("logger_tracked_at") or "")
+        return items
+    items.insert(0, {
+        "id": "control",
+        "name": "Steuer-Logger",
+        "mac": mac,
+        "serial": int(settings.get("logger_serial") or 0),
+        "ip": _host(settings.get("logger_ip") or settings.get("modbus_host")),
+        "port": 8899,
+        "unit": _unit(settings.get("modbus_unit") or 1),
+        "role": "erzeugung",
+        "control": True,
+        "flow_field_id": "",
+        "tracked_at": str(settings.get("logger_tracked_at") or ""),
+        "pv_kw": None,
+    })
+    return items
+
+
+def _normalize_tracked_inverters(raw: Any, settings: Dict[str, Any]) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    seen: set = set()
+    if isinstance(raw, list):
+        for entry in raw:
+            item = _normalize_tracked_inverter(entry)
+            if not item or item["mac"] in seen:
+                continue
+            seen.add(item["mac"])
+            items.append(item)
+    return _seed_control_inverter(items, settings)
+
+
+def annotate_discovery(
+    found: List[Dict[str, Any]],
+    tracked: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Scan-Ergebnis mit Markierung, ob die MAC schon gespeichert ist."""
+    known = {_format_mac(item.get("mac")) for item in tracked}
+    out: List[Dict[str, Any]] = []
+    for item in found:
+        mac = _format_mac(item.get("mac"))
+        if not mac:
+            continue
+        out.append({
+            "ip": _host(item.get("ip")),
+            "mac": mac,
+            "serial": int(item.get("serial") or 0),
+            "port": 8899,
+            "tracked": mac in known,
+        })
+    return out
+
+
+def _attach_flow_field(name: str, field_id: str) -> bool:
+    """Eigenen Stromfluss-Punkt mit Rolle Erzeugung anlegen. False, wenn kein Platz frei ist."""
+    from dashboard_config import load_config, next_free_flow_slot, save_config
+
+    cfg = load_config()
+    fields = list(cfg.get("custom_flow_fields") or [])
+    if any(str(field.get("id")) == field_id for field in fields):
+        return True
+    slot = next_free_flow_slot(cfg)
+    if slot is None:
+        return False
+    fields.append({
+        "id": field_id,
+        "name": name,
+        "icon": "☀️",
+        "enabled": True,
+        "sensors": [],
+        "slot": slot,
+        "role": "erzeugung",
+    })
+    cfg["custom_flow_fields"] = fields
+    save_config(cfg)
+    return True
+
+
+def _detach_flow_field(field_id: str) -> None:
+    if not field_id:
+        return
+    from dashboard_config import load_config, save_config
+
+    cfg = load_config()
+    fields = [
+        field for field in (cfg.get("custom_flow_fields") or [])
+        if str(field.get("id")) != field_id
+    ]
+    if len(fields) == len(cfg.get("custom_flow_fields") or []):
+        return
+    cfg["custom_flow_fields"] = fields
+    save_config(cfg)
+
+
+def scan_inverters() -> Dict[str, Any]:
+    """LAN-Scan aller Solarman-Logger. Legt nichts an und schreibt nicht nach Home Assistant."""
+    global _last_discovery
+    found = discover_loggers()
+    settings = load_settings()
+    annotated = annotate_discovery(found, settings.get("tracked_inverters") or [])
+    _last_discovery = annotated
+    return {
+        "ok": True,
+        "found": annotated,
+        "message": (
+            f"{len(annotated)} Logger gefunden."
+            if annotated
+            else "Kein Solarman-Logger im Netz gefunden."
+        ),
+    }
+
+
+def add_tracked_inverter(mac: str, name: str = "", serial: int = 0) -> Dict[str, Any]:
+    """Wechselrichter nur im Dashboard speichern. MAC bleibt, bis der Eintrag gelöscht wird."""
+    settings = load_settings()
+    mac_text = _format_mac(mac)
+    if not mac_text:
+        return {"ok": False, "message": "MAC-Adresse fehlt."}
+    for item in settings.get("tracked_inverters") or []:
+        if item["mac"] == mac_text:
+            return {"ok": True, "already": True, "message": "Dieser Wechselrichter ist schon gespeichert.", "inverter": item}
+    try:
+        serial_num = int(serial or 0)
+    except (TypeError, ValueError):
+        serial_num = 0
+    ip = ""
+    for item in _last_discovery:
+        if _format_mac(item.get("mac")) == mac_text:
+            ip = _host(item.get("ip"))
+            if not serial_num:
+                serial_num = int(item.get("serial") or 0)
+    if not serial_num or not ip:
+        found = discover_logger(ip, mac=mac_text)
+        if found:
+            ip = ip or found["ip"]
+            serial_num = serial_num or int(found.get("serial") or 0)
+    if not serial_num:
+        return {
+            "ok": False,
+            "need_serial": True,
+            "message": "Seriennummer vom Scan fehlt. Bitte die Logger-Seriennummer eingeben.",
+        }
+    label = str(name or "").strip() or f"Wechselrichter {ip or mac_text}"
+    control = bool(settings.get("logger_mac")) and mac_text == _format_mac(settings.get("logger_mac"))
+    if not settings.get("logger_mac") and not any(item.get("control") for item in settings.get("tracked_inverters") or []):
+        control = mac_text == DEFAULT_LOGGER_MAC or not settings.get("tracked_inverters")
+    flow_field_id = ""
+    if not control:
+        flow_field_id = "wr" + mac_text.replace(":", "")
+        if not _attach_flow_field(label, flow_field_id):
+            return {
+                "ok": False,
+                "message": "Kein freier Platz im Stromfluss. Bitte zuerst ein Feld entfernen.",
+            }
+    entry = {
+        "id": "control" if control else flow_field_id,
+        "name": "Steuer-Logger" if control else label,
+        "mac": mac_text,
+        "serial": serial_num,
+        "ip": ip,
+        "port": 8899,
+        "unit": 1,
+        "role": "erzeugung",
+        "control": control,
+        "flow_field_id": flow_field_id,
+        "tracked_at": datetime.now(TZ).isoformat(timespec="seconds"),
+        "pv_kw": None,
+    }
+    settings["tracked_inverters"] = list(settings.get("tracked_inverters") or []) + [entry]
+    if control:
+        settings["logger_mac"] = mac_text
+        settings["logger_serial"] = serial_num
+        settings["logger_ip"] = ip or settings.get("logger_ip")
+        settings["logger_tracked_at"] = entry["tracked_at"]
+        settings["control_tracking_removed"] = False
+        if ip:
+            settings["modbus_host"] = ip
+    _persist_settings(settings)
+    if not control and ip and serial_num:
+        try:
+            _pv_cache[mac_text] = read_inverter_pv_kw(ip, serial_num, 1)
+        except Exception:
+            _pv_cache[mac_text] = None
+    message = (
+        "Steuer-Logger gespeichert. Die Erzeugung bleibt am bestehenden PV-Punkt, BMS-Schreiben ebenfalls."
+        if control
+        else f"{label} hinzugefügt. MAC wird stündlich weiterverfolgt, Rolle Erzeugung."
+    )
+    return {"ok": True, "inverter": entry, "message": message}
+
+
+def delete_tracked_inverter(mac: str, confirm_control: bool = False) -> Dict[str, Any]:
+    """Tracking beenden. Der Steuer-Logger braucht eine ausdrückliche Bestätigung."""
+    settings = load_settings()
+    mac_text = _format_mac(mac)
+    items = list(settings.get("tracked_inverters") or [])
+    target = next((item for item in items if item["mac"] == mac_text), None)
+    if not target:
+        return {"ok": False, "message": "Wechselrichter nicht in der Liste."}
+    if target.get("control") and not confirm_control:
+        return {
+            "ok": False,
+            "needs_confirm": True,
+            "message": (
+                "Das ist der Steuer-Logger fürs BMS-Schreiben. "
+                "Löschen stoppt nur das MAC-Tracking. Die letzte IP bleibt fürs Schreiben erhalten."
+            ),
+        }
+    settings["tracked_inverters"] = [item for item in items if item["mac"] != mac_text]
+    if target.get("flow_field_id"):
+        _detach_flow_field(str(target["flow_field_id"]))
+    _pv_cache.pop(mac_text, None)
+    if target.get("control"):
+        settings["control_tracking_removed"] = True
+    _persist_settings(settings)
+    return {"ok": True, "message": f"{target.get('name') or mac_text} entfernt. Tracking gestoppt."}
+
+
+def read_inverter_pv_kw(host: str, serial: int, unit: int = 1) -> Optional[float]:
+    """PV-Leistung eines zusätzlichen Loggers in kW (Deye-Register 0x00BA–0x00BD, Watt)."""
+    ip = _host(host)
+    if not ip or not serial:
+        return None
+    watts = 0
+    for address in PV_POWER_REGISTERS:
+        watts += int(read_solarman_holding(ip, 8899, int(unit) or 1, int(serial), address))
+    return round(max(0, watts) / 1000.0, 3)
+
+
+def extra_inverter_flow_values() -> List[Dict[str, Any]]:
+    """Zusätzliche Wechselrichter für die Rollensumme. Der Steuer-Logger zählt nicht doppelt."""
+    try:
+        settings = load_settings()
+    except Exception:
+        return []
+    out: List[Dict[str, Any]] = []
+    for item in settings.get("tracked_inverters") or []:
+        if item.get("control") or not item.get("flow_field_id"):
+            continue
+        kw = _pv_cache.get(item["mac"])
+        if kw is None and item.get("pv_kw") is not None:
+            kw = item.get("pv_kw")
+        out.append({
+            "flow_field_id": item["flow_field_id"],
+            "name": item.get("name") or "Wechselrichter",
+            "role": "erzeugung",
+            "kw": kw,
+        })
+    return out
+
+
+def refresh_tracked_inverters() -> Dict[str, Any]:
+    """Jede gespeicherte MAC neu suchen und die IP nachziehen. Keine neuen HA-Einträge."""
+    settings = load_settings()
+    found = {item["mac"]: item for item in discover_loggers(timeout=2.0)}
+    changed_control = False
+    now = datetime.now(TZ).isoformat(timespec="seconds")
+    for item in settings.get("tracked_inverters") or []:
+        match = found.get(item["mac"])
+        if not match:
+            match = discover_logger(item.get("ip") or "", mac=item["mac"], timeout=1.0)
+        if match:
+            if match["ip"] and match["ip"] != item.get("ip"):
+                item["ip"] = match["ip"]
+                if item.get("control"):
+                    changed_control = True
+            if int(match.get("serial") or 0):
+                item["serial"] = int(match["serial"])
+        item["tracked_at"] = now
+        if item.get("control"):
+            settings["logger_ip"] = item.get("ip") or settings.get("logger_ip")
+            settings["logger_mac"] = item["mac"]
+            settings["logger_serial"] = int(item.get("serial") or settings.get("logger_serial") or 0)
+            settings["logger_tracked_at"] = now
+            if item.get("ip"):
+                settings["modbus_host"] = item["ip"]
+        elif item.get("ip") and item.get("serial"):
+            try:
+                item["pv_kw"] = read_inverter_pv_kw(item["ip"], int(item["serial"]), int(item.get("unit") or 1))
+                _pv_cache[item["mac"]] = item["pv_kw"]
+            except Exception:
+                pass
+    ha = {"ok": True, "message": "Kein neuer Home-Assistant-Eintrag."}
+    if changed_control:
+        control = next((item for item in settings["tracked_inverters"] if item.get("control")), None)
+        if control:
+            ha = sync_logger_to_ha(control["ip"], control["mac"], int(control.get("serial") or 0))
+    _persist_settings(settings)
+    return {"ok": True, "changed_control": changed_control, "ha": ha, "count": len(settings.get("tracked_inverters") or [])}
+
+
+def _poll_extra_inverter_power() -> None:
+    settings = load_settings()
+    for item in settings.get("tracked_inverters") or []:
+        if item.get("control") or not item.get("ip") or not item.get("serial"):
+            continue
+        try:
+            _pv_cache[item["mac"]] = read_inverter_pv_kw(
+                item["ip"], int(item["serial"]), int(item.get("unit") or 1)
+            )
+        except Exception:
+            continue
+
+
+def _ensure_pv_poller() -> None:
+    global _pv_poller_started
+    if _pv_poller_started:
+        return
+    _pv_poller_started = True
+
+    def loop() -> None:
+        while True:
+            try:
+                _poll_extra_inverter_power()
+            except Exception:
+                pass
+            time.sleep(20)
+
+    threading.Thread(target=loop, name="bms-inverter-pv", daemon=True).start()
+
+
 _INVERTER_HINTS = (
     "solarman", "fronius", "deye", "growatt", "huawei", "goodwe", "solaredge",
     "sma", "sofar", "sungrow", "solax", "kostal", "enphase", "foxess", "solis",
@@ -557,10 +1436,11 @@ def _entry_endpoint(entry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 
 def _ha_endpoints() -> List[Dict[str, Any]]:
-    if not HA_CONFIG_ENTRIES.is_file():
+    path = _ha_config_entries_path()
+    if not path.is_file():
         return []
     try:
-        raw = json.loads(HA_CONFIG_ENTRIES.read_text(encoding="utf-8"))
+        raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return []
     entries = raw.get("data", {}).get("entries") if isinstance(raw, dict) else None
@@ -648,10 +1528,11 @@ def resolve_ha_link(inverter_id: str, known_ids: Optional[List[str]] = None) -> 
 
 def _solarman_device(host: str) -> Optional[Dict[str, Any]]:
     """Aktives Solarman-Gerät zum Host. Die Seriennummer stammt aus dem Geräteverzeichnis."""
-    if not host or not HA_DEVICE_REGISTRY.is_file():
+    path = _ha_device_registry_path()
+    if not host or not path.is_file():
         return None
     try:
-        raw = json.loads(HA_DEVICE_REGISTRY.read_text(encoding="utf-8"))
+        raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
     devices = raw.get("data", {}).get("devices") if isinstance(raw, dict) else None
@@ -747,6 +1628,12 @@ def _persist_settings(data: Dict[str, Any]) -> None:
         "modbus_unit": data["modbus_unit"],
         "modbus_source": data.get("modbus_source") or "",
         "known_entry_ids": data.get("known_entry_ids") or [],
+        "logger_ip": data.get("logger_ip") or "",
+        "logger_mac": data.get("logger_mac") or "",
+        "logger_serial": int(data.get("logger_serial") or 0),
+        "logger_tracked_at": data.get("logger_tracked_at") or "",
+        "tracked_inverters": data.get("tracked_inverters") or [],
+        "control_tracking_removed": bool(data.get("control_tracking_removed")),
         "release_pending": bool(data.get("release_pending")),
         "planning_hold": bool(data.get("planning_hold")),
         "community_hold": bool(data.get("community_hold")),
@@ -757,18 +1644,23 @@ def _persist_settings(data: Dict[str, Any]) -> None:
 
 def _apply_ha_link(data: Dict[str, Any]) -> Dict[str, Any]:
     link = resolve_ha_link(str(data.get("inverter") or DEFAULT_INVERTER), data.get("known_entry_ids") or [])
+    tracked_ip = _host(data.get("logger_ip"))
     if not link:
         data["modbus_source"] = data.get("modbus_source") or ""
         data["known_entry_ids"] = data.get("known_entry_ids") or []
+        if tracked_ip:
+            data["modbus_host"] = tracked_ip
         return data
+    # MAC-Tracker hat Vorrang vor der HA-Host-Adresse (IP kann sich geändert haben)
+    host = tracked_ip or link["host"]
     changed = (
-        data.get("modbus_host") != link["host"]
+        data.get("modbus_host") != host
         or data.get("modbus_port") != link["port"]
         or data.get("modbus_unit") != link["unit"]
         or data.get("modbus_source") != link["source"]
         or list(data.get("known_entry_ids") or []) != link["known_entry_ids"]
     )
-    data["modbus_host"] = link["host"]
+    data["modbus_host"] = host
     data["modbus_port"] = link["port"]
     data["modbus_unit"] = link["unit"]
     data["modbus_source"] = link["source"]
@@ -815,6 +1707,15 @@ def load_settings() -> Dict[str, Any]:
     if not isinstance(data.get("known_entry_ids"), list):
         data["known_entry_ids"] = []
     data["modbus_source"] = str(data.get("modbus_source") or "")
+    data["logger_ip"] = _host(data.get("logger_ip"))
+    data["logger_mac"] = _format_mac(data.get("logger_mac"))
+    try:
+        data["logger_serial"] = int(data.get("logger_serial") or 0)
+    except (TypeError, ValueError):
+        data["logger_serial"] = 0
+    data["logger_tracked_at"] = str(data.get("logger_tracked_at") or "")
+    data["control_tracking_removed"] = bool(data.get("control_tracking_removed"))
+    data["tracked_inverters"] = _normalize_tracked_inverters(data.get("tracked_inverters"), data)
     data["release_pending"] = bool(data.get("release_pending"))
     data["planning_hold"] = bool(data.get("planning_hold"))
     data["community_hold"] = bool(data.get("community_hold"))
@@ -867,6 +1768,16 @@ def save_settings(updates: Dict[str, Any]) -> Dict[str, Any]:
         data["modbus_unit"] = _unit(updates["modbus_unit"])
     data = _apply_ha_link(data)
     _persist_settings(data)
+    # Nach dem Verknüpfen Logger-MAC/IP erfassen und in Home Assistant nachziehen.
+    if data.get("modbus_host") and (
+        "inverter" in updates or "modbus_host" in updates or not data.get("logger_mac")
+    ):
+        try:
+            tracked = track_logger(str(data.get("modbus_host") or ""), persist=True)
+            if tracked.get("ok"):
+                data = load_settings()
+        except Exception:
+            pass
     return data
 
 
@@ -2131,8 +3042,38 @@ def apply_exchange_hold(settings: Optional[Dict[str, Any]] = None) -> Dict[str, 
     return save_settings({"real_mode": True, "target_grid_kw": kw, "exchange_hold": True})
 
 
+_mac_tracker_started = False
+_mac_tracker_last = 0.0
+
+
+def _ensure_mac_tracker() -> None:
+    """Periodisch Logger-MAC/IP prüfen und Änderungen nach Home Assistant schreiben."""
+    global _mac_tracker_started, _mac_tracker_last
+    if _mac_tracker_started:
+        return
+    _mac_tracker_started = True
+
+    def loop() -> None:
+        global _mac_tracker_last
+        # Sofort einmal, danach alle LOGGER_TRACK_GAP_SEC (3600 = stündlich) für jede gespeicherte MAC
+        _ensure_pv_poller()
+        _mac_tracker_last = time.monotonic() - LOGGER_TRACK_GAP_SEC
+        while True:
+            try:
+                now = time.monotonic()
+                if now - _mac_tracker_last >= LOGGER_TRACK_GAP_SEC:
+                    refresh_tracked_inverters()
+                    _mac_tracker_last = time.monotonic()
+            except Exception:
+                pass
+            time.sleep(15)
+
+    threading.Thread(target=loop, name="bms-mac-tracker", daemon=True).start()
+
+
 def _ensure_writer() -> None:
     global _writer_started
+    _ensure_mac_tracker()
     if _writer_started:
         return
     _writer_started = True
@@ -2218,6 +3159,29 @@ def status(record: bool = True) -> Dict[str, Any]:
             "writable": bool(item.get("writable")),
         },
         "inverters": inverter_choices(str(settings.get("inverter") or "")),
+        "logger": {
+            "ip": settings.get("logger_ip") or settings.get("modbus_host") or "",
+            "mac": settings.get("logger_mac") or "",
+            "serial": int(settings.get("logger_serial") or 0),
+            "tracked_at": settings.get("logger_tracked_at") or "",
+            "port": 8899,
+            "interval_sec": LOGGER_TRACK_GAP_SEC,
+        },
+        "tracked_inverters": [
+            {
+                "id": item.get("id"),
+                "name": item.get("name"),
+                "mac": item.get("mac"),
+                "serial": item.get("serial"),
+                "ip": item.get("ip"),
+                "control": bool(item.get("control")),
+                "role": "erzeugung",
+                "tracked_at": item.get("tracked_at") or "",
+                "pv_kw": _pv_cache.get(item.get("mac")) if not item.get("control") else None,
+            }
+            for item in (settings.get("tracked_inverters") or [])
+        ],
+        "discovered": _last_discovery,
         "live": live,
         "registers": read_register_state(),
         "assessment": judgement,

@@ -281,6 +281,8 @@
       cursor: grab;
       user-select: none !important;
       -webkit-user-select: none !important;
+      -moz-user-select: none !important;
+      -ms-user-select: none !important;
       -webkit-touch-callout: none;
       touch-action: none;
     }
@@ -301,6 +303,17 @@
     }
     .flow-grid.flow-is-dragging .flow-node-placeholder {
       pointer-events: auto;
+    }
+    .flow-drag-ghost {
+      position: fixed;
+      z-index: 2000;
+      pointer-events: none;
+      opacity: 0.92;
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+      transform: translate(-50%, -50%) scale(1.04);
+      margin: 0 !important;
+      min-width: 140px;
+      max-width: 220px;
     }
     .flow-node-delete {
       position: absolute;
@@ -1999,7 +2012,13 @@
       pointerId: null,
       nodeEl: null,
       suppressClick: false,
+      movedPx: 0,
+      ghostEl: null,
     };
+
+    function preventFlowSelect(e) {
+      e.preventDefault();
+    }
 
     function isBuiltinVisible(def) {
       return !(window._flowHiddenBuiltins || []).includes(def.key);
@@ -2225,15 +2244,66 @@
       });
     }
 
+    function removeFlowDragGhost() {
+      document.querySelectorAll(".flow-drag-ghost").forEach((el) => el.remove());
+      flowPtr.ghostEl = null;
+    }
+
+    function ensureFlowDragGhost(node, clientX, clientY) {
+      if (flowPtr.ghostEl) return flowPtr.ghostEl;
+      const ghost = node.cloneNode(true);
+      ghost.classList.add("flow-drag-ghost");
+      ghost.classList.remove("flow-node-dragging", "flow-node-drop-target");
+      ghost.querySelectorAll(".flow-node-delete").forEach((b) => b.remove());
+      ghost.removeAttribute("id");
+      ghost.querySelectorAll("[id]").forEach((el) => el.removeAttribute("id"));
+      const rect = node.getBoundingClientRect();
+      ghost.style.width = Math.round(rect.width) + "px";
+      document.body.appendChild(ghost);
+      flowPtr.ghostEl = ghost;
+      moveFlowDragGhost(clientX, clientY);
+      return ghost;
+    }
+
+    function moveFlowDragGhost(clientX, clientY) {
+      if (!flowPtr.ghostEl) return;
+      flowPtr.ghostEl.style.left = clientX + "px";
+      flowPtr.ghostEl.style.top = clientY + "px";
+    }
+
     function flowSlotTargetFromPoint(clientX, clientY, sourceEl) {
-      // Quelle kurz aus Hit-Test nehmen, sonst landet elementFromPoint immer auf dem gezogenen Kästchen
+      // Quelle + Ghost aus Hit-Test nehmen
+      const hide = [];
       const src = sourceEl || flowPtr.nodeEl;
-      const prev = src ? src.style.pointerEvents : "";
-      if (src) src.style.pointerEvents = "none";
+      if (src) hide.push(src);
+      if (flowPtr.ghostEl) hide.push(flowPtr.ghostEl);
+      const prev = hide.map((el) => el.style.pointerEvents);
+      hide.forEach((el) => { el.style.pointerEvents = "none"; });
       const el = document.elementFromPoint(clientX, clientY);
-      if (src) src.style.pointerEvents = prev;
-      if (!el) return null;
-      return el.closest("#flow_grid [data-flow-slot]");
+      hide.forEach((el2, i) => { el2.style.pointerEvents = prev[i]; });
+      if (el && el instanceof Element) {
+        const hit = el.closest("#flow_grid [data-flow-slot]");
+        if (hit) return hit;
+      }
+      // Fallback: nächster Slot (auch leere Platzhalter) in der Nähe
+      return nearestFlowSlotEl(clientX, clientY, sourceEl);
+    }
+
+    function nearestFlowSlotEl(clientX, clientY, sourceEl) {
+      let best = null;
+      let bestDist = 96; // px max
+      document.querySelectorAll("#flow_grid [data-flow-slot]").forEach((el) => {
+        if (sourceEl && el === sourceEl) return;
+        const r = el.getBoundingClientRect();
+        const cx = r.left + r.width / 2;
+        const cy = r.top + r.height / 2;
+        const d = Math.hypot(clientX - cx, clientY - cy);
+        if (d < bestDist) {
+          bestDist = d;
+          best = el;
+        }
+      });
+      return best;
     }
 
     function openFlowNodeConfig(node) {
@@ -2254,34 +2324,41 @@
       document.removeEventListener("pointermove", onFlowPointerMove);
       document.removeEventListener("pointerup", onFlowPointerUp);
       document.removeEventListener("pointercancel", onFlowPointerUp);
+      document.removeEventListener("selectstart", preventFlowSelect, true);
+      document.removeEventListener("dragstart", preventFlowSelect, true);
       const grid = document.getElementById("flow_grid");
       if (grid) grid.classList.remove("flow-is-dragging");
       clearFlowDropTargets();
+      removeFlowDragGhost();
       if (flowPtr.nodeEl) flowPtr.nodeEl.classList.remove("flow-node-dragging");
       flowPtr.active = false;
       flowPtr.dragging = false;
       flowPtr.nodeEl = null;
       flowPtr.nodeId = null;
       flowPtr.pointerId = null;
+      flowPtr.movedPx = 0;
     }
 
     function onFlowPointerMove(e) {
       if (!flowPtr.active || (flowPtr.pointerId != null && e.pointerId !== flowPtr.pointerId)) return;
+      if (e.cancelable) e.preventDefault();
+      try { window.getSelection && window.getSelection().removeAllRanges(); } catch (_) {}
       const dx = e.clientX - flowPtr.startX;
       const dy = e.clientY - flowPtr.startY;
-      if (!flowPtr.dragging) {
-        if ((dx * dx + dy * dy) < FLOW_DRAG_THRESHOLD_PX * FLOW_DRAG_THRESHOLD_PX) return;
-        flowPtr.dragging = true;
-        flowPtr.suppressClick = true;
-        if (flowPtr.nodeEl) flowPtr.nodeEl.classList.add("flow-node-dragging");
-        const grid = document.getElementById("flow_grid");
-        if (grid) grid.classList.add("flow-is-dragging");
-        try { window.getSelection && window.getSelection().removeAllRanges(); } catch (_) {}
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist > flowPtr.movedPx) flowPtr.movedPx = dist;
+      if (dist < FLOW_DRAG_THRESHOLD_PX) return;
+      flowPtr.suppressClick = true;
+      flowPtr.dragging = true;
+      if (flowPtr.nodeEl) {
+        flowPtr.nodeEl.classList.add("flow-node-dragging");
+        ensureFlowDragGhost(flowPtr.nodeEl, e.clientX, e.clientY);
       }
-      // Auswahl/Scroll während des Ziehens unterbinden
-      if (e.cancelable) e.preventDefault();
+      moveFlowDragGhost(e.clientX, e.clientY);
+      const grid = document.getElementById("flow_grid");
+      if (grid) grid.classList.add("flow-is-dragging");
       clearFlowDropTargets();
-      const target = flowSlotTargetFromPoint(e.clientX, e.clientY);
+      const target = flowSlotTargetFromPoint(e.clientX, e.clientY, flowPtr.nodeEl);
       if (!target) return;
       const targetId = target.dataset.flowNodeId || "";
       if (targetId && targetId === flowPtr.nodeId) return;
@@ -2290,16 +2367,14 @@
 
     function onFlowPointerUp(e) {
       if (!flowPtr.active || (flowPtr.pointerId != null && e.pointerId !== flowPtr.pointerId)) return;
-      const wasDragging = flowPtr.dragging;
       const nodeId = flowPtr.nodeId;
       const nodeEl = flowPtr.nodeEl;
-      const suppressClick = flowPtr.suppressClick;
+      const movedFar = flowPtr.movedPx >= FLOW_DRAG_THRESHOLD_PX;
       const clientX = e.clientX;
       const clientY = e.clientY;
 
-      // Drop-Ziel VOR dem Aufräumen bestimmen (nodeEl noch für Hit-Test nötig)
       let dropTarget = null;
-      if (wasDragging && nodeId) {
+      if (movedFar && nodeId) {
         dropTarget = flowSlotTargetFromPoint(clientX, clientY, nodeEl);
       }
 
@@ -2308,34 +2383,34 @@
       }
       endFlowPointerDrag();
 
-      if (wasDragging && nodeId) {
-        if (dropTarget) {
-          const toSlot = Number(dropTarget.dataset.flowSlot);
-          if (!Number.isNaN(toSlot)) {
-            const targetId = dropTarget.dataset.flowNodeId || "";
-            if (!targetId || targetId !== nodeId) {
-              applyFlowSlotMove(nodeId, toSlot);
-            }
+      if (movedFar && nodeId && dropTarget) {
+        const toSlot = Number(dropTarget.dataset.flowSlot);
+        if (!Number.isNaN(toSlot)) {
+          const targetId = dropTarget.dataset.flowNodeId || "";
+          if (!targetId || targetId !== nodeId) {
+            applyFlowSlotMove(nodeId, toSlot);
           }
         }
-        // Nach Drag keinen Klick/Modal öffnen
         return;
       }
 
-      if (suppressClick || !nodeEl) return;
-      if (e.target && e.target.closest && e.target.closest(".flow-node-delete")) return;
-      openFlowNodeConfig(nodeEl);
+      if (!movedFar && nodeEl) {
+        if (e.target && e.target.closest && e.target.closest(".flow-node-delete")) return;
+        openFlowNodeConfig(nodeEl);
+      }
     }
 
-    function onFlowPointerDown(e) {
+    function onFlowGridPointerDown(e) {
       if (e.pointerType === "mouse" && e.button !== 0) return;
-      if (e.target.closest(".flow-node-delete")) return;
-      const node = e.target.closest("#flow_grid .flow-node-draggable[data-flow-node-id]");
+      const t = e.target;
+      if (!(t instanceof Element)) return;
+      if (t.closest(".flow-node-delete")) return;
+      const node = t.closest("#flow_grid .flow-node-draggable[data-flow-node-id]");
       if (!node) return;
-      // Textauswahl (Zahlen im Kästchen) und Touch-Scroll sofort unterbinden
+
       if (e.cancelable) e.preventDefault();
       try { window.getSelection && window.getSelection().removeAllRanges(); } catch (_) {}
-      // Kein HTML5-DnD — Pointer mit Schwelle (Maus + Touch)
+
       flowPtr = {
         active: true,
         dragging: false,
@@ -2346,7 +2421,12 @@
         pointerId: e.pointerId,
         nodeEl: node,
         suppressClick: false,
+        movedPx: 0,
+        ghostEl: null,
       };
+
+      document.addEventListener("selectstart", preventFlowSelect, true);
+      document.addEventListener("dragstart", preventFlowSelect, true);
       try { node.setPointerCapture(e.pointerId); } catch (_) {}
       document.addEventListener("pointermove", onFlowPointerMove, { passive: false });
       document.addEventListener("pointerup", onFlowPointerUp);
@@ -2357,29 +2437,17 @@
       const grid = document.getElementById("flow_grid");
       if (!grid || grid.dataset.flowDragBound === "1") return;
       grid.dataset.flowDragBound = "1";
-      grid.addEventListener("pointerdown", onFlowPointerDown, { passive: false });
+      grid.addEventListener("pointerdown", onFlowGridPointerDown, { passive: false });
       grid.addEventListener("selectstart", (e) => {
-        if (e.target.closest(".flow-node-draggable")) e.preventDefault();
+        if (e.target.closest && e.target.closest(".flow-node-draggable")) e.preventDefault();
       });
       grid.addEventListener("dragstart", (e) => {
-        // Native Bild/Text-Drag der Browser unterbinden
-        if (e.target.closest(".flow-node-draggable")) e.preventDefault();
+        if (e.target.closest && e.target.closest(".flow-node-draggable")) e.preventDefault();
       });
     }
 
     function bindFlowGridEvents() {
       initFlowDragDelegation();
-      document.querySelectorAll("#flow_slots_host .flow-node-clickable[data-flow-fields]").forEach((node) => {
-        // Klick nur als Fallback (Pointer-Up öffnet normalerweise das Modal)
-        node.onclick = (e) => {
-          if (e.target.closest(".flow-node-delete")) return;
-          if (flowPtr.suppressClick || flowPtr.dragging || flowPtr.active) {
-            flowPtr.suppressClick = false;
-            return;
-          }
-          openFlowNodeConfig(node);
-        };
-      });
       document.querySelectorAll(".flow-node-delete[data-custom-id]").forEach((btn) => {
         btn.onclick = (e) => {
           e.stopPropagation();
@@ -2394,11 +2462,24 @@
       });
       document.querySelectorAll("#flow_slots_host .flow-node-placeholder").forEach((el) => {
         el.onclick = () => {
-          if (flowPtr.suppressClick || flowPtr.dragging) {
+          if (flowPtr.suppressClick) {
             flowPtr.suppressClick = false;
             return;
           }
           addCustomFlowField();
+        };
+      });
+      document.querySelectorAll("#flow_slots_host .flow-node-clickable[data-flow-fields]").forEach((node) => {
+        node.onclick = (e) => {
+          if (e.target.closest(".flow-node-delete")) return;
+          if (flowPtr.suppressClick || flowPtr.active || flowPtr.dragging) {
+            flowPtr.suppressClick = false;
+            e.preventDefault();
+            e.stopPropagation();
+            return;
+          }
+          // Fallback falls pointerup den Klick nicht öffnet
+          openFlowNodeConfig(node);
         };
       });
     }
