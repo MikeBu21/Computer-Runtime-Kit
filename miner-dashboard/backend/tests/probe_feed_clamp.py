@@ -35,7 +35,7 @@ while time.time() < end:
     print(
         time.strftime("%H:%M:%S"),
         "grid", r("sensor.192_168_1_176_grid_power"),
-        "load", r("sensor.192_168_1_176_load_power"),
+        "load", r("Beispiel"),
         "pv", r("Beispiel"),
         "battA", r("Beispiel_current"),
         flush=True,

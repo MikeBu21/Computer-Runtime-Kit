@@ -102,12 +102,6 @@ def index():
     from control_algorithm.config import load_config, sort_ha_devices_by_priority, sort_miners_by_priority
 
     algo_config = load_config()
-    try:
-        from ip_recovery import ensure_all_miner_macs
-
-        ensure_all_miner_macs()
-    except Exception:
-        pass
     with open(MINER_FILE) as f:
         miners = sort_miners_by_priority(json.load(f), algo_config)
     settings = load_settings()
@@ -264,7 +258,9 @@ def inject_nav_badges():
     try:
         from public_update import dashboard_status
 
-        status = dashboard_status()
+        # Nie auf GitHub warten: sonst hängt der erste Klick auf Dashboard/Seiten
+        # bis zu 20 s, wenn die öffentliche Versionsprüfung nicht erreichbar ist.
+        status = dashboard_status(allow_network=False)
         return {
             "nav_update_count": int(status.get("pending_updates") or 0),
             "nav_public_update": status,
@@ -484,13 +480,33 @@ def api_energiegemeinschaft_mesh():
     return jsonify(public_status())
 
 
+@app.route('/api/energiegemeinschaft/name', methods=['POST'])
+def api_energiegemeinschaft_name():
+    denied = _eg_login()
+    if denied:
+        return denied
+    from energiegemeinschaft_mesh import local_name, set_display_name
+
+    try:
+        name = set_display_name(request.form.get("name") or "")
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({"ok": True, "display_name": name, "self_name": local_name()})
+
+
 @app.route('/api/energiegemeinschaft/code', methods=['POST'])
 def api_energiegemeinschaft_code():
     denied = _eg_login()
     if denied:
         return denied
-    from energiegemeinschaft_mesh import generate_and_store_code
+    from energiegemeinschaft_mesh import generate_and_store_code, set_display_name
 
+    typed = (request.form.get("name") or "").strip()
+    if typed:
+        try:
+            set_display_name(typed)
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
     return jsonify({"ok": True, "invite_code": generate_and_store_code()})
 
 
@@ -499,8 +515,14 @@ def api_energiegemeinschaft_join():
     denied = _eg_login()
     if denied:
         return denied
-    from energiegemeinschaft_mesh import set_invite_code
+    from energiegemeinschaft_mesh import set_display_name, set_invite_code
 
+    typed = (request.form.get("name") or "").strip()
+    if typed:
+        try:
+            set_display_name(typed)
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
     try:
         code = set_invite_code((request.form.get("code") or "").strip())
     except ValueError as exc:
@@ -587,10 +609,11 @@ def wechselrichter_bms_page():
     # VORLÄUFIG TEMPORARY_BMS_TAKEOVER: Route und Seite nach der Übernahme entfernen.
     from bms_seite import inverter_choices, load_settings
 
+    settings = load_settings()
     return render_template(
         "wechselrichter_bms.html",
-        settings=load_settings(),
-        inverters=inverter_choices(),
+        settings=settings,
+        inverters=inverter_choices(str(settings.get("inverter") or "")),
     )
 
 
@@ -598,10 +621,11 @@ def wechselrichter_bms_page():
 def wechselrichter_bms_netzbezug():
     from bms_seite import inverter_choices, load_settings
 
+    settings = load_settings()
     return render_template(
         "bms_netzbezug.html",
-        settings=load_settings(),
-        inverters=inverter_choices(),
+        settings=settings,
+        inverters=inverter_choices(str(settings.get("inverter") or "")),
     )
 
 

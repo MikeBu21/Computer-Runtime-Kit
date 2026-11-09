@@ -112,9 +112,13 @@ def _default_line_series() -> List[Dict[str, Any]]:
 
 
 def default_config() -> Dict[str, Any]:
+    from flow_roles import DEFAULT_BUILTIN_ROLES
+
     return {
         "updated_at": None,
         "flow_hidden_builtins": [],
+        "flow_builtin_slots": {},
+        "flow_point_roles": dict(DEFAULT_BUILTIN_ROLES),
         "custom_flow_fields": [],
         "pie_generation": _default_pie_generation(),
         "pie_consumption": _default_pie_consumption(),
@@ -131,6 +135,55 @@ def _normalize_hidden_builtins(keys: Any) -> List[str]:
         if k in BUILTIN_FLOW_KEYS and k not in out:
             out.append(k)
     return out
+
+
+def _normalize_builtin_slots(raw: Any) -> Dict[str, int]:
+    """Nur visuelle Slot-Positionen der Built-in-Knoten (keine Rollen/Sensoren)."""
+    if not isinstance(raw, dict):
+        return {}
+    out: Dict[str, int] = {}
+    used: set = set()
+    for key, val in raw.items():
+        k = str(key or "").strip()
+        if k not in BUILTIN_FLOW_KEYS:
+            continue
+        try:
+            slot = int(val)
+        except (TypeError, ValueError):
+            continue
+        if not (0 <= slot < MAX_FLOW_SLOTS) or slot in used:
+            continue
+        out[k] = slot
+        used.add(slot)
+    return out
+
+
+def effective_builtin_slots(cfg: Dict[str, Any]) -> Dict[str, int]:
+    """Effektive Grid-Slots sichtbarer Built-ins (Overrides + Defaults, ohne Kollision)."""
+    hidden = hidden_builtins(cfg)
+    overrides = _normalize_builtin_slots(cfg.get("flow_builtin_slots"))
+    result: Dict[str, int] = {}
+    used: set = set()
+    for key in BUILTIN_FLOW_KEYS:
+        if key in hidden:
+            continue
+        if key in overrides and overrides[key] not in used:
+            result[key] = overrides[key]
+            used.add(overrides[key])
+    for key in BUILTIN_FLOW_KEYS:
+        if key in hidden or key in result:
+            continue
+        default = BUILTIN_FLOW_SLOTS[key]
+        if default not in used:
+            result[key] = default
+            used.add(default)
+            continue
+        for slot in range(MAX_FLOW_SLOTS):
+            if slot not in used:
+                result[key] = slot
+                used.add(slot)
+                break
+    return result
 
 
 def config_path() -> Path:
@@ -159,6 +212,8 @@ def _normalize_custom_field(entry: Dict[str, Any]) -> Dict[str, Any]:
     slot = int(slot_raw) if slot_raw is not None and str(slot_raw).isdigit() else None
     if slot is not None and not (0 <= slot < MAX_FLOW_SLOTS):
         slot = None
+    from flow_roles import DEFAULT_CUSTOM_ROLE, normalize_role
+
     return {
         "id": field_id,
         "name": str(entry.get("name") or "Neues Feld").strip() or "Neues Feld",
@@ -166,6 +221,7 @@ def _normalize_custom_field(entry: Dict[str, Any]) -> Dict[str, Any]:
         "enabled": bool(entry.get("enabled", True)),
         "sensors": sensors,
         "slot": slot,
+        "role": normalize_role(entry.get("role"), DEFAULT_CUSTOM_ROLE),
     }
 
 
@@ -178,8 +234,7 @@ def visible_builtin_count(cfg: Dict[str, Any]) -> int:
 
 
 def used_flow_slots(cfg: Dict[str, Any]) -> set:
-    hidden = hidden_builtins(cfg)
-    used = {slot for key, slot in BUILTIN_FLOW_SLOTS.items() if key not in hidden}
+    used = set(effective_builtin_slots(cfg).values())
     for field in cfg.get("custom_flow_fields") or []:
         if field.get("enabled", True) and field.get("slot") is not None:
             used.add(int(field["slot"]))
@@ -264,9 +319,13 @@ def _normalize_line_series(entry: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def normalize_config(data: Dict[str, Any]) -> Dict[str, Any]:
+    from flow_roles import normalize_flow_point_roles
+
     out = default_config()
     out["updated_at"] = data.get("updated_at")
     out["flow_hidden_builtins"] = _normalize_hidden_builtins(data.get("flow_hidden_builtins"))
+    out["flow_builtin_slots"] = _normalize_builtin_slots(data.get("flow_builtin_slots"))
+    out["flow_point_roles"] = normalize_flow_point_roles(data.get("flow_point_roles"))
     custom = data.get("custom_flow_fields")
     if isinstance(custom, list):
         out["custom_flow_fields"] = [_normalize_custom_field(x) for x in custom if isinstance(x, dict)]
@@ -306,9 +365,15 @@ def save_config(cfg: Dict[str, Any]) -> Path:
 
 
 def parse_json_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    from flow_roles import normalize_flow_point_roles
+
     cfg = load_config()
     if "flow_hidden_builtins" in payload:
         cfg["flow_hidden_builtins"] = _normalize_hidden_builtins(payload.get("flow_hidden_builtins"))
+    if "flow_builtin_slots" in payload:
+        cfg["flow_builtin_slots"] = _normalize_builtin_slots(payload.get("flow_builtin_slots"))
+    if "flow_point_roles" in payload:
+        cfg["flow_point_roles"] = normalize_flow_point_roles(payload.get("flow_point_roles"))
     if "custom_flow_fields" in payload:
         fields = payload.get("custom_flow_fields")
         if isinstance(fields, list):

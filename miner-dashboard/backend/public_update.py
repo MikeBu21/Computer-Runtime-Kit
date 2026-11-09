@@ -101,6 +101,8 @@ CLONE_RETRY_SEC = 60
 CLONE_RETRY_MAX = 60
 HEALTH_WAIT_SEC = 90
 _remote_cache: Dict[str, Any] = {"at": 0.0, "value": None}
+_remote_refresh_lock = threading.Lock()
+_remote_refresh_running = False
 REMOTE_CACHE_SEC = 30
 AUTO_UPDATE_WAIT_SEC = 60
 AUTO_UPDATE_POLL_SEC = 30
@@ -387,34 +389,74 @@ def device_names() -> Set[str]:
     return {name for name in names if name}
 
 
-def fetch_remote_version(use_cache: bool = False) -> Optional[int]:
-    """Öffentliche Versionsnummer. 0 = noch kein Release. None = nicht prüfbar."""
-    if use_cache and time.time() - float(_remote_cache["at"]) < REMOTE_CACHE_SEC:
-        return _remote_cache["value"]
+def _fetch_remote_version_now() -> Optional[int]:
+    """Netzabruf der öffentlichen Versionsnummer. Timeout 20 s."""
     request = urllib.request.Request(RAW_RELEASE_URL, headers={"User-Agent": "piminer-standard"})
-    value: Optional[int]
     try:
         with urllib.request.urlopen(request, timeout=20) as response:
             payload = json.loads(response.read().decode("utf-8"))
-        value = int(payload.get("version") or 0)
+        return int(payload.get("version") or 0)
     except urllib.error.HTTPError as exc:
-        value = 0 if exc.code == 404 else None
+        return 0 if exc.code == 404 else None
     except Exception:
-        value = None
+        return None
+
+
+def _store_remote_version(value: Optional[int]) -> Optional[int]:
     _remote_cache["at"] = time.time()
     _remote_cache["value"] = value
     return value
+
+
+def _schedule_remote_version_refresh() -> None:
+    """Hintergrund-Aktualisierung, damit Seitenaufrufe nicht auf GitHub warten."""
+    global _remote_refresh_running
+    with _remote_refresh_lock:
+        if _remote_refresh_running:
+            return
+        _remote_refresh_running = True
+
+    def worker() -> None:
+        global _remote_refresh_running
+        try:
+            _store_remote_version(_fetch_remote_version_now())
+        finally:
+            with _remote_refresh_lock:
+                _remote_refresh_running = False
+
+    threading.Thread(target=worker, name="public-version-refresh", daemon=True).start()
+
+
+def fetch_remote_version(use_cache: bool = False, *, allow_network: bool = True) -> Optional[int]:
+    """Öffentliche Versionsnummer. 0 = noch kein Release. None = nicht prüfbar.
+
+    allow_network=False: nur Cache, Seitenaufbau blockiert nie (Navigation).
+    use_cache=True: frischer Cache sofort, sonst Hintergrund-Refresh und letzter Wert.
+    """
+    age = time.time() - float(_remote_cache["at"])
+    cached = _remote_cache["value"]
+    have_cache = float(_remote_cache["at"]) > 0
+    if use_cache and have_cache and age < REMOTE_CACHE_SEC:
+        return cached
+    if not allow_network:
+        if not have_cache or age >= REMOTE_CACHE_SEC:
+            _schedule_remote_version_refresh()
+        return cached if have_cache else None
+    if use_cache and have_cache:
+        _schedule_remote_version_refresh()
+        return cached
+    return _store_remote_version(_fetch_remote_version_now())
 
 
 def next_version(local_version: int, remote_version: Optional[int]) -> int:
     return max(int(remote_version or 0), int(local_version or 0)) + 1
 
 
-def dashboard_status() -> Dict[str, Any]:
+def dashboard_status(*, allow_network: bool = True) -> Dict[str, Any]:
     state = load_state()
     job = _job()
     local_version = int(state.get("local_version") or 0)
-    remote_version = fetch_remote_version(use_cache=True)
+    remote_version = fetch_remote_version(use_cache=True, allow_network=allow_network)
     uploading = bool(job.get("uploading"))
     downloading = bool(job.get("downloading"))
     allowed = upload_allowed(

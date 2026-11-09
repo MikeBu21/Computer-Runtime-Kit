@@ -179,27 +179,49 @@ def record_sample(base_dir: str, force: bool = False) -> None:
         if val is not None:
             point[series["id"]] = round(float(val), 2)
 
-    # Legacy-Felder für Abwärtskompatibilität
-    pv = _parse_kw(flow.get("pv"))
-    hydro = _parse_kw(flow.get("hydro"))
-    point.setdefault("erzeugung", round(pv + hydro, 2))
-    point.setdefault("netz", round(_parse_kw_signed(flow.get("grid")), 2))
-    verbrauch = _parse_kw(flow.get("verbrauch_gesamt"))
-    if verbrauch <= 0:
-        verbrauch = _enline_kw_from_files(
-            base_dir,
-            "verbrauch_gesamt",
-            ["verbrauch_gesamt_value.txt"],
-        )
-    # Fallback: Dashboard-Linie / Wohnhaus, wenn Bilanzformel (ohne Hydro) 0 liefert
-    if verbrauch <= 0:
-        for key in ("line_verbrauch", "line_last", "line_wohnhaus"):
-            try:
-                verbrauch = max(verbrauch, float(point.get(key) or 0))
-            except (TypeError, ValueError):
-                pass
-    if verbrauch <= 0:
-        verbrauch = _parse_kw(flow.get("haus") or flow.get("wohnhaus"))
+    # Legacy-Felder: Rollensummen inkl. Sensor-Vorzeichen (+/−), Fallback auf alte Keys
+    role_sums = flow.get("role_sums") if isinstance(flow.get("role_sums"), dict) else {}
+    role_details = flow.get("role_details") if isinstance(flow.get("role_details"), list) else []
+    pv = _parse_kw_signed(flow.get("pv"))
+    hydro = _parse_kw_signed(flow.get("hydro"))
+    try:
+        erzeugung = float(role_sums["erzeugung"]) if "erzeugung" in role_sums else (pv + hydro)
+    except (TypeError, ValueError):
+        erzeugung = pv + hydro
+    point.setdefault("erzeugung", round(erzeugung, 2))
+    try:
+        netz = float(role_sums["netz"]) if "netz" in role_sums else _parse_kw_signed(flow.get("grid"))
+    except (TypeError, ValueError):
+        netz = _parse_kw_signed(flow.get("grid"))
+    point.setdefault("netz", round(netz, 2))
+    # Verbrauch = vorzeichenbehaftete Summe Rolle Verbraucher (Minus-Sensoren bleiben Negativbeitrag)
+    has_verbraucher = any(
+        isinstance(d, dict) and d.get("role") == "verbraucher" for d in role_details
+    )
+    verbrauch: float
+    if has_verbraucher and "verbraucher" in role_sums:
+        try:
+            verbrauch = float(role_sums["verbraucher"])
+        except (TypeError, ValueError):
+            verbrauch = 0.0
+    else:
+        verbrauch = _parse_kw_signed(flow.get("verbrauch_gesamt"))
+        if verbrauch == 0:
+            verbrauch = _parse_kw_signed(flow.get("haus") or flow.get("wohnhaus"))
+        if verbrauch == 0:
+            verbrauch = _enline_kw_from_files(
+                base_dir,
+                "wohnhaus",
+                ["wohnhaus_value.txt", "haus_value.txt"],
+            )
+        if verbrauch == 0:
+            for key in ("line_verbrauch", "line_last", "line_wohnhaus"):
+                try:
+                    verbrauch = max(verbrauch, float(point.get(key) or 0))
+                except (TypeError, ValueError):
+                    pass
+        if verbrauch == 0:
+            verbrauch = _parse_kw_signed(flow.get("haus") or flow.get("wohnhaus"))
     point.setdefault("betrieb", round(verbrauch, 2))
     if soc_val is not None:
         point.setdefault("soc", round(soc_val, 1))

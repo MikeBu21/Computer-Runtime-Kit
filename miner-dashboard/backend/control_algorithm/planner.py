@@ -246,18 +246,20 @@ def simulate_soc_at_target(
     target_kwh = (target_soc / 100.0) * storage
     delta = target_kwh - soc_kwh
 
-    devices = enabled_devices(config)
-    miner_kw = miner_load_kw(devices, live.get("miner_status") or {})
     pv_kw = float(live.get("pv_kw") or 0)
     minutes = max(1, int(next_target.get("minutes_until", 60)))
     hours = minutes / 60.0
 
-    verbrauch = float(live.get("verbrauch_kw") or 0)
-    haus_kw = max(0.0, verbrauch - miner_kw)
+    haus_kw = float(
+        live.get("house_kw")
+        or live.get("wohnhaus_kw")
+        or live.get("verbrauch_kw")
+        or 0
+    )
     battery_kw = float(live.get("battery_power_kw") or 0)
 
     pv_kwh_period = pv_forecast_kwh_rest_of_day * (hours / 24.0) + pv_kw * hours * 0.5
-    net_effect = pv_kwh_period - haus_kw * hours - miner_kw * hours + battery_kw * hours
+    net_effect = pv_kwh_period - haus_kw * hours + battery_kw * hours
 
     return {
         "reachable": net_effect >= delta - storage * 0.05,

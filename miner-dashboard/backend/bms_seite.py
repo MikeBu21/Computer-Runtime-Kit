@@ -272,11 +272,24 @@ REG_RESTART_SOC = 0x0074
 REG_LOW_SOC = 0x0075
 
 
+def _ui_modbus_defaults(inverter_id: str) -> Dict[str, int]:
+    """Vorschläge für Port/Unit im Formular. Deye läuft über Solarman (8899), sonst Modbus TCP 502."""
+    family = _family(inverter_id)
+    if family == "deye":
+        return {"port": 8899, "unit": 1}
+    return {"port": 502, "unit": 1}
+
+
 def inverter_choices(selected: str = "") -> List[Dict[str, Any]]:
-    link = resolve_ha_link(selected, None) if selected else None
+    # UI zeigt vorerst nur den aktiven Typ; andere Inverter sind noch nicht freigegeben.
+    active_id = selected if selected in INVERTERS else DEFAULT_INVERTER
+    link = resolve_ha_link(active_id, None) if active_id else None
     rows = []
     for item in INVERTER_LIST:
-        shown = _control_item(item, link) if item["id"] == selected else item
+        if item["id"] != active_id:
+            continue
+        shown = _control_item(item, link) if item["id"] == active_id else item
+        defaults = _ui_modbus_defaults(shown["id"])
         rows.append(
             {
                 "id": shown["id"],
@@ -284,6 +297,8 @@ def inverter_choices(selected: str = "") -> List[Dict[str, Any]]:
                 "detail": shown["detail"],
                 "register_text": _register_text(shown),
                 "note": shown.get("note") or "",
+                "default_port": defaults["port"],
+                "default_unit": defaults["unit"],
             }
         )
     return rows
@@ -870,7 +885,6 @@ _sampler_started = False
 
 
 HA_GRID_POWER = "sensor.192_168_1_176_grid_power"
-HA_LOAD_POWER = "sensor.192_168_1_176_load_power"
 HA_BATTERY_POWER = "Beispiel"
 HA_BATTERY_SOC = (
     "Beispiel",
@@ -901,9 +915,7 @@ def _read_live_now() -> Dict[str, Any]:
         raw_grid = _ha_number(read_ha_entity_state(HA_GRID_POWER))
         if raw_grid is not None:
             grid_kw = round(raw_grid / 1000.0, 2)
-        raw_load = _ha_number(read_ha_entity_state(HA_LOAD_POWER))
-        if raw_load is not None:
-            load_kw = round(raw_load / 1000.0, 2)
+        load_kw = _configured_house_kw()
         raw_batt = _ha_number(read_ha_entity_state(HA_BATTERY_POWER))
         if raw_batt is not None:
             # Solarman: Plus = Entladen. Hier: Plus = Laden.
@@ -1097,6 +1109,12 @@ def _solarman_checksum(frame: bytes) -> int:
     return sum(frame[1:]) & 0xFF
 
 
+# Bytes 7–10 jedes Rahmens von 192.168.1.176, little-endian. Die
+# Home-Assistant-Konfiguration trägt eine andere Nummer, und auf die antwortet
+# dieser Logger nicht. Nur diese Nummer kommt in den Schreib- und Leserahmen.
+LOGGER_FRAME_SERIAL = 2965822000
+
+
 def _solarman_exchange(host: str, port: int, serial: int, modbus: bytes, accept) -> bytes:
     """Ein Modbus-Rahmen über den Solarman-Logger (Port 8899).
 
@@ -1107,6 +1125,8 @@ def _solarman_exchange(host: str, port: int, serial: int, modbus: bytes, accept)
     """
     if not serial:
         raise OSError("Solarman-Seriennummer fehlt")
+    if str(host) == "192.168.1.176":
+        serial = LOGGER_FRAME_SERIAL
     sequence = random.randint(1, 255)
     header = (
         b"\xA5"
@@ -1384,17 +1404,42 @@ def _choose_import_mode(target_w: int, live: Optional[Dict[str, Any]]) -> str:
     return _hold_mode
 
 
+def _configured_house_kw() -> Optional[float]:
+    """Wohnhaus-Verbrauch: Summe der dort zugeordneten Sensoren."""
+    try:
+        from ha_entity_mapping import (
+            FIELD_DEFINITIONS,
+            compute_field_value,
+            load_config,
+            normalize_field_entry,
+        )
+        from energy_monitor.ha_live_reader import load_snapshot
+
+        cfg = load_config()
+        entry = normalize_field_entry((cfg.get("fields") or {}).get("wohnhaus") or {})
+        if entry.get("enabled") and entry.get("sensors"):
+            val = compute_field_value(entry, FIELD_DEFINITIONS["wohnhaus"], load_snapshot())
+            if val is not None:
+                return round(float(val), 3)
+    except Exception:
+        pass
+    try:
+        from miner_flow_data import _read_first, _to_float
+
+        raw = _read_first(str(BACKEND_DIR), ["wohnhaus_value.txt", "haus_value.txt"])
+        val = _to_float(raw if raw not in (None, "n/a") else None)
+        if val is not None:
+            return round(float(val), 3)
+    except Exception:
+        pass
+    return None
+
+
 def _house_load_kw(live: Optional[Dict[str, Any]]) -> Optional[float]:
-    """Hauslast: HA-Lastzähler, sonst Netz minus Batterie (Laden plus, Entladen minus)."""
-    if not live:
+    """Hauslast ist der konfigurierte Wohnhaus-Wert."""
+    if not live or live.get("load_kw") is None:
         return None
-    if live.get("load_kw") is not None:
-        return round(float(live["load_kw"]), 3)
-    grid = live.get("grid_kw")
-    battery = live.get("battery_kw")
-    if grid is None or battery is None:
-        return None
-    return round(float(grid) - float(battery), 3)
+    return round(float(live["load_kw"]), 3)
 
 
 def _peak_enable_row(item: Dict[str, Any], peak_flags: Optional[int], enabled: bool = True) -> List[tuple]:
@@ -2172,7 +2217,7 @@ def status(record: bool = True) -> Dict[str, Any]:
             "note": item.get("note") or "",
             "writable": bool(item.get("writable")),
         },
-        "inverters": inverter_choices(),
+        "inverters": inverter_choices(str(settings.get("inverter") or "")),
         "live": live,
         "registers": read_register_state(),
         "assessment": judgement,

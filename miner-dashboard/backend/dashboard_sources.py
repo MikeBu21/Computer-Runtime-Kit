@@ -175,6 +175,18 @@ def resolve_source_value(
         return _parse_kw(raw)
 
     if src == "computed.erzeugung":
+        role_sums = flow.get("role_sums") if isinstance(flow.get("role_sums"), dict) else None
+        if role_sums and role_sums.get("erzeugung") is not None:
+            try:
+                return round(float(role_sums["erzeugung"]), 3)
+            except (TypeError, ValueError):
+                pass
+        raw_gesamt = flow.get("erzeugung_gesamt")
+        if raw_gesamt not in (None, "", "n/a"):
+            try:
+                return round(float(str(raw_gesamt).replace(",", ".")), 3)
+            except (TypeError, ValueError):
+                pass
         pv = resolve_source_value("field.pv", flow=flow, ha_cfg=ha_cfg, snapshot=snapshot)
         hydro = resolve_source_value("field.wasserkraft", flow=flow, ha_cfg=ha_cfg, snapshot=snapshot)
         if pv is None and hydro is None:

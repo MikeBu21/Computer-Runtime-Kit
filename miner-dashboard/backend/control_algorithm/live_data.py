@@ -34,14 +34,44 @@ def load_live_snapshot(base_dir: Optional[str] = None) -> Dict[str, Any]:
         flow["battery_soc"] = bat.get("soc") or flow.get("battery_soc")
         flow["battery_power_kw"] = bat.get("power_kw")
 
-        pv_kw = _parse_float(flow.get("pv"))
-        grid_kw = _parse_float(flow.get("grid"))
-        verbrauch = _parse_float(flow.get("verbrauch_gesamt"))
-        # Flow-Key "haus" = Wohnhauslast (ohne steuerbare Last); kanonisch house_kw/wohnhaus_kw
-        house_kw = _parse_float(flow.get("haus") or flow.get("wohnhaus"))
-        hydro_kw = _parse_float(flow.get("hydro") or flow.get("wasserkraft"))
+        role_sums = flow.get("role_sums") if isinstance(flow.get("role_sums"), dict) else {}
+        roles = flow.get("flow_point_roles") if isinstance(flow.get("flow_point_roles"), dict) else {}
+
+        pv_raw = _parse_float(flow.get("pv")) or 0.0
+        hydro_raw = _parse_float(flow.get("hydro") or flow.get("wasserkraft")) or 0.0
+        grid_raw = _parse_float(flow.get("grid")) or 0.0
         battery_power = bat.get("power_kw")
         soc = _parse_float(flow.get("battery_soc") or bat.get("soc"))
+
+        erzeugung_kw = _parse_float(role_sums.get("erzeugung"))
+        if erzeugung_kw is None:
+            erzeugung_kw = pv_raw + hydro_raw
+
+        # Zusatz-Produzenten (Rolle Erzeugung) in pv_kw falten, damit bestehende
+        # pv_kw-/pv+hydro-Pfade die Rollensumme sehen, ohne Hydro-Forecast zu brechen.
+        hydro_in_erz = hydro_raw if roles.get("wasserkraft", "erzeugung") == "erzeugung" else 0.0
+        pv_in_erz = pv_raw if roles.get("pv", "erzeugung") == "erzeugung" else 0.0
+        extra_erz = float(erzeugung_kw) - pv_in_erz - hydro_in_erz
+        pv_kw = pv_in_erz + max(0.0, extra_erz)
+        hydro_kw = hydro_in_erz
+
+        grid_kw = _parse_float(role_sums.get("netz"))
+        if grid_kw is None:
+            grid_kw = grid_raw
+
+        verbrauch = _parse_float(flow.get("verbrauch_gesamt"))
+        if verbrauch is None:
+            verbrauch = _parse_float(role_sums.get("verbraucher"))
+        # Hauslast = Summe Rolle Verbraucher (früher nur Wohnhaus)
+        house_kw = _parse_float(role_sums.get("verbraucher"))
+        if house_kw is None:
+            house_kw = _parse_float(flow.get("haus") or flow.get("wohnhaus"))
+        if verbrauch is None:
+            verbrauch = house_kw
+
+        bat_role = _parse_float(role_sums.get("speicher"))
+        if bat_role is not None:
+            battery_power = bat_role
 
         return {
             "soc_percent": soc,
@@ -52,6 +82,8 @@ def load_live_snapshot(base_dir: Optional[str] = None) -> Dict[str, Any]:
             "house_kw": house_kw or 0.0,
             "wohnhaus_kw": house_kw or 0.0,
             "hydro_kw": hydro_kw or 0.0,
+            "erzeugung_kw": float(erzeugung_kw or 0.0),
+            "role_sums": role_sums,
             "miner_status": _combined_device_status(),
             "aktueller_verbrauch_kw": compute_aktueller_verbrauch_kw(base, battery_power),
         }

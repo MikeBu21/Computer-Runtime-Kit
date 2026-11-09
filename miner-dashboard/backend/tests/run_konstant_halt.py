@@ -35,7 +35,7 @@ def num(entity: str):
 def sample() -> dict:
     return {
         "grid": num("sensor.192_168_1_176_grid_power"),
-        "load": num("sensor.192_168_1_176_load_power"),
+        "load": num("Beispiel"),
         "pv": num("Beispiel"),
         "micro": num("sensor.192_168_1_176_microinverter_power"),
         "batt": num("Beispiel"),

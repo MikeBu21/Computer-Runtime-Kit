@@ -276,6 +276,32 @@
       transform: translateY(-2px);
     }
     .flow-node-clickable { position: relative; }
+    .flow-node-draggable,
+    .flow-node-draggable * {
+      cursor: grab;
+      user-select: none !important;
+      -webkit-user-select: none !important;
+      -webkit-touch-callout: none;
+      touch-action: none;
+    }
+    .flow-node-draggable.flow-node-dragging,
+    .flow-node-draggable.flow-node-dragging * {
+      cursor: grabbing;
+    }
+    .flow-node-draggable.flow-node-dragging {
+      opacity: 0.45;
+    }
+    .flow-node-drop-target,
+    .flow-node-placeholder.flow-node-drop-target {
+      box-shadow: 0 0 0 2px rgba(0, 230, 118, 0.65), 0 10px 28px rgba(0, 0, 0, 0.24);
+      border-color: rgba(0, 230, 118, 0.55);
+    }
+    .flow-grid.flow-is-dragging {
+      cursor: grabbing;
+    }
+    .flow-grid.flow-is-dragging .flow-node-placeholder {
+      pointer-events: auto;
+    }
     .flow-node-delete {
       position: absolute;
       top: 0.4rem;
@@ -794,6 +820,33 @@
       margin-bottom: 0.75rem;
       font-size: 0.85rem;
     }
+    .flow-role-group {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.45rem 0.75rem;
+      margin: 0 0 0.85rem;
+      padding: 0.55rem 0.65rem;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.03);
+    }
+    .flow-role-group legend {
+      font-size: 0.78rem;
+      color: var(--muted);
+      padding: 0 0.25rem;
+    }
+    .flow-role-option {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      font-size: 0.82rem;
+      color: #e8eef5;
+      cursor: pointer;
+      user-select: none;
+    }
+    .flow-role-option input {
+      accent-color: #00e676;
+    }
     .flow-sensor-row {
       display: grid;
       grid-template-columns: 1fr auto auto;
@@ -894,6 +947,65 @@
       gap: 0.75rem;
       flex-wrap: wrap;
     }
+    .role-sum-panel {
+      margin-bottom: 1rem;
+      background:
+        radial-gradient(circle at 12% 40%, rgba(255, 193, 7, 0.1), transparent 28%),
+        radial-gradient(circle at 88% 30%, rgba(33, 150, 243, 0.1), transparent 26%),
+        var(--surface);
+    }
+    .role-sum-panel .panel-title { margin: 0 0 0.35rem; }
+    .role-sum-hint {
+      margin: 0 0 0.85rem;
+      color: var(--muted);
+      font-size: 0.82rem;
+    }
+    .role-sum-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 0.75rem;
+    }
+    .role-sum-card {
+      background: rgba(15, 20, 27, 0.86);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 0.85rem 0.95rem;
+      min-height: 4.6rem;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 0.2rem;
+    }
+    .role-sum-card.role-erzeugung { border-color: rgba(255, 193, 7, 0.28); }
+    .role-sum-card.role-netz { border-color: rgba(156, 204, 101, 0.28); }
+    .role-sum-card.role-speicher { border-color: rgba(33, 150, 243, 0.3); }
+    .role-sum-card.role-verbrauch { border-color: rgba(244, 67, 54, 0.25); }
+    .role-sum-label {
+      color: var(--muted);
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+    .role-sum-value {
+      color: #fff;
+      font-size: 1.35rem;
+      font-weight: 800;
+      line-height: 1.15;
+      font-variant-numeric: tabular-nums;
+    }
+    .role-sum-extra {
+      color: #64b5f6;
+      font-size: 0.92rem;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+    }
+    @media (max-width: 900px) {
+      .role-sum-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 520px) {
+      .role-sum-grid { grid-template-columns: 1fr; }
+    }
   </style>
 {% endblock %}
 
@@ -908,6 +1020,30 @@
     {{ message }}
   </div>
   {% endif %}
+
+  <div class="panel role-sum-panel" id="role_sum_panel">
+    <h5 class="panel-title">Σ Rollenübersicht</h5>
+    <p class="role-sum-hint">Summe je Rolle — dieselben Werte wie Steuerung und Energiemanagement</p>
+    <div class="role-sum-grid">
+      <div class="role-sum-card role-erzeugung">
+        <div class="role-sum-label">Produktion (Erzeugung)</div>
+        <div class="role-sum-value" id="role_sum_erzeugung">—</div>
+      </div>
+      <div class="role-sum-card role-netz">
+        <div class="role-sum-label">Netz</div>
+        <div class="role-sum-value" id="role_sum_netz">—</div>
+      </div>
+      <div class="role-sum-card role-speicher">
+        <div class="role-sum-label">Batterieströme (Speicher)</div>
+        <div class="role-sum-value" id="role_sum_speicher">—</div>
+        <div class="role-sum-extra" id="role_sum_speicher_soc">— %</div>
+      </div>
+      <div class="role-sum-card role-verbrauch">
+        <div class="role-sum-label">Verbrauch</div>
+        <div class="role-sum-value" id="role_sum_verbrauch">—</div>
+      </div>
+    </div>
+  </div>
 
   <div class="panel flow-panel">
     <div class="panel-title-row">
@@ -1851,9 +1987,35 @@
     const FLOW_MAX_NODES = 9;
     window._lastFlowData = {};
     window._flowHiddenBuiltins = [];
+    window._flowBuiltinSlots = {};
+    const FLOW_DRAG_THRESHOLD_PX = 8;
+    let flowPtr = {
+      active: false,
+      dragging: false,
+      nodeId: null,
+      fromSlot: null,
+      startX: 0,
+      startY: 0,
+      pointerId: null,
+      nodeEl: null,
+      suppressClick: false,
+    };
 
     function isBuiltinVisible(def) {
       return !(window._flowHiddenBuiltins || []).includes(def.key);
+    }
+
+    function builtinSlotFor(key, fallback) {
+      const overrides = window._flowBuiltinSlots || {};
+      if (overrides[key] != null && overrides[key] !== "") {
+        const n = Number(overrides[key]);
+        if (!Number.isNaN(n) && n >= 0 && n < FLOW_MAX_NODES) return n;
+      }
+      return fallback;
+    }
+
+    function flowBuiltinDefs() {
+      return FLOW_BUILTIN.map((b) => Object.assign({}, b, { slot: builtinSlotFor(b.key, b.slot) }));
     }
 
     function countVisibleFlowNodes() {
@@ -1870,13 +2032,20 @@
       return '<button type="button" class="flow-node-delete" ' + attrs + ' title="Feld entfernen" aria-label="Feld entfernen">×</button>';
     }
 
+    function flowNodeTitle() {
+      return "Ziehen zum Verschieben · Klicken zum Konfigurieren";
+    }
+
     function buildBuiltinNodeHtml(def, flowData) {
       const delBtn = flowDeleteBtn('data-builtin-key="' + def.key + '"');
+      const nodeId = "builtin:" + def.key;
       if (def.isBattery) {
         const soc = flowData.battery_soc || "n/a";
         const socTxt = (soc && soc !== "n/a") ? (String(soc).includes("%") ? soc : soc + " %") : "n/a";
         return (
-          '<div class="flow-node ' + def.cls + ' flow-node-clickable flow-slot-' + def.slot + '" data-flow-fields="' + def.fields + '" title="Klicken zum Konfigurieren">' +
+          '<div class="flow-node ' + def.cls + ' flow-node-clickable flow-node-draggable flow-slot-' + def.slot +
+          '" data-flow-fields="' + def.fields + '" data-flow-node-id="' + nodeId + '" data-flow-slot="' + def.slot +
+          '" title="' + flowNodeTitle() + '">' +
           delBtn +
           '<div class="flow-battery-layout"><div class="flow-battery-left">' +
           '<div class="flow-icon">' + def.icon + '</div>' +
@@ -1891,7 +2060,9 @@
       }
       const raw = flowData[def.valueKey];
       return (
-        '<div class="flow-node ' + def.cls + ' flow-node-clickable flow-slot-' + def.slot + '" data-flow-fields="' + def.fields + '" title="Klicken zum Konfigurieren">' +
+        '<div class="flow-node ' + def.cls + ' flow-node-clickable flow-node-draggable flow-slot-' + def.slot +
+        '" data-flow-fields="' + def.fields + '" data-flow-node-id="' + nodeId + '" data-flow-slot="' + def.slot +
+        '" title="' + flowNodeTitle() + '">' +
         delBtn +
         '<div class="flow-icon">' + def.icon + '</div>' +
         '<div class="flow-label">' + def.label + '</div>' +
@@ -1905,8 +2076,11 @@
       const val = (flowData.custom_fields || {})[field.id];
       const display = val ? (val.display || "n/a") : "n/a";
       const slot = field.slot != null ? field.slot : 3;
+      const nodeId = "custom:" + field.id;
       return (
-        '<div class="flow-node flow-node-custom flow-node-clickable flow-slot-' + slot + '" data-flow-fields="custom:' + field.id + '" title="Klicken zum Konfigurieren">' +
+        '<div class="flow-node flow-node-custom flow-node-clickable flow-node-draggable flow-slot-' + slot +
+        '" data-flow-fields="custom:' + field.id + '" data-flow-node-id="' + nodeId + '" data-flow-slot="' + slot +
+        '" title="' + flowNodeTitle() + '">' +
         flowDeleteBtn('data-custom-id="' + field.id + '"') +
         '<div class="flow-icon">' + (field.icon || "⚡") + '</div>' +
         '<div class="flow-label">' + (field.name || field.id) + '</div>' +
@@ -1918,9 +2092,98 @@
 
     function buildPlaceholderHtml(slot) {
       return (
-        '<div class="flow-node-placeholder flow-slot-' + slot + '" data-add-slot="' + slot + '">' +
+        '<div class="flow-node-placeholder flow-slot-' + slot + '" data-add-slot="' + slot + '" data-flow-slot="' + slot + '">' +
         '<span>＋ Feld hinzufügen</span></div>'
       );
+    }
+
+    function parseFlowNodeId(id) {
+      if (!id) return null;
+      if (id.startsWith("custom:")) return { type: "custom", key: id.slice(7) };
+      if (id.startsWith("builtin:")) return { type: "builtin", key: id.slice(8) };
+      return null;
+    }
+
+    function currentSlotForNodeId(nodeId) {
+      const parsed = parseFlowNodeId(nodeId);
+      if (!parsed) return null;
+      if (parsed.type === "builtin") {
+        const def = FLOW_BUILTIN.find((b) => b.key === parsed.key);
+        return def ? builtinSlotFor(def.key, def.slot) : null;
+      }
+      const field = (window._dashCustomMeta || []).find((f) => f.id === parsed.key);
+      return field && field.slot != null ? Number(field.slot) : null;
+    }
+
+    function occupantNodeIdAtSlot(slot) {
+      const builtin = flowBuiltinDefs().find((b) => b.slot === slot && isBuiltinVisible(b));
+      if (builtin) return "builtin:" + builtin.key;
+      const custom = (window._dashCustomMeta || []).find(
+        (f) => f.enabled !== false && f.slot != null && Number(f.slot) === slot
+      );
+      if (custom) return "custom:" + custom.id;
+      return null;
+    }
+
+    function setLocalNodeSlot(nodeId, slot) {
+      const parsed = parseFlowNodeId(nodeId);
+      if (!parsed) return;
+      if (parsed.type === "builtin") {
+        window._flowBuiltinSlots = Object.assign({}, window._flowBuiltinSlots || {}, { [parsed.key]: slot });
+        return;
+      }
+      const fields = window._dashCustomMeta || [];
+      const field = fields.find((f) => f.id === parsed.key);
+      if (field) field.slot = slot;
+    }
+
+    function applyFlowSlotMove(fromId, toSlot) {
+      const fromSlot = currentSlotForNodeId(fromId);
+      if (fromSlot == null || Number(fromSlot) === Number(toSlot)) return;
+      const targetId = occupantNodeIdAtSlot(toSlot);
+      if (targetId && targetId !== fromId) {
+        setLocalNodeSlot(targetId, fromSlot);
+      }
+      setLocalNodeSlot(fromId, toSlot);
+      renderFlowGrid(window._lastFlowData);
+      persistFlowLayout();
+    }
+
+    function persistFlowLayout() {
+      return fetch("/api/dashboard/config")
+        .then((r) => r.json())
+        .then((data) => {
+          const cfg = data.config || {};
+          const slots = {};
+          FLOW_BUILTIN.forEach((b) => {
+            if (!isBuiltinVisible(b)) return;
+            slots[b.key] = builtinSlotFor(b.key, b.slot);
+          });
+          cfg.flow_builtin_slots = slots;
+          const metaById = {};
+          (window._dashCustomMeta || []).forEach((f) => { metaById[f.id] = f; });
+          cfg.custom_flow_fields = (cfg.custom_flow_fields || []).map((f) => {
+            const local = metaById[f.id];
+            if (local && local.slot != null) {
+              return Object.assign({}, f, { slot: local.slot });
+            }
+            return f;
+          });
+          return fetch("/api/dashboard/config", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(cfg),
+          });
+        })
+        .then((r) => r.json())
+        .then((data) => {
+          if (data && data.config) {
+            window._dashCustomMeta = data.config.custom_flow_fields || [];
+            window._flowBuiltinSlots = data.config.flow_builtin_slots || {};
+            window._flowHiddenBuiltins = data.config.flow_hidden_builtins || [];
+          }
+        })
+        .catch(() => {});
     }
 
     function renderFlowGrid(flowData) {
@@ -1932,10 +2195,11 @@
       customFields.forEach(f => {
         if (f.slot != null) customBySlot[f.slot] = f;
       });
+      const builtins = flowBuiltinDefs();
       let html = "";
       const canAddMore = countVisibleFlowNodes() < FLOW_MAX_NODES;
       for (let slot = 0; slot < FLOW_MAX_NODES; slot++) {
-        const builtin = FLOW_BUILTIN.find(b => b.slot === slot && isBuiltinVisible(b));
+        const builtin = builtins.find(b => b.slot === slot && isBuiltinVisible(b));
         if (builtin) {
           html += buildBuiltinNodeHtml(builtin, flowData);
         } else if (customBySlot[slot]) {
@@ -1955,37 +2219,217 @@
       }
     }
 
+    function clearFlowDropTargets() {
+      document.querySelectorAll("#flow_grid .flow-node-drop-target").forEach((el) => {
+        el.classList.remove("flow-node-drop-target");
+      });
+    }
+
+    function flowSlotTargetFromPoint(clientX, clientY, sourceEl) {
+      // Quelle kurz aus Hit-Test nehmen, sonst landet elementFromPoint immer auf dem gezogenen Kästchen
+      const src = sourceEl || flowPtr.nodeEl;
+      const prev = src ? src.style.pointerEvents : "";
+      if (src) src.style.pointerEvents = "none";
+      const el = document.elementFromPoint(clientX, clientY);
+      if (src) src.style.pointerEvents = prev;
+      if (!el) return null;
+      return el.closest("#flow_grid [data-flow-slot]");
+    }
+
+    function openFlowNodeConfig(node) {
+      const keys = (node.dataset.flowFields || "").split(",").map((s) => s.trim()).filter(Boolean);
+      if (!keys.length) return;
+      const labels = keys.map((k) => {
+        if (k.startsWith("custom:")) {
+          const id = k.slice(7);
+          const f = (window._dashCustomMeta || []).find((x) => x.id === id);
+          return f ? f.name : id;
+        }
+        return (FLOW_FIELD_META[k] || {}).label || k;
+      });
+      openFlowConfigModal(keys, labels.join(" · "));
+    }
+
+    function endFlowPointerDrag() {
+      document.removeEventListener("pointermove", onFlowPointerMove);
+      document.removeEventListener("pointerup", onFlowPointerUp);
+      document.removeEventListener("pointercancel", onFlowPointerUp);
+      const grid = document.getElementById("flow_grid");
+      if (grid) grid.classList.remove("flow-is-dragging");
+      clearFlowDropTargets();
+      if (flowPtr.nodeEl) flowPtr.nodeEl.classList.remove("flow-node-dragging");
+      flowPtr.active = false;
+      flowPtr.dragging = false;
+      flowPtr.nodeEl = null;
+      flowPtr.nodeId = null;
+      flowPtr.pointerId = null;
+    }
+
+    function onFlowPointerMove(e) {
+      if (!flowPtr.active || (flowPtr.pointerId != null && e.pointerId !== flowPtr.pointerId)) return;
+      const dx = e.clientX - flowPtr.startX;
+      const dy = e.clientY - flowPtr.startY;
+      if (!flowPtr.dragging) {
+        if ((dx * dx + dy * dy) < FLOW_DRAG_THRESHOLD_PX * FLOW_DRAG_THRESHOLD_PX) return;
+        flowPtr.dragging = true;
+        flowPtr.suppressClick = true;
+        if (flowPtr.nodeEl) flowPtr.nodeEl.classList.add("flow-node-dragging");
+        const grid = document.getElementById("flow_grid");
+        if (grid) grid.classList.add("flow-is-dragging");
+        try { window.getSelection && window.getSelection().removeAllRanges(); } catch (_) {}
+      }
+      // Auswahl/Scroll während des Ziehens unterbinden
+      if (e.cancelable) e.preventDefault();
+      clearFlowDropTargets();
+      const target = flowSlotTargetFromPoint(e.clientX, e.clientY);
+      if (!target) return;
+      const targetId = target.dataset.flowNodeId || "";
+      if (targetId && targetId === flowPtr.nodeId) return;
+      target.classList.add("flow-node-drop-target");
+    }
+
+    function onFlowPointerUp(e) {
+      if (!flowPtr.active || (flowPtr.pointerId != null && e.pointerId !== flowPtr.pointerId)) return;
+      const wasDragging = flowPtr.dragging;
+      const nodeId = flowPtr.nodeId;
+      const nodeEl = flowPtr.nodeEl;
+      const suppressClick = flowPtr.suppressClick;
+      const clientX = e.clientX;
+      const clientY = e.clientY;
+
+      // Drop-Ziel VOR dem Aufräumen bestimmen (nodeEl noch für Hit-Test nötig)
+      let dropTarget = null;
+      if (wasDragging && nodeId) {
+        dropTarget = flowSlotTargetFromPoint(clientX, clientY, nodeEl);
+      }
+
+      if (nodeEl && flowPtr.pointerId != null) {
+        try { nodeEl.releasePointerCapture(flowPtr.pointerId); } catch (_) {}
+      }
+      endFlowPointerDrag();
+
+      if (wasDragging && nodeId) {
+        if (dropTarget) {
+          const toSlot = Number(dropTarget.dataset.flowSlot);
+          if (!Number.isNaN(toSlot)) {
+            const targetId = dropTarget.dataset.flowNodeId || "";
+            if (!targetId || targetId !== nodeId) {
+              applyFlowSlotMove(nodeId, toSlot);
+            }
+          }
+        }
+        // Nach Drag keinen Klick/Modal öffnen
+        return;
+      }
+
+      if (suppressClick || !nodeEl) return;
+      if (e.target && e.target.closest && e.target.closest(".flow-node-delete")) return;
+      openFlowNodeConfig(nodeEl);
+    }
+
+    function onFlowPointerDown(e) {
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      if (e.target.closest(".flow-node-delete")) return;
+      const node = e.target.closest("#flow_grid .flow-node-draggable[data-flow-node-id]");
+      if (!node) return;
+      // Textauswahl (Zahlen im Kästchen) und Touch-Scroll sofort unterbinden
+      if (e.cancelable) e.preventDefault();
+      try { window.getSelection && window.getSelection().removeAllRanges(); } catch (_) {}
+      // Kein HTML5-DnD — Pointer mit Schwelle (Maus + Touch)
+      flowPtr = {
+        active: true,
+        dragging: false,
+        nodeId: node.dataset.flowNodeId,
+        fromSlot: Number(node.dataset.flowSlot),
+        startX: e.clientX,
+        startY: e.clientY,
+        pointerId: e.pointerId,
+        nodeEl: node,
+        suppressClick: false,
+      };
+      try { node.setPointerCapture(e.pointerId); } catch (_) {}
+      document.addEventListener("pointermove", onFlowPointerMove, { passive: false });
+      document.addEventListener("pointerup", onFlowPointerUp);
+      document.addEventListener("pointercancel", onFlowPointerUp);
+    }
+
+    function initFlowDragDelegation() {
+      const grid = document.getElementById("flow_grid");
+      if (!grid || grid.dataset.flowDragBound === "1") return;
+      grid.dataset.flowDragBound = "1";
+      grid.addEventListener("pointerdown", onFlowPointerDown, { passive: false });
+      grid.addEventListener("selectstart", (e) => {
+        if (e.target.closest(".flow-node-draggable")) e.preventDefault();
+      });
+      grid.addEventListener("dragstart", (e) => {
+        // Native Bild/Text-Drag der Browser unterbinden
+        if (e.target.closest(".flow-node-draggable")) e.preventDefault();
+      });
+    }
+
     function bindFlowGridEvents() {
-      document.querySelectorAll("#flow_slots_host .flow-node-clickable[data-flow-fields]").forEach(node => {
+      initFlowDragDelegation();
+      document.querySelectorAll("#flow_slots_host .flow-node-clickable[data-flow-fields]").forEach((node) => {
+        // Klick nur als Fallback (Pointer-Up öffnet normalerweise das Modal)
         node.onclick = (e) => {
           if (e.target.closest(".flow-node-delete")) return;
-          const keys = (node.dataset.flowFields || "").split(",").map(s => s.trim()).filter(Boolean);
-          const labels = keys.map(k => {
-            if (k.startsWith("custom:")) {
-              const id = k.slice(7);
-              const f = (window._dashCustomMeta || []).find(x => x.id === id);
-              return f ? f.name : id;
-            }
-            return (FLOW_FIELD_META[k] || {}).label || k;
-          });
-          openFlowConfigModal(keys, labels.join(" · "));
+          if (flowPtr.suppressClick || flowPtr.dragging || flowPtr.active) {
+            flowPtr.suppressClick = false;
+            return;
+          }
+          openFlowNodeConfig(node);
         };
       });
-      document.querySelectorAll(".flow-node-delete[data-custom-id]").forEach(btn => {
+      document.querySelectorAll(".flow-node-delete[data-custom-id]").forEach((btn) => {
         btn.onclick = (e) => {
           e.stopPropagation();
           deleteCustomFlowField(btn.dataset.customId);
         };
       });
-      document.querySelectorAll(".flow-node-delete[data-builtin-key]").forEach(btn => {
+      document.querySelectorAll(".flow-node-delete[data-builtin-key]").forEach((btn) => {
         btn.onclick = (e) => {
           e.stopPropagation();
           deleteBuiltinFlowField(btn.dataset.builtinKey);
         };
       });
-      document.querySelectorAll(".flow-node-placeholder").forEach(el => {
-        el.onclick = () => addCustomFlowField();
+      document.querySelectorAll("#flow_slots_host .flow-node-placeholder").forEach((el) => {
+        el.onclick = () => {
+          if (flowPtr.suppressClick || flowPtr.dragging) {
+            flowPtr.suppressClick = false;
+            return;
+          }
+          addCustomFlowField();
+        };
       });
+    }
+
+    function fmtRoleSumKw(raw) {
+      if (raw === null || raw === undefined || raw === "" || Number.isNaN(Number(raw))) return "n/a";
+      const n = Number(raw);
+      const body = Math.abs(n) >= 10 ? n.toFixed(1) : n.toFixed(2);
+      return (n > 0 ? "+" : "") + body + " kW";
+    }
+
+    function updateRoleSumSummary(data) {
+      const sums = (data && data.role_sums) || {};
+      const setKw = (id, key) => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = fmtRoleSumKw(sums[key]);
+      };
+      setKw("role_sum_erzeugung", "erzeugung");
+      setKw("role_sum_netz", "netz");
+      setKw("role_sum_speicher", "speicher");
+      setKw("role_sum_verbrauch", "verbraucher");
+      const socEl = document.getElementById("role_sum_speicher_soc");
+      if (socEl) {
+        const soc = data && data.battery_soc;
+        if (soc === null || soc === undefined || soc === "" || soc === "n/a") {
+          socEl.textContent = "— %";
+        } else {
+          const n = String(soc).replace("%", "").trim();
+          socEl.textContent = (n && !Number.isNaN(Number(n))) ? (Number(n).toFixed(0) + " %") : "— %";
+        }
+      }
     }
 
     function updateFlowValues() {
@@ -2016,6 +2460,8 @@
               display_kw: data.battery_display_kw,
             });
           }
+          // Dieselben role_sums wie Steuerung / Energiemanagement (flow_roles / miner_flow_data)
+          updateRoleSumSummary(data);
         })
         .catch(() => {});
     }
@@ -2030,6 +2476,7 @@
         .then(data => {
           window._dashCustomMeta = data.config?.custom_flow_fields || [];
           window._flowHiddenBuiltins = data.config?.flow_hidden_builtins || [];
+          window._flowBuiltinSlots = data.config?.flow_builtin_slots || {};
           renderFlowGrid(window._lastFlowData);
         })
         .catch(() => {});
@@ -2053,6 +2500,7 @@
             icon: "⚡",
             enabled: true,
             sensors: [],
+            role: "verbraucher",
           });
           return fetch("/api/dashboard/config", {
             method: "POST",
@@ -2414,6 +2862,56 @@
       battery_soc: { label: "Batterie SOC", hint: "Ladestand in %", addBtn: "Sensor hinzufügen", unit: "%" },
       battery_power: { label: "Batterie Leistung", hint: "Lade-/Entladeleistung", addBtn: "Sensor hinzufügen", unit: "kW" },
     };
+    const FLOW_ROLE_OPTIONS = [
+      { value: "erzeugung", label: "Erzeugung" },
+      { value: "netz", label: "Netz" },
+      { value: "speicher", label: "Speicher" },
+      { value: "verbraucher", label: "Verbraucher" },
+    ];
+    const FLOW_ROLE_DEFAULTS = {
+      pv: "erzeugung",
+      wasserkraft: "erzeugung",
+      kelag: "netz",
+      battery: "speicher",
+      wohnhaus: "verbraucher",
+      betrieb: "verbraucher",
+    };
+
+    function flowPointKeyForField(fieldKey) {
+      if (!fieldKey) return null;
+      if (fieldKey.startsWith("custom:")) return fieldKey;
+      if (fieldKey === "battery_soc" || fieldKey === "battery_power") return "battery";
+      return fieldKey;
+    }
+
+    function defaultRoleForField(fieldKey) {
+      const point = flowPointKeyForField(fieldKey);
+      if (point && point.startsWith("custom:")) return "verbraucher";
+      return FLOW_ROLE_DEFAULTS[point] || "verbraucher";
+    }
+
+    function shouldShowRolePicker(fieldKey) {
+      // Batterie hat zwei Felder — Rolle nur einmal (bei SOC) anzeigen
+      if (fieldKey === "battery_power" && flowConfigFieldKeys.includes("battery_soc")) {
+        return false;
+      }
+      return true;
+    }
+
+    function buildFlowRoleRadios(fieldKey, selectedRole) {
+      const name = "flow_role_" + String(fieldKey).replace(/:/g, "_");
+      const role = selectedRole || defaultRoleForField(fieldKey);
+      let html = '<fieldset class="flow-role-group"><legend>Rolle im Stromfluss</legend>';
+      FLOW_ROLE_OPTIONS.forEach(opt => {
+        html +=
+          '<label class="flow-role-option">' +
+          '<input type="radio" name="' + name + '" class="flow-role-radio" data-field="' + fieldKey +
+          '" value="' + opt.value + '"' + (role === opt.value ? " checked" : "") + '> ' +
+          opt.label + "</label>";
+      });
+      html += "</fieldset>";
+      return html;
+    }
 
     let flowConfigEntities = [];
     let flowConfigDraft = null;
@@ -2506,10 +3004,14 @@
             '<input type="text" class="form-control flow-custom-name" data-field="' + fieldKey + '" value="' +
             (customMeta.name || "").replace(/"/g, "&quot;") + '" style="margin-top:0.25rem"></label>';
         }
+        const roleHtml = shouldShowRolePicker(fieldKey)
+          ? buildFlowRoleRadios(fieldKey, field.role || defaultRoleForField(fieldKey))
+          : "";
         section.innerHTML =
           '<h5>' + (isCustom ? (customMeta.name || "Eigenes Feld") : meta.label) + '</h5>' +
-          '<small>' + (isCustom ? "Eigener Verbrauch / Erzeugung" : meta.hint) + '</small>' +
+          '<small>' + (isCustom ? "Eigener Verbrauch / Erzeugung — Rolle unten wählen" : meta.hint) + '</small>' +
           nameRow +
+          roleHtml +
           '<label class="flow-config-enabled">' +
           '<input type="checkbox" class="flow-enabled-cb" data-field="' + fieldKey + '"' + (field.enabled ? " checked" : "") + '> Aktiv (im Stromfluss anzeigen)' +
           '</label>' +
@@ -2522,6 +3024,20 @@
           if (!flowConfigDraft.customMeta) flowConfigDraft.customMeta = {};
           if (!flowConfigDraft.customMeta[fieldKey]) flowConfigDraft.customMeta[fieldKey] = {};
           flowConfigDraft.customMeta[fieldKey].name = e.target.value;
+        });
+        section.querySelectorAll(".flow-role-radio").forEach(radio => {
+          radio.addEventListener("change", () => {
+            if (!radio.checked || !flowConfigDraft.fields[fieldKey]) return;
+            const role = radio.value;
+            flowConfigDraft.fields[fieldKey].role = role;
+            // Batterie: gleiche Rolle auf SOC und Leistung
+            const point = flowPointKeyForField(fieldKey);
+            if (point === "battery") {
+              ["battery_soc", "battery_power"].forEach(k => {
+                if (flowConfigDraft.fields[k]) flowConfigDraft.fields[k].role = role;
+              });
+            }
+          });
         });
         section.querySelector(".flow-enabled-cb")?.addEventListener("change", (e) => {
           flowConfigDraft.fields[fieldKey].enabled = e.target.checked;
@@ -2612,7 +3128,7 @@
       const statusEl = document.getElementById("flow_config_status");
       if (!overlay) return;
       if (titleEl) titleEl.textContent = title || "Sensoren zuordnen";
-      if (subtitleEl) subtitleEl.textContent = "Sensoren wählen und mit +/− kombinieren — Werte werden live summiert";
+      if (subtitleEl) subtitleEl.textContent = "Sensoren mit +/− wählen, Rolle zuweisen — Rollensumme zählt jeden Sensor mit seinem Vorzeichen";
       if (statusEl) {
         statusEl.textContent = "Sensoren werden geladen…";
         statusEl.className = "flow-config-status";
@@ -2641,12 +3157,13 @@
           if (flowConfigLiveTimer) clearInterval(flowConfigLiveTimer);
           flowConfigLiveTimer = setInterval(() => { reloadEntities(); }, 4000);
           const cfg = mappingData.config || {};
+          const savedRoles = flowConfigDashCfg.flow_point_roles || {};
           flowConfigDraft = { fields: {}, customMeta: {} };
           fieldKeys.forEach(key => {
             if (key.startsWith("custom:")) {
               const id = key.slice(7);
               const entry = (flowConfigDashCfg.custom_flow_fields || []).find(f => f.id === id) || {
-                enabled: true, sensors: [], name: id, icon: "⚡",
+                enabled: true, sensors: [], name: id, icon: "⚡", role: "verbraucher",
               };
               flowConfigDraft.fields[key] = {
                 enabled: entry.enabled !== false,
@@ -2654,6 +3171,7 @@
                   entity_id: s.entity_id || "",
                   sign: s.sign || "+",
                 })),
+                role: entry.role || "verbraucher",
               };
               flowConfigDraft.customMeta[key] = {
                 id: id,
@@ -2674,9 +3192,11 @@
             if (key === "battery_soc" && sensors.length > 1) {
               sensors = [sensors[sensors.length - 1]];
             }
+            const pointKey = flowPointKeyForField(key);
             flowConfigDraft.fields[key] = {
               enabled: !!entry.enabled && sensors.some(s => s.entity_id),
               sensors: sensors,
+              role: savedRoles[pointKey] || defaultRoleForField(key),
             };
           });
           renderFlowConfigSections();
@@ -2731,35 +3251,48 @@
           })
         : Promise.resolve({ ok: true });
 
-      const dashPromise = customKeys.length
-        ? fetch("/api/dashboard/config").then(r => r.json()).then(data => {
-            const cfg = data.config || {};
-            const fields = cfg.custom_flow_fields || [];
-            customKeys.forEach(key => {
-              const id = key.slice(7);
-              const draft = flowConfigDraft.fields[key];
-              const meta = (flowConfigDraft.customMeta || {})[key] || {};
-              const idx = fields.findIndex(f => f.id === id);
-              const entry = {
-                id: id,
-                name: (meta.name || "Feld").trim() || "Feld",
-                icon: meta.icon || "⚡",
-                enabled: !!draft.enabled,
-                sensors: (draft.sensors || [])
-                  .filter(s => s.entity_id)
-                  .map(s => ({ entity_id: s.entity_id, sign: s.sign === "-" ? "-" : "+" })),
-              };
-              if (idx >= 0) fields[idx] = entry;
-              else fields.push(entry);
-            });
-            cfg.custom_flow_fields = fields;
-            return fetch("/api/dashboard/config", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(cfg),
-            }).then(r => r.json());
-          })
-        : Promise.resolve({ ok: true });
+      // Rollen immer in dashboard_config speichern (Built-ins + Custom)
+      const dashPromise = fetch("/api/dashboard/config").then(r => r.json()).then(data => {
+        const cfg = data.config || {};
+        cfg.flow_point_roles = Object.assign({}, FLOW_ROLE_DEFAULTS, cfg.flow_point_roles || {});
+        haKeys.forEach(key => {
+          const draft = flowConfigDraft.fields[key];
+          const point = flowPointKeyForField(key);
+          if (point && draft && draft.role) {
+            cfg.flow_point_roles[point] = draft.role;
+          }
+        });
+        const fields = cfg.custom_flow_fields || [];
+        customKeys.forEach(key => {
+          const id = key.slice(7);
+          const draft = flowConfigDraft.fields[key];
+          const meta = (flowConfigDraft.customMeta || {})[key] || {};
+          const idx = fields.findIndex(f => f.id === id);
+          const entry = {
+            id: id,
+            name: (meta.name || "Feld").trim() || "Feld",
+            icon: meta.icon || "⚡",
+            enabled: !!draft.enabled,
+            role: draft.role || "verbraucher",
+            sensors: (draft.sensors || [])
+              .filter(s => s.entity_id)
+              .map(s => ({ entity_id: s.entity_id, sign: s.sign === "-" ? "-" : "+" })),
+          };
+          if (idx >= 0) {
+            entry.slot = fields[idx].slot;
+            fields[idx] = entry;
+          } else {
+            fields.push(entry);
+          }
+        });
+        // Auch wenn nur Built-in-Rollen geändert wurden: Custom-Rollen unverändert lassen
+        cfg.custom_flow_fields = fields;
+        return fetch("/api/dashboard/config", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(cfg),
+        }).then(r => r.json());
+      });
 
       Promise.all([haPromise, dashPromise])
         .then(([haRes, dashRes]) => {

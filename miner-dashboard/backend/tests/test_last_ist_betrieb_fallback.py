@@ -8,11 +8,9 @@ from control_algorithm.consumption_history import (
 )
 
 
-def test_total_verbrauch_without_hydro():
-    # Ohne Wasserkraft darf die Bilanz nicht None werden
-    assert _total_verbrauch_kw(5.0, None, 0.1, -0.5) == 5.0 + 0.0 + 0.1 - (-0.5)
-    assert _total_verbrauch_kw(5.0, None, 0.1, None) == 5.1
-    assert _total_verbrauch_kw(None, 1.0, 0.1) is None
+def test_total_verbrauch_is_wohnhaus():
+    assert _total_verbrauch_kw(0.7) == 0.7
+    assert _total_verbrauch_kw(None) is None
 
 
 def test_sample_betrieb_falls_back_to_line_verbrauch():

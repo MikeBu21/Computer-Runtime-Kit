@@ -45,7 +45,7 @@ def band(target_w: int) -> int:
 def snap() -> dict:
     return {
         "grid": read_ha_entity_state("sensor.192_168_1_176_grid_power"),
-        "load": read_ha_entity_state("sensor.192_168_1_176_load_power"),
+        "load": read_ha_entity_state("Beispiel"),
         "batt": read_ha_entity_state("Beispiel"),
         "soc": read_ha_entity_state("Beispiel"),
         "state": read_ha_entity_state("Beispiel_state"),

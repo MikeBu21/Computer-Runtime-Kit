@@ -31,10 +31,35 @@ _ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
 _lock = threading.Lock()
 _started = False
 _sock: Optional[socket.socket] = None
+_sock_ip = ""
+_listen_gen = 0
+_last_tick_ok = 0.0
 # Letzter vollständig gelesener Stand. Ein halbfertiges JSON darf daraus nicht
 # eine leere Gemeinschaft machen.
 _last_good_path = ""
 _last_good: Dict[str, Any] = {}
+
+
+def format_stillzeit(age_sec: Optional[float], code_mismatch: bool = False) -> str:
+    """Lesbare Stillzeit: Sekunden nur intern, Anzeige in Min./Std./Tagen."""
+    if code_mismatch:
+        return "im Netz, der Code passt nicht mehr"
+    if age_sec is None:
+        return "noch keine Meldung"
+    if age_sec < FRESH_SEC:
+        return "letzte Minute da"
+    total = max(0, int(round(float(age_sec))))
+    days = total // 86400
+    hours = (total % 86400) // 3600
+    mins = max(1, (total % 3600) // 60)
+    parts: List[str] = []
+    if days:
+        parts.append("1 Tag" if days == 1 else f"{days} Tagen")
+    if hours:
+        parts.append("1 Std." if hours == 1 else f"{hours} Std.")
+    if not days:
+        parts.append("1 Min." if mins == 1 else f"{mins} Min.")
+    return "still seit " + " ".join(parts)
 
 
 def generate_invite_code() -> str:
@@ -655,6 +680,19 @@ def local_name(snapshot: Optional[Dict[str, Any]] = None) -> str:
     return socket.gethostname().split(".")[0]
 
 
+def set_display_name(name: str) -> str:
+    """Anzeigename dieser Steuerung. Leer setzt zurück auf den Geräte-/Tailscale-Namen."""
+    text = str(name or "").strip()
+    if len(text) > 64:
+        raise ValueError("Name darf höchstens 64 Zeichen haben.")
+
+    def mutate(data: Dict[str, Any]) -> None:
+        data["display_name"] = text
+
+    _update(mutate)
+    return text
+
+
 def ensure_node_name(tailscale_name: str) -> None:
     """Tailscale-Name einmal festhalten. Ein Neustart ohne Tailscale ändert ihn nicht."""
     text = str(tailscale_name or "").strip()
@@ -1231,25 +1269,48 @@ def send_command(target_name: str, text: str) -> Dict[str, Any]:
     return entry
 
 
+def _close_socket() -> None:
+    """Alten Listener freigeben, damit nach IP-Wechsel neu gebunden werden kann."""
+    global _sock, _sock_ip, _listen_gen
+    sock = _sock
+    _sock = None
+    _sock_ip = ""
+    _listen_gen += 1
+    if sock is None:
+        return
+    try:
+        sock.close()
+    except OSError:
+        pass
+
+
 def _ensure_socket() -> None:
-    global _sock
-    if _sock is not None:
-        return
+    """UDP-Socket an die aktuelle Tailscale-Adresse binden; bei IP-Wechsel neu aufbauen."""
+    global _sock, _sock_ip, _listen_gen
     snap = tailscale_snapshot()
-    bind_ip = snap.get("self_ip") or ""
+    bind_ip = str(snap.get("self_ip") or "")
     if not bind_ip:
+        # Kurzer Tailscale-Ausfall: bestehenden Socket behalten.
         return
+    if _sock is not None and _sock_ip == bind_ip:
+        return
+    _close_socket()
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind((bind_ip, LISTEN_PORT))
-    except OSError:
+    except OSError as exc:
         sock.close()
+        print(f"[Energiegemeinschaft] Socket-Bind fehlgeschlagen ({bind_ip}:{LISTEN_PORT}): {exc}")
         return
     _sock = sock
-    threading.Thread(target=_listen_loop, args=(sock,), name="eg-mesh-listen", daemon=True).start()
+    _sock_ip = bind_ip
+    gen = _listen_gen
+    threading.Thread(target=_listen_loop, args=(sock, gen), name="eg-mesh-listen", daemon=True).start()
 
 
 def cycle_once() -> None:
+    global _last_tick_ok
     _ensure_socket()
     code = mesh_settings().get("invite_code") or ""
     if not code or _sock is None:
@@ -1259,34 +1320,55 @@ def cycle_once() -> None:
     name = local_name(snap)
     feed, soc, energy = local_reading()
     balance = local_night_balance_kwh()
-    _remember_member(name, snap.get("self_ip") or "", feed, soc, energy, balance)
+    self_ip = str(snap.get("self_ip") or "")
+    _remember_member(name, self_ip, feed, soc, energy, balance)
     packet = feed_packet(name, feed, soc, code, energy, balance)
-    known = {item.get("ip") for item in (mesh_settings().get("members") or {}).values() if isinstance(item, dict)}
-    self_ip = snap.get("self_ip") or ""
-    for peer in snap.get("peers") or []:
-        ip = peer.get("ip") or ""
-        if not ip or ip == self_ip:
+    settings = mesh_settings()
+    sent: set[str] = set()
+    # Bekannte Mitglieder immer unter der gespeicherten Adresse anstoßen –
+    # unabhängig davon, ob Tailscale sie gerade als online meldet.
+    for item in (settings.get("members") or {}).values():
+        if not isinstance(item, dict):
             continue
-        if ip in known or peer.get("online"):
+        ip = str(item.get("ip") or "")
+        if not ip or ip == self_ip or ip in sent:
+            continue
+        _send(packet, ip)
+        sent.add(ip)
+    # Online-Peers zusätzlich: erster Kontakt oder geänderte Tailscale-IP.
+    for peer in snap.get("peers") or []:
+        ip = str(peer.get("ip") or "")
+        if not ip or ip == self_ip or ip in sent:
+            continue
+        if peer.get("online"):
             _send(packet, ip)
+            sent.add(ip)
+    _last_tick_ok = time.time()
 
 
-def _listen_loop(sock: socket.socket) -> None:
-    while True:
+def _listen_loop(sock: socket.socket, gen: int) -> None:
+    while gen == _listen_gen:
         try:
             raw, addr = sock.recvfrom(4096)
         except OSError:
-            time.sleep(1)
-            continue
-        handle_datagram(raw, addr[0])
+            if gen != _listen_gen:
+                return
+            # Socket tot (z. B. nach close/IP-Wechsel): freigeben, Takt baut neu auf.
+            if _sock is sock:
+                _close_socket()
+            return
+        try:
+            handle_datagram(raw, addr[0])
+        except Exception as exc:
+            print(f"[Energiegemeinschaft] Paketfehler: {exc}")
 
 
 def _tick_loop() -> None:
     while True:
         try:
             cycle_once()
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"[Energiegemeinschaft] Taktfehler: {exc}")
         time.sleep(TICK_SEC)
 
 
@@ -1346,6 +1428,7 @@ def public_status() -> Dict[str, Any]:
                 "connected_kwh": item.get("connected_kwh") or 0,
                 "soc_percent": item.get("soc_percent"),
                 "age_sec": age,
+                "age_text": format_stillzeit(age, code_mismatch),
                 "fresh": fresh,
                 "code_mismatch": code_mismatch,
                 "feeding": member_is_feeding(feed, fresh),
@@ -1361,6 +1444,7 @@ def public_status() -> Dict[str, Any]:
         "tailscale_ok": bool(snap.get("ok")),
         "tailscale_error": snap.get("error") or "",
         "self_name": self_name,
+        "display_name": str(settings.get("display_name") or ""),
         "self_ip": self_ip,
         "invite_set": bool(settings.get("invite_code")),
         "invite_code": settings.get("invite_code") or "",

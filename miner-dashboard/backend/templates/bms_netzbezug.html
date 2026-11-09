@@ -61,7 +61,7 @@
         <label class="form-label" for="inverter">Wechselrichtertyp</label>
         <select class="form-control" id="inverter" name="inverter">
           {% for item in inverters %}
-            <option value="{{ item.id }}" data-note="{{ item.note }}" {% if settings.inverter == item.id %}selected{% endif %}>{{ item.label }} — {{ item.register_text }}</option>
+            <option value="{{ item.id }}" data-note="{{ item.note }}" data-port="{{ item.default_port }}" data-unit="{{ item.default_unit }}" {% if settings.inverter == item.id %}selected{% endif %}>{{ item.label }} — {{ item.register_text }}</option>
           {% endfor %}
         </select>
         <p id="inverter_note" style="color: var(--muted); font-size: 0.82rem; margin: 0.45rem 0 0;"></p>
@@ -208,6 +208,8 @@
   const hint = document.getElementById("save_hint");
   const select = document.getElementById("inverter");
   const note = document.getElementById("inverter_note");
+  const portInput = document.getElementById("modbus_port");
+  const unitInput = document.getElementById("modbus_unit");
 
   function kw(value, digits) {
     if (value == null || Number.isNaN(Number(value))) return "–";
@@ -217,6 +219,15 @@
   function paintNote() {
     const option = select.options[select.selectedIndex];
     note.textContent = option ? (option.getAttribute("data-note") || "") : "";
+  }
+
+  function fillModbusDefaults() {
+    const option = select.options[select.selectedIndex];
+    if (!option) return;
+    const port = option.getAttribute("data-port");
+    const unit = option.getAttribute("data-unit");
+    if (port != null && port !== "") portInput.value = port;
+    if (unit != null && unit !== "") unitInput.value = unit;
   }
 
   function paint(data) {
@@ -315,7 +326,10 @@
     }
   });
 
-  select.addEventListener("change", paintNote);
+  select.addEventListener("change", function () {
+    paintNote();
+    fillModbusDefaults();
+  });
 
   paintNote();
   refresh();

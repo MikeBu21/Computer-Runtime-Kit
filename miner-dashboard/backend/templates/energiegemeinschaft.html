@@ -8,6 +8,17 @@
     <p>Einmal pro Minute Einspeisung und Speicherstand, direkt über Tailscale.</p>
   </div>
 
+  <section class="panel eg-name">
+    <h3>Name dieser Steuerung</h3>
+    <p class="eg-hint">So sehen dich die anderen in der Energiegemeinschaft. Beim ersten Code erzeugen oder Beitreten wird der Name mit übernommen.</p>
+    <label class="form-label" for="eg_display_name">Name</label>
+    <div class="eg-row">
+      <input class="form-control" id="eg_display_name" placeholder="z. B. Haus Martin" maxlength="64" autocomplete="off">
+      <button type="button" class="energy-save" id="eg_name_save">Speichern</button>
+    </div>
+    <p class="eg-hint" id="eg_name_msg"></p>
+  </section>
+
   <section class="panel eg-invite">
     <h3>Einladungscode</h3>
     <p class="eg-hint">Wer den Code hat, kann mitsenden und empfangen. Er bleibt auf diesem Pi und geht nicht ins Update.</p>
@@ -56,7 +67,8 @@
 
   <style>
     .eg-wrap { display: flex; flex-direction: column; gap: 1rem; max-width: 980px; }
-    .eg-invite { width: 100%; max-width: none; box-sizing: border-box; }
+    .eg-name, .eg-invite { width: 100%; max-width: none; box-sizing: border-box; }
+    .eg-name .form-control { max-width: 320px; }
     .eg-hero {
       display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap;
       padding: 1.1rem 1.2rem; border-radius: 18px;
@@ -184,12 +196,36 @@
   const codeEl = document.getElementById("eg_code");
   const msg = document.getElementById("eg_code_msg");
   const keyMsg = document.getElementById("eg_key_msg");
+  const nameEl = document.getElementById("eg_display_name");
+  const nameMsg = document.getElementById("eg_name_msg");
 
-  function ageText(sec, mismatch) {
+  function ageText(sec, mismatch, ready) {
+    if (ready) return ready;
     if (mismatch) return "im Netz, der Code passt nicht mehr";
     if (sec == null) return "noch keine Meldung";
     if (sec < 90) return "letzte Minute da";
-    return "still seit " + Math.round(sec) + " s";
+    const total = Math.max(0, Math.round(Number(sec) || 0));
+    const days = Math.floor(total / 86400);
+    const hours = Math.floor((total % 86400) / 3600);
+    const mins = Math.max(1, Math.floor((total % 3600) / 60));
+    const parts = [];
+    if (days) parts.push(days === 1 ? "1 Tag" : days + " Tagen");
+    if (hours) parts.push(hours === 1 ? "1 Std." : hours + " Std.");
+    if (!days) parts.push(mins === 1 ? "1 Min." : mins + " Min.");
+    return "still seit " + parts.join(" ");
+  }
+
+  function typedName() {
+    return (nameEl && nameEl.value ? nameEl.value : "").trim();
+  }
+
+  function fillDisplayName(data) {
+    if (!nameEl || document.activeElement === nameEl) return;
+    const stored = (data.display_name || "").trim();
+    const shown = stored || (data.self_name || "");
+    if (nameEl.dataset.applied === shown) return;
+    nameEl.value = shown;
+    nameEl.dataset.applied = shown;
   }
 
   let refreshSerial = 0;
@@ -216,6 +252,7 @@
     // Mitglieder, die schon sichtbar sind, bleiben stehen.
     if (!data.invite_code && members.length === 0 && communityShown) return;
     codeEl.textContent = data.invite_code || "noch keiner";
+    fillDisplayName(data);
     document.getElementById("eg_sum").textContent = (data.feed_sum_kw == null ? "–" : data.feed_sum_kw) + " kW";
     document.getElementById("eg_fresh").textContent = data.fresh_count + " von " + members.length + " in der letzten Minute";
     const net = data.tailscale_ok
@@ -1018,7 +1055,7 @@
       card.querySelector('[data-stat="soc"]').textContent = member.soc_percent == null ? "– %" : member.soc_percent + " %";
       const pct = member.soc_percent == null ? 0 : Math.max(0, Math.min(100, Number(member.soc_percent)));
       card.querySelector("[data-bar]").style.width = pct + "%";
-      card.querySelector("[data-age]").textContent = ageText(member.age_sec, member.code_mismatch);
+      card.querySelector("[data-age]").textContent = ageText(member.age_sec, member.code_mismatch, member.age_text);
       paintOutlook(card, member);
       ["alias", "ask_ct_kwh", "grid_cost_ct_kwh"].forEach(function (field) {
         const input = card.querySelector('[data-field="' + field + '"]');
@@ -1041,10 +1078,43 @@
     });
   }
 
+  async function saveDisplayName() {
+    const body = new FormData();
+    body.set("name", typedName());
+    const response = await fetch("/api/energiegemeinschaft/name", { method: "POST", body: body, credentials: "same-origin" });
+    const data = await response.json();
+    if (!data.ok) {
+      nameMsg.textContent = data.error || "Name nicht gespeichert.";
+      return false;
+    }
+    const shown = (data.display_name || "").trim();
+    if (nameEl) {
+      nameEl.value = shown;
+      nameEl.dataset.applied = shown;
+    }
+    nameMsg.textContent = shown
+      ? "Name gespeichert. Andere sehen dich als „" + shown + "“."
+      : "Name geleert. Es gilt wieder der Gerätename.";
+    return true;
+  }
+  document.getElementById("eg_name_save").addEventListener("click", async function () {
+    await saveDisplayName();
+    refresh();
+  });
+  nameEl.addEventListener("keydown", function (event) {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      document.getElementById("eg_name_save").click();
+    }
+  });
   document.getElementById("eg_generate").addEventListener("click", async function () {
-    const response = await fetch("/api/energiegemeinschaft/code", { method: "POST", credentials: "same-origin" });
+    const body = new FormData();
+    const name = typedName();
+    if (name) body.set("name", name);
+    const response = await fetch("/api/energiegemeinschaft/code", { method: "POST", body: body, credentials: "same-origin" });
     const data = await response.json();
     msg.textContent = data.ok ? "Neuer Code. Auf der anderen Steuerung einfügen." : (data.error || "Konnte nicht erzeugen.");
+    if (data.ok && name && nameEl) nameEl.dataset.applied = name;
     refresh();
   });
   document.getElementById("eg_copy").addEventListener("click", function () {
@@ -1068,11 +1138,14 @@
     }
     const body = new FormData();
     body.set("code", value);
+    const name = typedName();
+    if (name) body.set("name", name);
     const response = await fetch("/api/energiegemeinschaft/join", { method: "POST", body: body, credentials: "same-origin" });
     const data = await response.json();
     if (data.ok) {
       hideJoinField();
       msg.textContent = "Code gespeichert.";
+      if (name && nameEl) nameEl.dataset.applied = name;
     } else {
       msg.textContent = data.error || "Code ungültig.";
     }

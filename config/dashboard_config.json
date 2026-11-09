@@ -1,6 +1,15 @@
 {
   "updated_at": null,
   "flow_hidden_builtins": [],
+  "flow_builtin_slots": {},
+  "flow_point_roles": {
+    "pv": "erzeugung",
+    "wasserkraft": "erzeugung",
+    "kelag": "netz",
+    "battery": "speicher",
+    "wohnhaus": "verbraucher",
+    "betrieb": "verbraucher"
+  },
   "custom_flow_fields": [],
   "pie_generation": [
     {

@@ -9,6 +9,7 @@ from energiegemeinschaft_mesh import (
     history_for_display,
     code_is_valid,
     community_price_key,
+    format_stillzeit,
     price_comparison,
     command_packet,
     feed_packet,
@@ -25,6 +26,14 @@ from energiegemeinschaft_mesh import (
 
 
 class TestEnergiegemeinschaftMesh(unittest.TestCase):
+    def test_stillzeit_is_human_readable(self):
+        self.assertEqual(format_stillzeit(None), "noch keine Meldung")
+        self.assertEqual(format_stillzeit(30), "letzte Minute da")
+        self.assertEqual(format_stillzeit(120), "still seit 2 Min.")
+        self.assertEqual(format_stillzeit(90427), "still seit 1 Tag 1 Std.")
+        self.assertEqual(format_stillzeit(417752), "still seit 4 Tagen 20 Std.")
+        self.assertEqual(format_stillzeit(100, code_mismatch=True), "im Netz, der Code passt nicht mehr")
+
     def test_code_format(self):
         code = generate_invite_code()
         self.assertTrue(code_is_valid(code))
@@ -203,6 +212,27 @@ class TestEnergiegemeinschaftMesh(unittest.TestCase):
                 mesh.ensure_node_name("piminer")
                 mesh.ensure_node_name("anderer-name")
                 self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["node_name"], "piminer")
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_display_name_is_used_as_local_sender(self):
+        import tempfile
+        from pathlib import Path
+
+        import energiegemeinschaft_mesh as mesh
+
+        path = Path(tempfile.mkstemp(suffix=".json")[1])
+        path.write_text(json.dumps({"node_name": "piminer-4"}), encoding="utf-8")
+        try:
+            with patch.object(mesh, "SETTINGS_FILE", path):
+                self.assertEqual(mesh.local_name({"self_name": "tail-host"}), "piminer-4")
+                self.assertEqual(mesh.set_display_name("  Haus Martin  "), "Haus Martin")
+                self.assertEqual(mesh.local_name({"self_name": "tail-host"}), "Haus Martin")
+                self.assertEqual(mesh.mesh_settings()["display_name"], "Haus Martin")
+                self.assertEqual(mesh.set_display_name(""), "")
+                self.assertEqual(mesh.local_name({"self_name": "tail-host"}), "piminer-4")
+                with self.assertRaises(ValueError):
+                    mesh.set_display_name("x" * 65)
         finally:
             path.unlink(missing_ok=True)
 
