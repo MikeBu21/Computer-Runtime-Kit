@@ -74,12 +74,7 @@
       <div>
         <label class="form-label" for="modbus_host">Logger-IP</label>
         <input class="form-control" id="modbus_host" name="modbus_host" type="text" value="{{ settings.modbus_host }}" placeholder="IP des Loggers (nicht des Wechselrichters)" autocomplete="off">
-        <div id="logger_tracked_line" style="font-size: 0.85rem; margin-top: 0.4rem;">
-          Getrackte IP:
-          <strong id="logger_tracked_ip" style="color: #00e676;">{{ settings.logger_ip or settings.modbus_host or "—" }}</strong>
-          <span id="logger_tracked_mac" style="color: var(--muted);">{% if settings.logger_mac %} · {{ settings.logger_mac }}{% endif %}</span>
-        </div>
-        <div style="color: var(--muted); font-size: 0.78rem; margin-top: 0.25rem;">{% if settings.modbus_source %}Aus Home Assistant: {{ settings.modbus_source }}{% else %}IP des Solarman-Loggers.{% endif %} · MAC-Tracker prüft stündlich.</div>
+        <div style="color: var(--muted); font-size: 0.78rem; margin-top: 0.25rem;">{% if settings.modbus_source %}Aus Home Assistant: {{ settings.modbus_source }}{% else %}IP des Solarman-Loggers. Wird aus Home Assistant übernommen, sobald ein Wechselrichter verknüpft ist.{% endif %}</div>
       </div>
       <div>
         <label class="form-label" for="modbus_port">Port</label>
@@ -92,23 +87,8 @@
     </form>
     <div class="action-row">
       <button type="submit" form="bms_form" class="btn-primary-custom">Übernehmen</button>
-      <button type="button" id="mac_scan_btn" class="btn-primary-custom">MAC scannen</button>
     </div>
     <p id="save_hint" style="color: var(--muted); min-height: 1.2rem;"></p>
-    <div class="stat-card" style="margin: 0 0 0.9rem;">
-      <h5>Logger-Tracker</h5>
-      <p id="logger_mac_line" style="margin:0; font-weight:700;">MAC: {{ settings.logger_mac or '–' }}</p>
-      <p id="logger_ip_line" style="margin:0.25rem 0 0; color: #00e676; font-weight:700;">IP: {{ settings.logger_ip or settings.modbus_host or '–' }}{% if settings.logger_serial %} · Serial {{ settings.logger_serial }}{% endif %}</p>
-      <p id="logger_track_hint" style="margin:0.35rem 0 0; color: var(--muted); font-size:0.82rem;">{% if settings.logger_tracked_at %}Zuletzt: {{ settings.logger_tracked_at }}{% else %}Noch nicht gescannt. Es wird die Logger-IP verwendet.{% endif %}</p>
-    </div>
-    <div class="stat-card" style="margin: 0 0 0.9rem;">
-      <h5>Wechselrichter im Netz</h5>
-      <p style="color: var(--muted); font-size: 0.82rem; margin: 0 0 0.6rem;">Suche findet Solarman-Logger. Hinzufügen speichert sie hier, nicht in Home Assistant. Die MAC bleibt gespeichert, bis du den Eintrag löschst.</p>
-      <button type="button" id="inverter_scan_btn" class="btn-primary-custom">Netzwerk suchen</button>
-      <div id="inverter_found_list" style="margin-top: 0.75rem;"></div>
-      <h5 style="margin-top: 0.9rem;">Gespeichert</h5>
-      <div id="inverter_saved_list"></div>
-    </div>
     <p id="write_text" style="margin: 0 0 0.75rem;"></p>
 
     <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.75rem;">
@@ -283,19 +263,6 @@
       writeSwitch.checked = data.settings.real_mode;
       paintSwitch();
     }
-    if (data.settings) {
-      const tracked = data.settings.logger_ip || data.settings.modbus_host || "";
-      const trackedEl = document.getElementById("logger_tracked_ip");
-      if (trackedEl) trackedEl.textContent = tracked || "—";
-      const macEl = document.getElementById("logger_tracked_mac");
-      if (macEl) {
-        macEl.textContent = data.settings.logger_mac ? ("· " + data.settings.logger_mac) : "";
-      }
-      const hostEl = document.getElementById("modbus_host");
-      if (hostEl && tracked && document.activeElement !== hostEl) {
-        hostEl.value = data.settings.modbus_host || tracked;
-      }
-    }
     const write = document.getElementById("write_text");
     write.textContent = plan.write_text || "";
     write.style.color = plan.command_sent ? "var(--accent)" : "var(--muted)";
@@ -315,123 +282,12 @@
     document.getElementById("reg_dchg").textContent = shown(reg.max_discharge_a, " A");
     document.getElementById("reg_export").textContent = shown(reg.max_export_w, " W");
     document.getElementById("reg_sell").textContent = shown(reg.solar_sell);
-    const logger = data.logger || {};
-    const macLine = document.getElementById("logger_mac_line");
-    const ipLine = document.getElementById("logger_ip_line");
-    const trackHint = document.getElementById("logger_track_hint");
-    if (macLine) macLine.textContent = "MAC: " + (logger.mac || "–");
-    if (ipLine) {
-      const ipText = logger.ip || (data.settings && (data.settings.logger_ip || data.settings.modbus_host)) || "–";
-      ipLine.textContent = "IP: " + ipText + (logger.serial ? (" · Serial " + logger.serial) : "");
-      ipLine.style.color = "#00e676";
-    }
-    if (trackHint) {
-      trackHint.textContent = logger.tracked_at
-        ? ("Zuletzt: " + logger.tracked_at + " · Prüfung stündlich")
-        : "Noch nicht gescannt. Es wird die Logger-IP verwendet.";
-    }
-    paintInverters(data);
-  }
-
-  function esc(value) {
-    return String(value == null ? "" : value).replace(/[&<>"']/g, function (ch) {
-      return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch];
-    });
-  }
-
-  function paintInverters(data) {
-    const foundHost = document.getElementById("inverter_found_list");
-    const savedHost = document.getElementById("inverter_saved_list");
-    if (!foundHost || !savedHost) return;
-    const found = data.discovered || [];
-    const saved = data.tracked_inverters || [];
-    foundHost.innerHTML = found.length ? found.map(function (item) {
-      const action = item.tracked
-        ? '<span style="color: var(--muted);">gespeichert</span>'
-        : '<button type="button" class="btn-primary-custom inverter-add" data-mac="' + item.mac + '" data-serial="' + (item.serial || "") + '">Hinzufügen</button>';
-      return '<p style="margin:0.35rem 0;">' + esc(item.ip) +
-        ' · <span style="color:#00e676;">' + esc(item.mac) + '</span>' +
-        (item.serial ? (' · SN ' + esc(item.serial)) : '') +
-        ' · ' + action + '</p>';
-    }).join("") : '<p style="color: var(--muted); margin:0.35rem 0;">Noch keine Suche. „Netzwerk suchen“ zeigt alle Logger.</p>';
-    savedHost.innerHTML = saved.length ? saved.map(function (item) {
-      const role = item.control ? "Steuerung" : "Erzeugung";
-      return '<p style="margin:0.35rem 0;"><strong>' + esc(item.name || "Wechselrichter") + '</strong> · ' + role +
-        '<br><span style="color:#00e676; font-weight:700;">' + esc(item.ip || "—") + '</span>' +
-        ' · ' + esc(item.mac || "") +
-        (item.serial ? (' · SN ' + esc(item.serial)) : '') +
-        '<br><span style="color: var(--muted); font-size:0.82rem;">Zuletzt: ' + (item.tracked_at || "—") + '</span>' +
-        ' <button type="button" class="btn-delete inverter-delete" data-mac="' + item.mac + '" data-control="' + (item.control ? "1" : "0") + '">Löschen</button></p>';
-    }).join("") : '<p style="color: var(--muted); margin:0.35rem 0;">Noch kein Wechselrichter gespeichert.</p>';
-  }
-
-  async function scanInverters() {
-    hint.textContent = "Suche Logger…";
-    const response = await fetch("/api/bms-netzbezug/inverters/scan", { method: "POST", credentials: "same-origin" });
-    const data = await response.json();
-    hint.textContent = data.message || "Suche fertig.";
-    hint.style.color = data.ok ? "var(--accent)" : "#f44336";
-    refresh();
-  }
-
-  async function addInverter(mac, serial) {
-    let name = window.prompt("Name für den Wechselrichter:", "Wechselrichter");
-    if (name == null) return;
-    const body = new FormData();
-    body.set("mac", mac);
-    body.set("name", name);
-    if (serial) body.set("serial", serial);
-    let response = await fetch("/api/bms-netzbezug/inverters/add", { method: "POST", body: body, credentials: "same-origin" });
-    let data = await response.json();
-    if (data.need_serial) {
-      const typed = window.prompt("Logger-Seriennummer:", "");
-      if (!typed) return;
-      body.set("serial", typed.trim());
-      response = await fetch("/api/bms-netzbezug/inverters/add", { method: "POST", body: body, credentials: "same-origin" });
-      data = await response.json();
-    }
-    hint.textContent = data.message || (data.ok ? "Hinzugefügt." : "Hinzufügen fehlgeschlagen.");
-    hint.style.color = data.ok ? "var(--accent)" : "#f44336";
-    if (data.ok) refresh();
-  }
-
-  async function deleteInverter(mac, control) {
-    const body = new FormData();
-    body.set("mac", mac);
-    let response = await fetch("/api/bms-netzbezug/inverters/delete", { method: "POST", body: body, credentials: "same-origin" });
-    let data = await response.json();
-    if (data.needs_confirm || control === "1") {
-      const text = data.message || "Steuer-Logger wirklich aus dem Tracking nehmen?";
-      if (!window.confirm(text)) return;
-      body.set("confirm", "1");
-      response = await fetch("/api/bms-netzbezug/inverters/delete", { method: "POST", body: body, credentials: "same-origin" });
-      data = await response.json();
-    }
-    hint.textContent = data.message || (data.ok ? "Entfernt." : "Löschen fehlgeschlagen.");
-    hint.style.color = data.ok ? "var(--accent)" : "#f44336";
-    if (data.ok) refresh();
   }
 
   async function refresh() {
     const response = await fetch("/api/bms-netzbezug", { credentials: "same-origin" });
     const data = await response.json();
     if (data.ok) paint(data);
-  }
-
-  async function scanMac() {
-    const body = new FormData();
-    body.set("modbus_host", portInput && document.getElementById("modbus_host")
-      ? document.getElementById("modbus_host").value
-      : "");
-    const response = await fetch("/api/bms-netzbezug/mac-scan", {
-      method: "POST",
-      body: body,
-      credentials: "same-origin"
-    });
-    const data = await response.json();
-    hint.textContent = data.message || (data.ok ? "MAC erfasst." : "MAC-Scan fehlgeschlagen.");
-    hint.style.color = data.ok ? "var(--accent)" : "#f44336";
-    if (data.ok) refresh();
   }
 
   async function post(body, target) {
@@ -473,21 +329,6 @@
   select.addEventListener("change", function () {
     paintNote();
     fillModbusDefaults();
-  });
-
-  const macBtn = document.getElementById("mac_scan_btn");
-  if (macBtn) macBtn.addEventListener("click", scanMac);
-  const scanBtn = document.getElementById("inverter_scan_btn");
-  if (scanBtn) scanBtn.addEventListener("click", scanInverters);
-  document.getElementById("inverter_found_list")?.addEventListener("click", function (event) {
-    const button = event.target.closest(".inverter-add");
-    if (!button) return;
-    addInverter(button.dataset.mac, button.dataset.serial);
-  });
-  document.getElementById("inverter_saved_list")?.addEventListener("click", function (event) {
-    const button = event.target.closest(".inverter-delete");
-    if (!button) return;
-    deleteInverter(button.dataset.mac, button.dataset.control);
   });
 
   paintNote();
