@@ -308,9 +308,27 @@ INSTALL_RANGES = {
     "install_low_soc": (0, 100),
 }
 REG_MAX_CHARGE = 0x006C
+REG_MAX_DISCHARGE = 0x006D
+REG_SELL_POWER = 0x008F
+REG_MAX_IMPORT = 0x00E9
 REG_SHUTDOWN_SOC = 0x0073
 REG_RESTART_SOC = 0x0074
 REG_LOW_SOC = 0x0075
+REG_PROGRAM_TIME = 0x0094
+REG_PROGRAM_POWER = 0x009A
+REG_PROGRAM_SOC = 0x00A6
+REG_PROGRAM_CHARGE = 0x00AC
+PROGRAM_SLOTS = 6
+# Elektriker-Register: (Adresse, Faktor Rohwert → gespeicherter Wert). 0x00E9 zählt 10-W-Schritte.
+INSTALL_REGISTER_SCALE = {
+    "install_max_charge_a": (REG_MAX_CHARGE, 1),
+    "install_max_discharge_a": (REG_MAX_DISCHARGE, 1),
+    "install_max_sell_w": (REG_SELL_POWER, 1),
+    "install_max_import_w": (REG_MAX_IMPORT, 10),
+    "install_shutdown_soc": (REG_SHUTDOWN_SOC, 1),
+    "install_restart_soc": (REG_RESTART_SOC, 1),
+    "install_low_soc": (REG_LOW_SOC, 1),
+}
 
 
 def _ui_modbus_defaults(inverter_id: str) -> Dict[str, int]:
@@ -385,6 +403,13 @@ def default_settings() -> Dict[str, Any]:
         "planning_hold": False,
         "community_hold": False,
         "exchange_hold": False,
+        "install_captured": False,
+        "install_captured_serial": 0,
+        "program_soc": [],
+        "program_power": [],
+        "program_charging": [],
+        "program_time": [],
+        "soc_stop": False,
     }
 
 
@@ -484,6 +509,20 @@ def _install_value(settings: Optional[Dict[str, Any]], key: str) -> int:
         value = INSTALL_DEFAULTS[key]
     lowest, highest = INSTALL_RANGES[key]
     return max(lowest, min(highest, value))
+
+
+def _coerce_program_list(raw: Any, highest: int = 65535) -> Optional[List[int]]:
+    """Sechs gespeicherte Programmwerte. Unvollständig zählt als nicht gelesen."""
+    if not isinstance(raw, (list, tuple)) or len(raw) != PROGRAM_SLOTS:
+        return None
+    values: List[int] = []
+    for item in raw:
+        try:
+            number = int(round(float(str(item).replace(",", ".").strip())))
+        except (TypeError, ValueError):
+            return None
+        values.append(max(0, min(highest, number)))
+    return values
 
 
 def install_caps_kw(settings: Optional[Dict[str, Any]] = None) -> Dict[str, float]:
@@ -986,6 +1025,10 @@ def track_logger(host: Optional[str] = None, persist: bool = True) -> Dict[str, 
         ha = sync_logger_to_ha(found["ip"], found["mac"], int(settings.get("logger_serial") or 0))
     if persist:
         _persist_settings(settings)
+    read_note = ""
+    if _should_autocapture(previous["serial"], int(settings.get("logger_serial") or 0), settings):
+        read = capture_install_from_inverter()
+        read_note = " " + str(read.get("message") or "")
     return {
         "ok": True,
         "changed": changed,
@@ -1000,18 +1043,17 @@ def track_logger(host: Optional[str] = None, persist: bool = True) -> Dict[str, 
             f"Logger {found['ip']} · MAC {found['mac']}"
             + (" · aktualisiert" if changed else " · unverändert")
             + f". {ha.get('message') or ''}"
+            + read_note
         ).strip(),
     }
 
 
-PV_POWER_REGISTERS = (0x00BA, 0x00BB, 0x00BC, 0x00BD)
 # Nicht für die Anzeige. Ladestand, Batterie, Netz und PV kommen nur aus Home Assistant.
+# 0x00BA–0x00BD sind Sollwerte, keine Messung, und werden nicht gelesen.
 REG_BATTERY_SOC = 0x00B8
 REG_BATTERY_POWER = 0x00BE
 REG_GRID_POWER = 0x00A9
 _last_discovery: List[Dict[str, Any]] = []
-_pv_cache: Dict[str, Optional[float]] = {}
-_pv_poller_started = False
 
 
 def _normalize_tracked_inverter(raw: Any) -> Optional[Dict[str, Any]]:
@@ -1178,6 +1220,7 @@ def add_tracked_inverter(mac: str, name: str = "", serial: int = 0, host: str = 
     Ohne MAC reicht eine IP: dann wird nur dieser Logger gefragt, nicht das ganze Netz.
     """
     settings = load_settings()
+    previous_serial = int(settings.get("logger_serial") or 0)
     mac_text = _format_mac(mac)
     ip = _host(host)
     if not mac_text and ip:
@@ -1253,16 +1296,16 @@ def add_tracked_inverter(mac: str, name: str = "", serial: int = 0, host: str = 
         if ip:
             settings["modbus_host"] = ip
     _persist_settings(settings)
-    if not control and ip and serial_num:
-        try:
-            _pv_cache[mac_text] = read_inverter_pv_kw(ip, serial_num, 1)
-        except Exception:
-            _pv_cache[mac_text] = None
     message = (
         "Steuer-Logger gespeichert. Die Erzeugung bleibt am bestehenden PV-Punkt, BMS-Schreiben ebenfalls."
         if control
         else f"{label} hinzugefügt. MAC wird stündlich weiterverfolgt, Rolle Erzeugung."
     )
+    if control and _should_autocapture(previous_serial, serial_num, settings):
+        read = capture_install_from_inverter()
+        note = str(read.get("message") or "").strip()
+        if note:
+            message = f"{message} {note}"
     return {"ok": True, "inverter": entry, "message": message}
 
 
@@ -1286,22 +1329,10 @@ def delete_tracked_inverter(mac: str, confirm_control: bool = False) -> Dict[str
     settings["tracked_inverters"] = [item for item in items if item["mac"] != mac_text]
     if target.get("flow_field_id"):
         _detach_flow_field(str(target["flow_field_id"]))
-    _pv_cache.pop(mac_text, None)
     if target.get("control"):
         settings["control_tracking_removed"] = True
     _persist_settings(settings)
     return {"ok": True, "message": f"{target.get('name') or mac_text} entfernt. Tracking gestoppt."}
-
-
-def read_inverter_pv_kw(host: str, serial: int, unit: int = 1) -> Optional[float]:
-    """PV-Leistung eines zusätzlichen Loggers in kW (Deye-Register 0x00BA–0x00BD, Watt)."""
-    ip = _host(host)
-    if not ip or not serial:
-        return None
-    watts = 0
-    for address in PV_POWER_REGISTERS:
-        watts += int(read_solarman_holding(ip, 8899, int(unit) or 1, int(serial), address))
-    return round(max(0, watts) / 1000.0, 3)
 
 
 def _signed16(raw: int) -> int:
@@ -1355,25 +1386,12 @@ def read_control_logger_powers() -> Dict[str, Optional[float]]:
 
 
 def extra_inverter_flow_values() -> List[Dict[str, Any]]:
-    """Zusätzliche Wechselrichter für die Rollensumme. Der Steuer-Logger zählt nicht doppelt."""
-    try:
-        settings = load_settings()
-    except Exception:
-        return []
-    out: List[Dict[str, Any]] = []
-    for item in settings.get("tracked_inverters") or []:
-        if item.get("control") or not item.get("flow_field_id"):
-            continue
-        kw = _pv_cache.get(item["mac"])
-        if kw is None and item.get("pv_kw") is not None:
-            kw = item.get("pv_kw")
-        out.append({
-            "flow_field_id": item["flow_field_id"],
-            "name": item.get("name") or "Wechselrichter",
-            "role": "erzeugung",
-            "kw": kw,
-        })
-    return out
+    """Keine Modbus-PV mehr im Stromfluss.
+
+    Ein weiterer Wechselrichter erscheint nur, wenn sein HA-Sensor am
+    zugehörigen Stromfluss-Feld hängt. Solarman-Register werden hier nicht gelesen.
+    """
+    return []
 
 
 def refresh_tracked_inverters() -> Dict[str, Any]:
@@ -1401,12 +1419,6 @@ def refresh_tracked_inverters() -> Dict[str, Any]:
             settings["logger_tracked_at"] = now
             if item.get("ip"):
                 settings["modbus_host"] = item["ip"]
-        elif item.get("ip") and item.get("serial"):
-            try:
-                item["pv_kw"] = read_inverter_pv_kw(item["ip"], int(item["serial"]), int(item.get("unit") or 1))
-                _pv_cache[item["mac"]] = item["pv_kw"]
-            except Exception:
-                pass
     ha = {"ok": True, "message": "Kein neuer Home-Assistant-Eintrag."}
     if changed_control:
         control = next((item for item in settings["tracked_inverters"] if item.get("control")), None)
@@ -1414,36 +1426,6 @@ def refresh_tracked_inverters() -> Dict[str, Any]:
             ha = sync_logger_to_ha(control["ip"], control["mac"], int(control.get("serial") or 0))
     _persist_settings(settings)
     return {"ok": True, "changed_control": changed_control, "ha": ha, "count": len(settings.get("tracked_inverters") or [])}
-
-
-def _poll_extra_inverter_power() -> None:
-    settings = load_settings()
-    for item in settings.get("tracked_inverters") or []:
-        if item.get("control") or not item.get("ip") or not item.get("serial"):
-            continue
-        try:
-            _pv_cache[item["mac"]] = read_inverter_pv_kw(
-                item["ip"], int(item["serial"]), int(item.get("unit") or 1)
-            )
-        except Exception:
-            continue
-
-
-def _ensure_pv_poller() -> None:
-    global _pv_poller_started
-    if _pv_poller_started:
-        return
-    _pv_poller_started = True
-
-    def loop() -> None:
-        while True:
-            try:
-                _poll_extra_inverter_power()
-            except Exception:
-                pass
-            time.sleep(20)
-
-    threading.Thread(target=loop, name="bms-inverter-pv", daemon=True).start()
 
 
 _INVERTER_HINTS = (
@@ -1712,6 +1694,13 @@ def _persist_settings(data: Dict[str, Any]) -> None:
         "planning_hold": bool(data.get("planning_hold")),
         "community_hold": bool(data.get("community_hold")),
         "exchange_hold": bool(data.get("exchange_hold")),
+        "install_captured": bool(data.get("install_captured")),
+        "install_captured_serial": int(data.get("install_captured_serial") or 0),
+        "program_soc": list(data.get("program_soc") or []),
+        "program_power": list(data.get("program_power") or []),
+        "program_charging": list(data.get("program_charging") or []),
+        "program_time": list(data.get("program_time") or []),
+        "soc_stop": bool(data.get("soc_stop")),
     }
     SETTINGS_FILE.write_text(json.dumps(stored, indent=2) + "\n", encoding="utf-8")
 
@@ -1794,6 +1783,20 @@ def load_settings() -> Dict[str, Any]:
     data["planning_hold"] = bool(data.get("planning_hold"))
     data["community_hold"] = bool(data.get("community_hold"))
     data["exchange_hold"] = bool(data.get("exchange_hold"))
+    data["install_captured"] = bool(data.get("install_captured"))
+    try:
+        data["install_captured_serial"] = int(data.get("install_captured_serial") or 0)
+    except (TypeError, ValueError):
+        data["install_captured_serial"] = 0
+    data["soc_stop"] = bool(data.get("soc_stop"))
+    for key, highest in (
+        ("program_soc", 100),
+        ("program_power", 65535),
+        ("program_charging", 65535),
+        ("program_time", 65535),
+    ):
+        coerced = _coerce_program_list(data.get(key), highest=highest)
+        data[key] = coerced if coerced is not None else []
     return _apply_ha_link(data)
 
 
@@ -1807,7 +1810,31 @@ def save_settings(updates: Dict[str, Any]) -> Dict[str, Any]:
         if data["real_mode"] and not wanted:
             data["release_pending"] = True
             _release_sent = False
+        if wanted and not data["real_mode"] and data.get("soc_stop"):
+            # Hand einschalten hebt den SOC-Stopp nur über dem Sechs-Fenster-Minimum auf.
+            soc = _live_soc(None)
+            floor = _program_soc_floor(data)
+            if floor is not None and soc is not None and soc > float(floor):
+                data["soc_stop"] = False
         data["real_mode"] = wanted
+    if "soc_stop" in updates:
+        data["soc_stop"] = bool(updates["soc_stop"])
+    if "install_captured" in updates:
+        data["install_captured"] = bool(updates["install_captured"])
+    if "install_captured_serial" in updates:
+        try:
+            data["install_captured_serial"] = int(updates["install_captured_serial"] or 0)
+        except (TypeError, ValueError):
+            data["install_captured_serial"] = 0
+    for key, highest in (
+        ("program_soc", 100),
+        ("program_power", 65535),
+        ("program_charging", 65535),
+        ("program_time", 65535),
+    ):
+        if key in updates:
+            coerced = _coerce_program_list(updates.get(key), highest=highest)
+            data[key] = coerced if coerced is not None else []
     if "target_grid_kw" in updates:
         data["target_grid_kw"] = _kw(updates["target_grid_kw"], data["target_grid_kw"], lowest=-100.0)
     if "planning_hold" in updates:
@@ -2613,17 +2640,242 @@ def _release_due(settings: Dict[str, Any]) -> bool:
     return bool(_needs_release or settings.get("release_pending"))
 
 
+def _live_soc(live: Optional[Dict[str, Any]]) -> Optional[float]:
+    """Ladestand aus dem übergebenen Live-Wert, sonst aus Home Assistant."""
+    if live is None:
+        live = read_live()
+    if not live:
+        return None
+    return _parse_soc(live.get("soc_percent"))
+
+
+def _program_soc_floor(settings: Optional[Dict[str, Any]]) -> Optional[int]:
+    """Minimum der sechs gespeicherten Programm-SOCs. Live-Register sind dafür unbrauchbar."""
+    socs = _coerce_program_list((settings or {}).get("program_soc"), highest=100)
+    if not socs:
+        return None
+    return min(socs)
+
+
+def _hhmm_minutes(raw: Any) -> Optional[int]:
+    """Deye-Startzeit: Stunde mal 100 plus Minute, zum Beispiel 830 = 08:30."""
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    hour, minute = divmod(value, 100)
+    if hour > 23 or minute > 59:
+        return None
+    return hour * 60 + minute
+
+
+def _active_program_index(settings: Optional[Dict[str, Any]], now: Optional[datetime] = None) -> Optional[int]:
+    """Slot, dessen Startzeit gerade gilt. Zeiten kommen aus dem Snapshot, Uhr aus Europe/Vienna."""
+    times = _coerce_program_list((settings or {}).get("program_time"))
+    if not times:
+        return None
+    moment = now or datetime.now(TZ)
+    now_m = moment.hour * 60 + moment.minute
+    best_index: Optional[int] = None
+    best_start: Optional[int] = None
+    latest_index: Optional[int] = None
+    latest_start: Optional[int] = None
+    for index, raw in enumerate(times):
+        start = _hhmm_minutes(raw)
+        if start is None:
+            continue
+        if latest_start is None or start > latest_start or (start == latest_start and index > (latest_index or 0)):
+            latest_start = start
+            latest_index = index
+        if start <= now_m and (
+            best_start is None or start > best_start or (start == best_start and index > (best_index or 0))
+        ):
+            best_start = start
+            best_index = index
+    if best_index is not None:
+        return best_index
+    return latest_index
+
+
+def _active_program_soc(settings: Optional[Dict[str, Any]], now: Optional[datetime] = None) -> Optional[int]:
+    socs = _coerce_program_list((settings or {}).get("program_soc"), highest=100)
+    index = _active_program_index(settings, now)
+    if socs is None or index is None:
+        return None
+    return socs[index]
+
+
+def _soc_floor_hit(settings: Optional[Dict[str, Any]], live: Optional[Dict[str, Any]] = None) -> bool:
+    """Schreiben stoppen: kein Snapshot, kein Ladestand, oder Ladestand auf/unter dem Minimum der sechs."""
+    floor = _program_soc_floor(settings)
+    soc = _live_soc(live)
+    if floor is None or soc is None:
+        return True
+    return soc <= float(floor)
+
+
+def _planning_enabled() -> bool:
+    try:
+        from energie_steuerung import load_settings as energy_settings
+
+        return bool(energy_settings().get("algorithmische_planung"))
+    except Exception:
+        return False
+
+
+def _resume_ready(
+    settings: Optional[Dict[str, Any]],
+    live: Optional[Dict[str, Any]] = None,
+    now: Optional[datetime] = None,
+) -> bool:
+    """Wieder an, sobald der Ladestand über dem Minimum der sechs liegt und die Planung an ist.
+
+    Der Stopp bleibt, solange der SOC auf oder unter diesem Mindestwert liegt oder der
+    Schalter „Planung, keine Netzspitzen“ aus ist. Die Uhrzeit ändert die Schwelle nicht.
+    """
+    del now
+    if not settings or not settings.get("soc_stop"):
+        return False
+    if not _planning_enabled():
+        return False
+    floor = _program_soc_floor(settings)
+    soc = _live_soc(live)
+    if floor is None or soc is None:
+        return False
+    return soc > float(floor)
+
+
+def _should_autocapture(previous_serial: int, new_serial: int, settings: Optional[Dict[str, Any]]) -> bool:
+    """Einmal lesen, wenn der Steuer-Logger neu gebunden wird. Nicht bei bekanntem, schon gepaartem Gerät."""
+    try:
+        previous = int(previous_serial or 0)
+        new = int(new_serial or 0)
+    except (TypeError, ValueError):
+        return False
+    if not new:
+        return False
+    data = settings or {}
+    if data.get("install_captured") and int(data.get("install_captured_serial") or 0) == new:
+        return False
+    if previous == new and previous != 0 and not data.get("install_captured"):
+        return False
+    return previous != new
+
+
+def _writer_serial(settings: Dict[str, Any]) -> int:
+    link = resolve_ha_link(str(settings.get("inverter") or ""), settings.get("known_entry_ids") or [])
+    serial = int(link.get("serial") or 0) if link else 0
+    if serial:
+        return serial
+    try:
+        return int(settings.get("logger_serial") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _read_holding_retry(settings: Dict[str, Any], serial: int, address: int) -> int:
+    host = settings.get("modbus_host") or ""
+    port = int(settings.get("modbus_port") or 0)
+    unit = int(settings.get("modbus_unit") or 1)
+    last: Optional[BaseException] = None
+    for _attempt in range(3):
+        try:
+            return read_holding(host, port, unit, serial, address)
+        except OSError as exc:
+            last = exc
+            time.sleep(0.3)
+    raise OSError(str(last or "Lesen fehlgeschlagen"))
+
+
+def _program_restore_rows(settings: Optional[Dict[str, Any]]) -> List[tuple]:
+    """Gespeicherte Programmziele. Ohne Snapshot nichts schreiben, insbesondere nicht SOC 20."""
+    if not settings:
+        return []
+    socs = _coerce_program_list(settings.get("program_soc"), highest=100)
+    powers = _coerce_program_list(settings.get("program_power"))
+    charges = _coerce_program_list(settings.get("program_charging"))
+    if not socs or not powers or not charges:
+        return []
+    rows: List[tuple] = []
+    for index in range(PROGRAM_SLOTS):
+        rows.append((REG_PROGRAM_POWER + index, f"Program {index + 1} Power", powers[index]))
+        rows.append((REG_PROGRAM_SOC + index, f"Program {index + 1} SOC", socs[index]))
+        rows.append((REG_PROGRAM_CHARGE + index, f"Program {index + 1} Charging", charges[index]))
+    return rows
+
+
+def capture_install_from_inverter() -> Dict[str, Any]:
+    """Elektrikerwerte und die sechs Programme einmal vom Wechselrichter lesen.
+
+    Nur wenn BMS nicht schreibt. Sonst stünden in den Registern die Stellwerte der Schleife.
+    """
+    settings = load_settings()
+    if settings.get("real_mode") or settings.get("release_pending"):
+        return {
+            "ok": False,
+            "message": (
+                "BMS schreibt noch oder die Elektrikerwerte werden gerade zurückgeschrieben. "
+                "Bitte warten, bis das aus ist."
+            ),
+        }
+    host = settings.get("modbus_host") or ""
+    serial = _writer_serial(settings)
+    if not host or not serial:
+        return {
+            "ok": False,
+            "message": "Kein Steuer-Logger mit Seriennummer. Zuerst den Wechselrichter hinzufügen.",
+        }
+    try:
+        updates: Dict[str, Any] = {}
+        for key, (address, scale) in INSTALL_REGISTER_SCALE.items():
+            raw = _read_holding_retry(settings, serial, address)
+            updates[key] = int(raw) * int(scale)
+        socs: List[int] = []
+        powers: List[int] = []
+        charges: List[int] = []
+        times: List[int] = []
+        for index in range(PROGRAM_SLOTS):
+            socs.append(_read_holding_retry(settings, serial, REG_PROGRAM_SOC + index))
+            powers.append(_read_holding_retry(settings, serial, REG_PROGRAM_POWER + index))
+            charges.append(_read_holding_retry(settings, serial, REG_PROGRAM_CHARGE + index))
+            times.append(_read_holding_retry(settings, serial, REG_PROGRAM_TIME + index))
+        updates["program_soc"] = socs
+        updates["program_power"] = powers
+        updates["program_charging"] = charges
+        updates["program_time"] = times
+        updates["install_captured"] = True
+        updates["install_captured_serial"] = serial
+    except OSError as exc:
+        return {"ok": False, "message": f"Elektrikerwerte konnten nicht gelesen werden: {exc}"}
+    saved = save_settings(updates)
+    return {"ok": True, "message": "Elektrikerwerte vom Wechselrichter gelesen.", "settings": saved}
+
+
+def apply_soc_gate(settings: Dict[str, Any], live: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Vor den Holds: Stopp merken oder den automatischen Wiederanlauf freigeben."""
+    if settings.get("soc_stop"):
+        if settings.get("release_pending"):
+            if settings.get("real_mode"):
+                return save_settings({"real_mode": False, "soc_stop": True})
+            return settings
+        if _resume_ready(settings, live):
+            return save_settings({"soc_stop": False})
+        if settings.get("real_mode"):
+            return save_settings({"real_mode": False, "soc_stop": True})
+        return settings
+    if settings.get("real_mode") and _soc_floor_hit(settings, live):
+        return save_settings({"real_mode": False, "soc_stop": True})
+    return settings
+
+
 def _release_writes(item: Dict[str, Any], settings: Optional[Dict[str, Any]] = None) -> List[tuple]:
-    """Haltung einmal lösen: konfigurierte Standeinstellung, nicht fest verdrahtet."""
+    """Haltung einmal lösen: Elektrikerwerte, und die Programmziele nur aus dem Snapshot."""
     if item.get("register") is None:
         return []
     idle_w = _idle_grid_w(settings)
     work_mode = _idle_work_mode(settings)
     pattern = _idle_energy_pattern(settings)
     peak_w = _idle_peak_w(settings)
-    tou_soc = _idle_tou_soc(settings)
-    tou_charge = _idle_tou_charging(settings)
-    tou_power = _idle_tou_power_w(settings)
     rows: List[tuple] = []
     if item.get("work_mode_register") is not None:
         rows.append((int(item["work_mode_register"]), "Work Mode", work_mode))
@@ -2669,10 +2921,7 @@ def _release_writes(item: Dict[str, Any], settings: Optional[Dict[str, Any]] = N
     schedule = item.get("time_of_use_register")
     if schedule is not None:
         rows.append((int(schedule), "Time of Use", TOU_WEEK_ENABLED))
-        for index in range(6):
-            rows.append((0x009A + index, f"Program {index + 1} Power", tou_power))
-            rows.append((0x00A6 + index, f"Program {index + 1} SOC", tou_soc))
-            rows.append((0x00AC + index, f"Program {index + 1} Charging", tou_charge))
+        rows.extend(_program_restore_rows(settings))
     return rows
 
 
@@ -2770,6 +3019,8 @@ def apply_write(
     live: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     global _needs_release, _tou_hold_applied, _tou_soc_applied, _release_sent
+    if settings.get("real_mode") and _soc_floor_hit(settings, live):
+        settings = save_settings({"real_mode": False, "soc_stop": True})
     base = INVERTERS.get(settings.get("inverter"), INVERTERS[DEFAULT_INVERTER])
     link = resolve_ha_link(str(settings.get("inverter") or ""), settings.get("known_entry_ids") or [])
     item = _control_item(base, link)
@@ -2897,7 +3148,6 @@ def _sync_ha_release(settings: Optional[Dict[str, Any]] = None) -> List[str]:
     idle_w = _idle_grid_w(settings)
     work_name = "Export First" if _idle_work_mode(settings) == WORK_MODE_EXPORT_FIRST else "Zero Export To CT"
     pattern_name = "Battery First" if _idle_energy_pattern(settings) == ENERGY_PATTERN_BATTERY_FIRST else "Load First"
-    charge_name = {0: "Disabled", 1: "Grid", 2: "Generator", 3: "Both"}[_idle_tou_charging(settings)]
     prefix = "number.192_168_1_176"
     select = "select.192_168_1_176"
     wanted = [
@@ -2911,10 +3161,17 @@ def _sync_ha_release(settings: Optional[Dict[str, Any]] = None) -> List[str]:
         ("switch", "turn_off", "switch.192_168_1_176_microinverter", {}),
         ("switch", "turn_off", "switch.192_168_1_176_microinverter_export_cut_off", {}),
     ]
-    for index in range(1, 7):
-        wanted.append(("number", "set_value", f"{prefix}_program_{index}_soc", {"value": _idle_tou_soc(settings)}))
-        wanted.append(("number", "set_value", f"{prefix}_program_{index}_power", {"value": _idle_tou_power_w(settings)}))
-        wanted.append(("select", "select_option", f"{select}_program_{index}_charging", {"option": charge_name}))
+    socs = _coerce_program_list((settings or {}).get("program_soc"), highest=100)
+    powers = _coerce_program_list((settings or {}).get("program_power"))
+    charges = _coerce_program_list((settings or {}).get("program_charging"))
+    if socs and powers and charges:
+        charge_names = {0: "Disabled", 1: "Grid", 2: "Generator", 3: "Both"}
+        for index in range(PROGRAM_SLOTS):
+            slot = index + 1
+            charge_name = charge_names.get(int(charges[index]) & 0x3, "Grid")
+            wanted.append(("number", "set_value", f"{prefix}_program_{slot}_soc", {"value": socs[index]}))
+            wanted.append(("number", "set_value", f"{prefix}_program_{slot}_power", {"value": powers[index]}))
+            wanted.append(("select", "select_option", f"{select}_program_{slot}_charging", {"option": charge_name}))
     errors: List[str] = []
     for domain, service, entity, extra in wanted:
         current = (read_ha_entity_state(entity) or "").strip()
@@ -3002,11 +3259,16 @@ def planning_write_kw(raw: Optional[float]) -> Optional[float]:
     return kw
 
 
-def apply_planning_hold(settings: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def apply_planning_hold(
+    settings: Optional[Dict[str, Any]] = None,
+    live: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """Planung, keine Netzspitzen: angezeigter Zukauf ab 0,2 kW ins BMS-Register.
 
     Nur bei eingeschaltetem Schalter. Aus schreibt keinen Zukauf. Hielt die Planung
     vorher einen Wert, wird er freigegeben. Der Rest der letzten Tage (0,02 kW) zählt nicht.
+    Nach einem SOC-Stopp bleibt der Schalter an; geschrieben wird erst wieder, wenn
+    der Ladestand über dem Minimum der sechs Fenster liegt.
     """
     if settings is None:
         settings = load_settings()
@@ -3038,6 +3300,8 @@ def apply_planning_hold(settings: Optional[Dict[str, Any]] = None) -> Dict[str, 
         and settings.get("real_mode")
         and abs(float(settings.get("target_grid_kw") or 0) - kw) < 0.01
     ):
+        return settings
+    if settings.get("soc_stop") or _soc_floor_hit(settings, live):
         return settings
     return save_settings({"real_mode": True, "target_grid_kw": kw, "planning_hold": True})
 
@@ -3082,6 +3346,8 @@ def apply_community_hold(settings: Optional[Dict[str, Any]] = None) -> Dict[str,
         and settings.get("real_mode")
         and abs(float(settings.get("target_grid_kw") or 0) - kw) < 0.01
     ):
+        return settings
+    if settings.get("soc_stop") or _soc_floor_hit(settings):
         return settings
     return save_settings({"real_mode": True, "target_grid_kw": kw, "community_hold": True})
 
@@ -3143,6 +3409,8 @@ def apply_exchange_hold(settings: Optional[Dict[str, Any]] = None) -> Dict[str, 
         and abs(float(settings.get("target_grid_kw") or 0) - kw) < 0.01
     ):
         return settings
+    if settings.get("soc_stop") or _soc_floor_hit(settings):
+        return settings
     return save_settings({"real_mode": True, "target_grid_kw": kw, "exchange_hold": True})
 
 
@@ -3159,8 +3427,8 @@ def _ensure_mac_tracker() -> None:
 
     def loop() -> None:
         global _mac_tracker_last
-        # Sofort einmal, danach alle LOGGER_TRACK_GAP_SEC (3600 = stündlich) für jede gespeicherte MAC
-        _ensure_pv_poller()
+        # Sofort einmal, danach alle LOGGER_TRACK_GAP_SEC (3600 = stündlich) für jede gespeicherte MAC.
+        # Kein PV-Poller: die Anzeige liest nur Home Assistant, nicht die Solarman-Register.
         _mac_tracker_last = time.monotonic() - LOGGER_TRACK_GAP_SEC
         while True:
             try:
@@ -3185,14 +3453,16 @@ def _ensure_writer() -> None:
     def loop() -> None:
         while True:
             try:
-                settings = apply_community_hold(load_settings())
+                settings = load_settings()
+                live = read_live()
+                settings = apply_soc_gate(settings, live)
+                settings = apply_community_hold(settings)
                 if not settings.get("community_hold"):
                     settings = apply_exchange_hold(settings)
                 if not settings.get("community_hold") and not settings.get("exchange_hold"):
-                    settings = apply_planning_hold(settings)
+                    settings = apply_planning_hold(settings, live)
                 if settings.get("real_mode"):
                     reapply_dauerzukauf_test()
-                live = read_live()
                 plan = simulate(
                     live.get("grid_kw"),
                     live.get("battery_kw"),
@@ -3282,7 +3552,7 @@ def status(record: bool = True) -> Dict[str, Any]:
                 "control": bool(item.get("control")),
                 "role": "erzeugung",
                 "tracked_at": item.get("tracked_at") or "",
-                "pv_kw": _pv_cache.get(item.get("mac")) if not item.get("control") else None,
+                "pv_kw": None,
             }
             for item in (settings.get("tracked_inverters") or [])
         ],

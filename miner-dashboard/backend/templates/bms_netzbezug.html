@@ -123,7 +123,7 @@
 
   <div class="panel" style="max-width: none;">
     <h5 class="panel-title">Elektriker-Werte (Normalbetrieb)</h5>
-    <p style="color: var(--muted); font-size: 0.82rem; margin: 0 0 0.9rem;">So hat der Elektriker den Wechselrichter eingestellt. Diese Werte werden zurückgeschrieben, sobald „Ins Register schreiben“ aus ist. Die mit <span class="ceiling" style="margin:0;">Obergrenze</span> markierten Werte überschreitet die Steuerung nie.</p>
+    <p style="color: var(--muted); font-size: 0.82rem; margin: 0 0 0.9rem;">So hat der Elektriker den Wechselrichter eingestellt. Beim ersten Verbinden des Steuer-Loggers werden sie einmal gelesen. Danach nur noch mit dem Button, oder von Hand in den Feldern. Ausgeschaltet schreibt BMS genau diese Werte zurück. Die mit <span class="ceiling" style="margin:0;">Obergrenze</span> markierten Werte überschreitet die Steuerung nie.</p>
     <form id="installer_form" class="field-grid">
       <div>
         <label class="form-label" for="install_max_charge_a">Max. Laden (A)<span class="ceiling">Obergrenze</span></label>
@@ -196,6 +196,7 @@
     </form>
     <div class="action-row">
       <button type="submit" form="installer_form" class="btn-primary-custom">Elektriker-Werte speichern</button>
+      <button type="button" class="btn-primary-custom" id="install_read">Vom Wechselrichter neu lesen</button>
     </div>
     <p id="installer_hint" style="color: var(--muted); min-height: 1.2rem;"></p>
   </div>
@@ -305,9 +306,32 @@
   });
 
   const installerForm = document.getElementById("installer_form");
+  const installerHint = document.getElementById("installer_hint");
   installerForm.addEventListener("submit", function (event) {
     event.preventDefault();
-    post(new FormData(installerForm), document.getElementById("installer_hint"));
+    post(new FormData(installerForm), installerHint);
+  });
+
+  document.getElementById("install_read").addEventListener("click", async function () {
+    installerHint.textContent = "Wechselrichter wird gelesen…";
+    installerHint.style.color = "var(--muted)";
+    const response = await fetch("/api/bms-netzbezug/install-read", { method: "POST", credentials: "same-origin" });
+    const data = await response.json();
+    installerHint.textContent = data.message || (data.ok ? "Gelesen." : "Lesen fehlgeschlagen.");
+    installerHint.style.color = data.ok ? "var(--accent)" : "#f44336";
+    const saved = data.settings || {};
+    [
+      "install_max_charge_a",
+      "install_max_discharge_a",
+      "install_max_sell_w",
+      "install_max_import_w",
+      "install_shutdown_soc",
+      "install_restart_soc",
+      "install_low_soc"
+    ].forEach(function (key) {
+      const input = document.getElementById(key);
+      if (input && saved[key] != null) input.value = saved[key];
+    });
   });
 
   const writeSwitch = document.getElementById("real_mode");

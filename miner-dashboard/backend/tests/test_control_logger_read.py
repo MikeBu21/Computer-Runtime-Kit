@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Direktlesung des Steuer-Loggers: Register, Vorzeichen, Stromfluss ohne HA-Snapshot."""
+"""Anzeige-Werte kommen aus Home Assistant, nicht aus Solarman-Registern."""
 from __future__ import annotations
 
 import os
@@ -9,128 +9,74 @@ from pathlib import Path
 from unittest import mock
 
 import bms_seite
+import dashboard_battery
 import flow_roles
 import miner_flow_data
 
 
-LOGGER_SERIAL = 2965822000
+def _snapshot() -> dict:
+    def sensor(state, unit):
+        return {
+            "state": state,
+            "unit_of_measurement": unit,
+            "attributes": {"unit_of_measurement": unit, "state_class": "measurement"},
+        }
 
-
-def _settings(**overrides):
-    data = {
-        "logger_ip": "192.168.1.176",
-        "modbus_host": "10.0.0.5",
-        "modbus_port": 502,
-        "modbus_unit": 1,
-        "logger_serial": LOGGER_SERIAL,
+    entities = {
+        "Beispiel": sensor("1225", "W"),
+        "Beispiel": sensor("18", "W"),
+        "Beispiel": sensor("41", "%"),
+        "Beispiel": sensor("-180", "W"),
+        "Beispiel": sensor("1195", "W"),
+        # Dieselbe Anlage noch einmal, plus ein Sollwert. Darf nicht in die Summe.
+        "sensor.inverter_2_microinverter_power": sensor("9000", "W"),
+        "number.192_168_1_176_pv_power": sensor("15000", "W"),
     }
-    data.update(overrides)
-    return data
+    return {"devices": {"logger": {"entities": entities}}, "unassigned_entities": {}}
 
 
 class ControlLoggerReadTests(unittest.TestCase):
-    def test_registers_and_signs(self):
-        seen = []
+    def test_pv_mapping_keeps_only_the_measurement(self):
+        from ha_entity_mapping import load_config, normalize_field_entry
 
-        def fake_read(host, port, unit, serial, address):
-            seen.append((host, port, unit, serial, address))
-            return {
-                bms_seite.REG_BATTERY_SOC: 64,
-                bms_seite.REG_BATTERY_POWER: 2500,  # Solarman: Entladen
-                bms_seite.REG_GRID_POWER: 0xFC18,  # -1000 W, Einspeisung
-                0x00BA: 2000,
-                0x00BB: 1500,
-                0x00BC: 250,
-                0x00BD: 0,
-            }[address]
-
-        with mock.patch.object(bms_seite, "load_settings", return_value=_settings()):
-            with mock.patch.object(bms_seite, "read_solarman_holding", side_effect=fake_read):
-                powers = bms_seite.read_control_logger_powers()
-
-        self.assertEqual(powers["soc_percent"], 64.0)
-        self.assertEqual(powers["battery_kw"], -2.5)
-        self.assertEqual(powers["grid_kw"], -1.0)
-        self.assertEqual(powers["pv_kw"], 3.75)
-        addresses = [item[4] for item in seen]
-        self.assertNotIn(0x00B2, addresses)
+        entry = normalize_field_entry(load_config()["fields"]["pv"])
         self.assertEqual(
-            set(addresses),
-            {
-                bms_seite.REG_BATTERY_SOC,
-                bms_seite.REG_BATTERY_POWER,
-                bms_seite.REG_GRID_POWER,
-                *bms_seite.PV_POWER_REGISTERS,
-            },
+            [sensor["entity_id"] for sensor in entry["sensors"]],
+            ["Beispiel"],
         )
-        for host, port, unit, serial, _address in seen:
-            self.assertEqual(host, "192.168.1.176")
-            self.assertEqual(port, 8899)
-            self.assertEqual(unit, 1)
-            self.assertEqual(serial, LOGGER_SERIAL)
 
-    def test_charge_and_import_and_modbus_host_fallback(self):
-        def fake_read(host, port, unit, serial, address):
-            return {
-                bms_seite.REG_BATTERY_SOC: 80,
-                bms_seite.REG_BATTERY_POWER: 0xFCE0,  # -800 W, Laden
-                bms_seite.REG_GRID_POWER: 1800,
-                0x00BA: 0,
-                0x00BB: 0,
-                0x00BC: 0,
-                0x00BD: 0,
-            }[address]
+    def test_powers_come_from_mapped_ha_fields(self):
+        with mock.patch("energy_monitor.ha_live_reader.load_snapshot", return_value=_snapshot()):
+            with mock.patch.object(bms_seite, "read_solarman_holding") as read:
+                with mock.patch.object(bms_seite, "load_settings", return_value={"logger_serial": 0}):
+                    powers = bms_seite.read_control_logger_powers()
+                    live = bms_seite._read_live_now()
 
-        settings = _settings(logger_ip="", modbus_host="192.168.1.50", modbus_unit=1)
-        with mock.patch.object(bms_seite, "load_settings", return_value=settings):
-            with mock.patch.object(bms_seite, "read_solarman_holding", side_effect=fake_read) as read:
-                powers = bms_seite.read_control_logger_powers()
-
-        self.assertEqual(powers["battery_kw"], 0.8)
-        self.assertEqual(powers["grid_kw"], 1.8)
-        self.assertEqual(powers["soc_percent"], 80.0)
-        self.assertEqual(powers["pv_kw"], 0.0)
-        self.assertEqual(read.call_args[0][0], "192.168.1.50")
-        self.assertEqual(read.call_args[0][1], 8899)
-
-    def test_three_phase_reads_measure_registers_not_setpoints(self):
-        seen = []
-
-        def fake_read(host, port, unit, serial, address):
-            seen.append(address)
-            return {
-                bms_seite.P3_BATTERY_SOC: 41,
-                bms_seite.P3_BATTERY_POWER: 0xFCE0,  # -800 W, Laden
-                bms_seite.P3_GRID_LOW: 12,
-                bms_seite.P3_GRID_HIGH: 0,
-                0x02A0: 1800,
-                0x02A1: 2200,
-                0x02A2: 0,
-                0x02A3: 0,
-            }[address]
-
-        settings = _settings(inverter="deye_p3")
-        with mock.patch.object(bms_seite, "load_settings", return_value=settings):
-            with mock.patch.object(bms_seite, "read_solarman_holding", side_effect=fake_read):
-                powers = bms_seite.read_control_logger_powers()
-
+        read.assert_not_called()
+        self.assertEqual(powers["pv_kw"], 1.225)
+        self.assertEqual(powers["grid_kw"], 0.018)
         self.assertEqual(powers["soc_percent"], 41.0)
-        self.assertEqual(powers["battery_kw"], 0.8)
-        self.assertEqual(powers["grid_kw"], 0.01)
-        self.assertEqual(powers["pv_kw"], 4.0)
-        self.assertNotIn(0x00B8, seen)
-        self.assertNotIn(0x00BE, seen)
-        self.assertNotIn(0x00BA, seen)
+        # Mapping-Vorzeichen „-“ dreht die Solarman-Angabe (−180 W) auf +0,18 kW.
+        self.assertEqual(powers["battery_kw"], 0.18)
+        self.assertEqual(live["source"], "Home Assistant")
+        self.assertEqual(live["pv_kw"], 1.225)
+        self.assertEqual(live["grid_kw"], 0.018)
+        self.assertEqual(live["soc_percent"], 41.0)
+        self.assertEqual(live["battery_kw"], 0.18)
 
-    def test_read_error_stays_empty_and_live_does_not_ask_ha(self):
-        with mock.patch.object(bms_seite, "load_settings", return_value=_settings()):
-            with mock.patch.object(bms_seite, "read_solarman_holding", side_effect=OSError("weg")):
+    def test_missing_snapshot_does_not_read_modbus_or_scraper(self):
+        with mock.patch(
+            "energy_monitor.ha_live_reader.load_snapshot",
+            side_effect=FileNotFoundError("weg"),
+        ):
+            with mock.patch.object(bms_seite, "read_solarman_holding") as read:
                 with mock.patch.object(bms_seite, "_configured_house_kw", return_value=0.4):
                     with mock.patch("ha_device_control.read_ha_entity_state") as ha:
                         with mock.patch("dashboard_battery.load_battery_data") as battery:
                             with mock.patch("dashboard_control.get_grid_kw_for_control") as grid:
                                 powers = bms_seite.read_control_logger_powers()
                                 live = bms_seite._read_live_now()
+
         self.assertEqual(
             powers,
             {"soc_percent": None, "battery_kw": None, "grid_kw": None, "pv_kw": None},
@@ -138,45 +84,38 @@ class ControlLoggerReadTests(unittest.TestCase):
         self.assertIsNone(live["soc_percent"])
         self.assertIsNone(live["battery_kw"])
         self.assertIsNone(live["grid_kw"])
+        self.assertIsNone(live["pv_kw"])
         self.assertEqual(live["load_kw"], 0.4)
-        self.assertEqual(live["source"], "Direkt vom Solarman-Logger")
+        self.assertEqual(live["source"], "Home Assistant")
+        read.assert_not_called()
         ha.assert_not_called()
         battery.assert_not_called()
         grid.assert_not_called()
 
-    def test_missing_logger_serial_does_not_read(self):
-        with mock.patch.object(bms_seite, "load_settings", return_value=_settings(logger_serial=0)):
-            with mock.patch.object(bms_seite, "read_solarman_holding") as read:
-                powers = bms_seite.read_control_logger_powers()
-        self.assertIsNone(powers["soc_percent"])
-        self.assertIsNone(powers["battery_kw"])
-        self.assertIsNone(powers["grid_kw"])
-        self.assertIsNone(powers["pv_kw"])
-        read.assert_not_called()
-
-    def test_extra_inverter_flow_skips_control_logger(self):
+    def test_extra_inverter_flow_does_not_read_modbus(self):
         settings = {
             "tracked_inverters": [
                 {
                     "control": True,
                     "mac": "aa:aa:aa:aa:aa:aa",
                     "flow_field_id": "control",
-                    "pv_kw": 9.0,
+                    "pv_kw": 11.8,
                     "name": "Steuer-Logger",
                 },
                 {
                     "control": False,
                     "mac": "bb:bb:bb:bb:bb:bb",
                     "flow_field_id": "wrbb",
-                    "pv_kw": 1.5,
+                    "pv_kw": 11.8,
                     "name": "WR2",
                 },
             ]
         }
         with mock.patch.object(bms_seite, "load_settings", return_value=settings):
-            values = bms_seite.extra_inverter_flow_values()
-        self.assertEqual([item["flow_field_id"] for item in values], ["wrbb"])
-        self.assertEqual(values[0]["kw"], 1.5)
+            with mock.patch.object(bms_seite, "read_solarman_holding") as read:
+                values = bms_seite.extra_inverter_flow_values()
+        self.assertEqual(values, [])
+        read.assert_not_called()
 
 
 class ControlLoggerFlowTests(unittest.TestCase):
@@ -187,64 +126,69 @@ class ControlLoggerFlowTests(unittest.TestCase):
             "custom_flow_fields": [],
         }
 
-    def test_flow_takes_direct_values_not_ha_snapshot(self):
+    def test_flow_uses_ha_snapshot_not_file_or_modbus(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp) / "backend"
             em = base / "energy_monitor"
             em.mkdir(parents=True)
-            (em / "pv_value.txt").write_text("0.2", encoding="utf-8")
-            (em / "energy_value.txt").write_text("8.0", encoding="utf-8")
-            (em / "wasserkraft_value.txt").write_text("2.0", encoding="utf-8")
+            (em / "pv_value.txt").write_text("9.0", encoding="utf-8")
+            (em / "energy_value.txt").write_text("9.0", encoding="utf-8")
             (em / "wohnhaus_value.txt").write_text("9.0", encoding="utf-8")
+            (em / "wasserkraft_value.txt").write_text("9.0", encoding="utf-8")
             os.environ["MINER_RAM_CACHE"] = "0"
             asked = []
 
             def fake_signed(field_key, ha_cfg, snapshot):
                 asked.append(field_key)
-                if field_key == "wohnhaus":
-                    return 1.7
-                if field_key in ("pv", "kelag", "battery_power"):
-                    return 99.0
-                return None
+                return {
+                    "pv": 1.225,
+                    "kelag": 0.018,
+                    "battery_power": 0.18,
+                    "wohnhaus": 1.195,
+                    "wasserkraft": 0.0,
+                    "battery_soc": 41.0,
+                }.get(field_key)
 
             extra = [{
                 "flow_field_id": "wrbb",
                 "name": "WR2",
                 "role": "erzeugung",
-                "kw": 1.5,
+                "kw": 11.8,
             }]
             with mock.patch.object(miner_flow_data, "_load_dash_cfg", return_value=self._dash()):
                 with mock.patch.object(miner_flow_data, "_signed_ha_field_kw", side_effect=fake_signed):
-                    with mock.patch.object(
-                        miner_flow_data,
-                        "_control_logger_builtin_kw",
-                        return_value={"pv": 4.2, "kelag": -1.2, "battery": 0.8},
-                    ):
-                        with mock.patch("bms_seite.extra_inverter_flow_values", return_value=extra):
+                    with mock.patch("bms_seite.extra_inverter_flow_values", return_value=extra) as extra_call:
+                        with mock.patch("bms_seite.read_solarman_holding") as read:
                             with mock.patch(
                                 "dashboard_sources.resolve_custom_flow_values", return_value={}
                             ):
                                 flow = miner_flow_data.build_flow_response(
-                                    str(base), battery_power_kw=-9.0
+                                    str(base),
+                                    battery_soc_loader=lambda: "0",
+                                    battery_power_kw=9.0,
                                 )
 
-        self.assertNotIn("pv", asked)
-        self.assertNotIn("kelag", asked)
-        self.assertNotIn("battery_power", asked)
+        self.assertIn("pv", asked)
+        self.assertIn("kelag", asked)
+        self.assertIn("battery_power", asked)
+        self.assertIn("battery_soc", asked)
         self.assertIn("wohnhaus", asked)
-        self.assertAlmostEqual(flow["role_sums"]["erzeugung"], 7.7, places=3)
-        self.assertAlmostEqual(flow["role_sums"]["netz"], -1.2, places=3)
-        self.assertAlmostEqual(flow["role_sums"]["speicher"], 0.8, places=3)
-        self.assertAlmostEqual(flow["role_sums"]["verbraucher"], 1.7, places=3)
-        self.assertEqual(flow["pv"], "4.2")
-        self.assertEqual(flow["grid"], "-1.2")
+        extra_call.assert_not_called()
+        read.assert_not_called()
+        self.assertAlmostEqual(flow["role_sums"]["erzeugung"], 1.225, places=3)
+        self.assertAlmostEqual(flow["role_sums"]["netz"], 0.018, places=3)
+        self.assertAlmostEqual(flow["role_sums"]["speicher"], 0.18, places=3)
+        self.assertAlmostEqual(flow["role_sums"]["verbraucher"], 1.195, places=3)
+        self.assertEqual(flow["pv"], "1.2")
+        self.assertEqual(flow["grid"], "0")
+        self.assertEqual(flow["battery_soc"], "41")
         by_point = {item["point"]: item["kw"] for item in flow["role_details"]}
-        self.assertEqual(by_point["pv"], 4.2)
-        self.assertEqual(by_point["kelag"], -1.2)
-        self.assertEqual(by_point["battery"], 0.8)
-        self.assertEqual(by_point["custom:wrbb"], 1.5)
+        self.assertEqual(by_point["pv"], 1.225)
+        self.assertEqual(by_point["kelag"], 0.018)
+        self.assertEqual(by_point["battery"], 0.18)
+        self.assertNotIn("custom:wrbb", by_point)
 
-    def test_without_direct_values_file_fallback_ignores_ha_snapshot(self):
+    def test_file_cache_is_used_only_when_ha_has_no_value(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp) / "backend"
             em = base / "energy_monitor"
@@ -252,37 +196,63 @@ class ControlLoggerFlowTests(unittest.TestCase):
             (em / "pv_value.txt").write_text("3.0", encoding="utf-8")
             (em / "energy_value.txt").write_text("0.4", encoding="utf-8")
             os.environ["MINER_RAM_CACHE"] = "0"
-            asked = []
-
-            def fake_signed(field_key, ha_cfg, snapshot):
-                asked.append(field_key)
-                if field_key in ("pv", "kelag", "battery_power"):
-                    return 99.0
-                return None
 
             with mock.patch.object(miner_flow_data, "_load_dash_cfg", return_value=self._dash()):
-                with mock.patch.object(miner_flow_data, "_signed_ha_field_kw", side_effect=fake_signed):
-                    with mock.patch.object(
-                        miner_flow_data,
-                        "_control_logger_builtin_kw",
-                        return_value={"pv": None, "kelag": None, "battery": None},
-                    ):
-                        with mock.patch("bms_seite.extra_inverter_flow_values", return_value=[]):
-                            with mock.patch(
-                                "dashboard_sources.resolve_custom_flow_values", return_value={}
-                            ):
-                                flow = miner_flow_data.build_flow_response(
-                                    str(base), battery_power_kw=-0.8
-                                )
+                with mock.patch.object(miner_flow_data, "_signed_ha_field_kw", return_value=None):
+                    with mock.patch("bms_seite.extra_inverter_flow_values", return_value=[{"kw": 11.8}]) as extra:
+                        with mock.patch(
+                            "dashboard_sources.resolve_custom_flow_values", return_value={}
+                        ):
+                            flow = miner_flow_data.build_flow_response(
+                                str(base),
+                                battery_soc_loader=lambda: "40",
+                                battery_power_kw=-0.8,
+                            )
 
-        self.assertNotIn("pv", asked)
-        self.assertNotIn("kelag", asked)
-        self.assertNotIn("battery_power", asked)
+        extra.assert_not_called()
         self.assertAlmostEqual(flow["role_sums"]["erzeugung"], 3.0, places=3)
         self.assertAlmostEqual(flow["role_sums"]["netz"], 0.4, places=3)
         self.assertAlmostEqual(flow["role_sums"]["speicher"], -0.8, places=3)
         self.assertEqual(flow["pv"], "3.0")
         self.assertEqual(flow["grid"], "0.4")
+        self.assertEqual(flow["battery_soc"], "40")
+
+
+class BatteryDisplaySourceTests(unittest.TestCase):
+    def test_loader_prefers_ha_snapshot_over_scraper_file(self):
+        paths = [str(path) for path in dashboard_battery._battery_data_paths()]
+        self.assertEqual(paths, [str(dashboard_battery._ha_cache_path())])
+        self.assertTrue(paths[0].endswith("energy_monitor/daten.json"))
+        self.assertNotIn(str(Path.home() / "daten.json"), paths)
+
+        with mock.patch.object(
+            dashboard_battery,
+            "_load_ha_battery",
+            return_value={"soc": 41.0, "power_kw": 0.18, "source": "home_assistant"},
+        ):
+            with mock.patch.object(
+                dashboard_battery,
+                "_load_ram_battery",
+                return_value={"soc": 0, "power_kw": 0.0},
+            ) as ram:
+                data = dashboard_battery.load_battery_data()
+
+        ram.assert_not_called()
+        self.assertEqual(data["soc"], "41")
+        self.assertEqual(data["power_kw"], 0.18)
+        self.assertEqual(data["source"], "home_assistant")
+
+    def test_cache_file_is_not_the_home_scraper(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "daten.json"
+            cache.write_text('{"soc": 55, "power_kw": -0.2}', encoding="utf-8")
+            with mock.patch.object(dashboard_battery, "_load_ha_battery", return_value=None):
+                with mock.patch.object(dashboard_battery, "_load_ram_battery", return_value=None):
+                    with mock.patch.object(dashboard_battery, "_ha_cache_path", return_value=cache):
+                        data = dashboard_battery.load_battery_data()
+        self.assertEqual(data["soc"], "55")
+        self.assertEqual(data["power_kw"], -0.2)
+        self.assertEqual(data["source"], "ha_cache")
 
 
 if __name__ == "__main__":

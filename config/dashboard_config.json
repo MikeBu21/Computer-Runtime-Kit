@@ -2,6 +2,7 @@
   "updated_at": null,
   "flow_hidden_builtins": [],
   "flow_builtin_slots": {},
+  "flow_builtin_labels": {},
   "flow_point_roles": {
     "pv": "erzeugung",
     "wasserkraft": "erzeugung",

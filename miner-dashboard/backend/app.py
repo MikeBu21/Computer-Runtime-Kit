@@ -679,6 +679,15 @@ def api_bms_netzbezug_settings():
     return jsonify({"ok": True, "message": "Gespeichert.", **saved})
 
 
+@app.route('/api/bms-netzbezug/install-read', methods=['POST'])
+def api_bms_install_read():
+    from bms_seite import capture_install_from_inverter
+
+    result = capture_install_from_inverter()
+    code = 200 if result.get("ok") else 409
+    return jsonify(result), code
+
+
 @app.route('/api/bms-netzbezug/mac-scan', methods=['POST'])
 def api_bms_netzbezug_mac_scan():
     from bms_seite import track_logger
@@ -2153,16 +2162,16 @@ import time
 
 @app.route('/flow_data')
 def flow_data():
+    # Batterieleistung nicht als zweite Quelle in die Rollensumme geben.
+    # build_flow_response liest SOC, Batterie, PV und Netz aus dem HA-Snapshot.
+    flow = build_flow_response(os.path.dirname(__file__), load_battery_soc, None)
     bat = load_battery_data()
-    flow = build_flow_response(
-        os.path.dirname(__file__),
-        load_battery_soc,
-        bat.get("power_kw"),
-    )
-    flow["battery_soc"] = bat.get("soc") or flow.get("battery_soc")
-    flow["battery_mode"] = bat.get("mode")
-    flow["battery_display_kw"] = bat.get("display_kw")
-    flow["battery_power_kw"] = bat.get("power_kw")
+    if bat.get("source") in ("home_assistant", "ha_cache"):
+        if bat.get("soc"):
+            flow["battery_soc"] = bat.get("soc")
+        flow["battery_mode"] = bat.get("mode")
+        flow["battery_display_kw"] = bat.get("display_kw")
+        flow["battery_power_kw"] = bat.get("power_kw")
     return jsonify(flow)
 
 

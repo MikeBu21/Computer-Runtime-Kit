@@ -209,19 +209,19 @@ class ArchiveTests(unittest.TestCase):
 
 
 class LockTests(unittest.TestCase):
-    def test_weekly_stays_inside_same_week(self):
+    def test_weekly_follows_raw_inside_same_week(self):
         today = date(2026, 9, 29)
         first = apply_recommendation_locks(
             {}, 1.0, today, season_shift=False, fingerprint="a"
         )
         second = apply_recommendation_locks(
-            first, 3.0, today, season_shift=False, fingerprint="a"
+            first, 3.0, today, season_shift=True, fingerprint="a"
         )
-        self.assertEqual(second["weekly_kw"], 1.0)
+        self.assertEqual(second["weekly_kw"], 3.0)
         self.assertEqual(second["daily_kw"], 1.0)
-        self.assertFalse(second["weekly_updated"])
+        self.assertTrue(second["weekly_updated"])
 
-    def test_daily_moves_slightly_next_day_weekly_waits(self):
+    def test_daily_moves_slightly_next_day_weekly_follows_raw(self):
         today = date(2026, 9, 29)
         first = apply_recommendation_locks(
             {}, 2.0, today, season_shift=False, fingerprint="a"
@@ -229,7 +229,7 @@ class LockTests(unittest.TestCase):
         nxt = apply_recommendation_locks(
             first, 3.0, date(2026, 9, 30), season_shift=False, fingerprint="a"
         )
-        self.assertEqual(nxt["weekly_kw"], 2.0)
+        self.assertEqual(nxt["weekly_kw"], 3.0)
         self.assertGreater(nxt["daily_kw"], 2.0)
         self.assertLess(nxt["daily_kw"], 2.4)
 

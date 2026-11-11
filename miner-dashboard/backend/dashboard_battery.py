@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Batterie-SOC aus daten.json für Dashboard."""
+"""Batterie-SOC und Leistung fürs Dashboard, nur aus Home Assistant.
+
+Live-Wert ist der HA-Snapshot über ha_entity_mapping. Die Datei
+energy_monitor/daten.json ist nur der Cache, den ha_live_reader daraus schreibt.
+~/daten.json und andere Scraper-Dateien werden nicht gelesen.
+"""
 from __future__ import annotations
 
 import json
@@ -44,27 +49,46 @@ def _parse_soc_value(value: Any, key_hint: str = "") -> Optional[str]:
     return None
 
 
+def _ha_cache_path() -> Path:
+    """Nur die Datei, die ha_live_reader aus dem HA-Snapshot schreibt."""
+    return Path(__file__).resolve().parent / "energy_monitor" / "daten.json"
+
+
 def _battery_data_paths() -> list[Path]:
-    """Alle möglichen daten.json-Quellen (Scraper schreibt typisch nach ~/daten.json)."""
-    base = Path(__file__).resolve().parent
-    home = Path.home()
-    candidates = [
-        home / "daten.json",
-        base / "daten.json",
-        base / "energy_monitor" / "daten.json",
-        base.parent / "daten.json",
-    ]
-    seen: set[Path] = set()
-    paths: list[Path] = []
-    for path in candidates:
+    return [_ha_cache_path()]
+
+
+def _load_ha_battery() -> Optional[dict]:
+    """SOC und Batterieleistung aus dem Live-Snapshot, mit dem Vorzeichen aus dem Mapping."""
+    try:
+        from energy_monitor.ha_live_reader import load_snapshot
+        from ha_entity_mapping import (
+            FIELD_DEFINITIONS,
+            compute_field_value,
+            load_config,
+            normalize_field_entry,
+        )
+
+        cfg = load_config()
+        snapshot = load_snapshot()
+        fields = cfg.get("fields") or {}
+    except Exception:
+        return None
+    out: dict[str, Any] = {}
+    for key, field_name in (("soc", "battery_soc"), ("power_kw", "battery_power")):
+        entry = normalize_field_entry(fields.get(field_name) or {})
+        if not entry.get("enabled") or not entry.get("sensors"):
+            continue
         try:
-            resolved = path.resolve()
+            value = compute_field_value(entry, FIELD_DEFINITIONS[field_name], snapshot)
         except Exception:
-            resolved = path
-        if resolved not in seen:
-            seen.add(resolved)
-            paths.append(path)
-    return paths
+            value = None
+        if value is not None:
+            out[key] = value
+    if not out:
+        return None
+    out["source"] = "home_assistant"
+    return out
 
 
 def _load_ram_battery() -> Optional[dict]:
@@ -80,24 +104,29 @@ def _load_ram_battery() -> Optional[dict]:
         return None
 
 
+def _tag_cache(data: Optional[dict]) -> Optional[dict]:
+    if not isinstance(data, dict) or not data:
+        return None
+    tagged = dict(data)
+    tagged["source"] = "ha_cache"
+    return tagged
+
+
 def _load_latest_battery_file() -> Optional[dict]:
-    ram = _load_ram_battery()
+    live = _load_ha_battery()
+    if live:
+        return live
+    ram = _tag_cache(_load_ram_battery())
     if ram:
         return ram
-    best_data: Optional[dict] = None
-    best_mtime = -1.0
-    for path in _battery_data_paths():
-        if not path.is_file():
-            continue
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            mtime = path.stat().st_mtime
-            if mtime > best_mtime:
-                best_mtime = mtime
-                best_data = data
-        except Exception:
-            continue
-    return best_data
+    path = _ha_cache_path()
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return _tag_cache(data if isinstance(data, dict) else None)
 
 
 def load_battery_soc() -> Optional[str]:
@@ -159,4 +188,5 @@ def load_battery_data() -> dict[str, Any]:
         "mode": display["mode"],
         "display_kw": display["display_kw"],
         "power_label": display["label"],
+        "source": data.get("source") if isinstance(data, dict) else None,
     }

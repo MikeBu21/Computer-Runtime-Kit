@@ -8,8 +8,6 @@ from unittest import mock
 import miner_flow_data
 import ram_cache
 
-_NO_DIRECT = {"pv": None, "kelag": None, "battery": None}
-
 
 class MinerFlowRamTests(unittest.TestCase):
     def test_build_flow_prefers_ram_over_stale_sd(self):
@@ -32,7 +30,7 @@ class MinerFlowRamTests(unittest.TestCase):
             ram_cache.write_text(base, "pv_value.txt", "0.0", scope="energy_monitor")
             ram_cache.write_text(base, "energy_value.txt", "0.017", scope="energy_monitor")
 
-            with mock.patch.object(miner_flow_data, "_control_logger_builtin_kw", return_value=_NO_DIRECT):
+            with mock.patch.object(miner_flow_data, "_signed_ha_field_kw", return_value=None):
                 flow = miner_flow_data.build_flow_response(str(base))
             self.assertEqual(flow["haus"], "0.547")
             self.assertEqual(flow["pv"], "0.0")
@@ -52,7 +50,7 @@ class MinerFlowRamTests(unittest.TestCase):
             (em / "pv_value.txt").write_text("3.4", encoding="utf-8")
             (em / "energy_value.txt").write_text("0.5", encoding="utf-8")
 
-            with mock.patch.object(miner_flow_data, "_control_logger_builtin_kw", return_value=_NO_DIRECT):
+            with mock.patch.object(miner_flow_data, "_signed_ha_field_kw", return_value=None):
                 flow = miner_flow_data.build_flow_response(str(base))
             self.assertEqual(flow["haus"], "1.2")
             self.assertEqual(flow["pv"], "3.4")

@@ -171,69 +171,16 @@ def safe_float(value):
         return None
 
 
-def find_soc(value, key_hint=""):
-    if isinstance(value, dict):
-        preferred = (
-            "soc", "SoC", "SOC", "battery_soc", "battery", "batterie",
-            "value", "wert", "percent", "percentage", "prozent",
-            "ladestand", "ladezustand", "speicher", "akku", "capacity",
-        )
-        for key in preferred:
-            if key in value and value[key] not in (None, ""):
-                found = find_soc(value[key], key)
-                if found is not None:
-                    return found
-        if len(value) == 1:
-            key, nested = next(iter(value.items()))
-            return find_soc(nested, str(key))
-        for key, nested in value.items():
-            found = find_soc(nested, str(key))
-            if found is not None:
-                return found
-    elif isinstance(value, list):
-        for item in value:
-            found = find_soc(item, key_hint)
-            if found is not None:
-                return found
-    elif value not in (None, ""):
-        text = str(value).strip().replace("%", "").replace(",", ".")
-        hint = key_hint.lower()
-        if any(word in hint for word in ("soc", "battery", "batterie", "lade", "percent", "prozent", "value", "wert", "speicher", "akku", "capacity")):
-            return text
-        try:
-            number = float(text)
-            if 0 <= number <= 100:
-                return str(int(number) if number.is_integer() else number)
-        except Exception:
-            pass
-    return None
-
-
 def load_battery_soc():
-    candidates = [
-        Path.home() / "daten.json",
-        BASE_DIR / "daten.json",
-        BASE_DIR / "energy_monitor" / "daten.json",
-        BASE_DIR / "shared_settings" / "daten.json",
-        BASE_DIR.parent / "daten.json",
-    ]
-    for root in (BASE_DIR.parent, BASE_DIR):
-        if root.exists():
-            for path in root.rglob("daten.json"):
-                if path not in candidates:
-                    candidates.append(path)
+    """Gleicher Ladestand wie das Web-Dashboard: Home Assistant, sonst dessen Cache."""
+    try:
+        from dashboard_battery import load_battery_soc as ha_soc
 
-    for path in candidates:
-        if not path.exists():
-            continue
-        try:
-            with path.open("r") as f:
-                data = json.load(f)
-            soc = find_soc(data)
-            if soc is not None:
-                return soc
-        except Exception:
-            continue
+        found = ha_soc()
+        if found:
+            return found
+    except Exception:
+        pass
     return "n/a"
 
 
@@ -373,10 +320,8 @@ def build_dashboard_status_html() -> str:
     ha_on = ha_monitor_enabled(config)
 
     bat = load_battery_data()
-    flow = build_flow_response(
-        str(BASE_DIR), battery_soc_loader=None, battery_power_kw=bat.get("power_kw")
-    )
-    soc = bat.get("soc") or load_battery_soc()
+    flow = build_flow_response(str(BASE_DIR), battery_soc_loader=None, battery_power_kw=None)
+    soc = bat.get("soc") or flow.get("battery_soc") or load_battery_soc()
 
     lines = [
         "⚡ <b>MINING DASHBOARD</b>",

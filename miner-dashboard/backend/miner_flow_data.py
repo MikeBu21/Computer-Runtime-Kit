@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
-Stromfluss-Daten für Dashboard – liest energy_monitor/*.txt und enline_values.json.
+Stromfluss-Daten für Dashboard.
 
-Bei MINER_RAM_CACHE=1 kommen Live-Werte aus /dev/shm (wie ha_live_reader schreibt),
-sonst von der SD. Sonst bleiben alte SD-Dateien sichtbar (z. B. Wohnhaus 1.789).
+Anzeige-Werte kommen nur aus den zugeordneten Home-Assistant-Sensoren
+(ha_entity_mapping + HA-Snapshot). Dateien unter energy_monitor/ sind lediglich
+der Cache, den ha_live_reader aus demselben Snapshot schreibt, und gelten erst,
+wenn der Snapshot für das Feld keinen Wert hat.
 
 Rollen (Erzeugung / Netz / Speicher / Verbraucher) kommen aus dashboard_config;
 gleiche Rollen werden intern summiert.
@@ -94,6 +96,13 @@ def _format_kw(value: float) -> str:
     return str(rounded)
 
 
+def _format_soc(value: float) -> str:
+    rounded = round(float(value), 1)
+    if rounded == int(rounded):
+        return str(int(rounded))
+    return str(rounded)
+
+
 VERBRAUCH_GESAMT_FILE = "verbrauch_gesamt_value.txt"
 BETRIEB_ANZEIGE_FILE = "betrieb_anzeige_value.txt"
 
@@ -169,29 +178,15 @@ def _signed_ha_field_kw(
         return None
 
 
-# Builtin-Punkte des Steuer-Loggers. Die kommen aus der Direktlesung, nicht aus dem HA-Snapshot.
-_CONTROL_LOGGER_POINTS = ("pv", "kelag", "battery")
-
-
-def _control_logger_builtin_kw() -> Dict[str, Optional[float]]:
-    """PV, Netz und Batterie des Steuer-Loggers in kW. None, wenn er nicht antwortet."""
+def _load_ha_context() -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    """Mapping und Live-Snapshot. Beides fehlt gemeinsam, dann gilt nur der HA-Cache."""
     try:
-        from bms_seite import read_control_logger_powers
+        from dashboard_sources import _load_ha_snapshot
+        from ha_entity_mapping import load_config as load_ha_config
 
-        data = read_control_logger_powers() or {}
+        return load_ha_config(), _load_ha_snapshot()
     except Exception:
-        data = {}
-
-    def _num(key: str) -> Optional[float]:
-        raw = data.get(key)
-        if raw is None or raw == "":
-            return None
-        try:
-            return float(raw)
-        except (TypeError, ValueError):
-            return None
-
-    return {"pv": _num("pv_kw"), "kelag": _num("grid_kw"), "battery": _num("battery_kw")}
+        return None, None
 
 
 def _collect_role_contributions(
@@ -204,13 +199,15 @@ def _collect_role_contributions(
     betrieb_f: Optional[float],
     battery_power_kw: Optional[float],
     dash_cfg: Dict[str, Any],
-    direct_builtin: Optional[Dict[str, Optional[float]]] = None,
+    ha_cfg: Optional[Dict[str, Any]] = None,
+    snapshot: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Dict[str, float], Dict[str, Dict[str, Any]], List[Dict[str, Any]]]:
     """Summiert sichtbare Punkte nach Rolle (mit Sensor-Vorzeichen +/−).
 
     Rollensumme = Summe der vorzeichenbehafteten Punktwerte.
-    Punktwert = Summe der Sensoren mit ihrem Plus-/Minus-Präfix (wie im Modal).
+    Punktwert = Summe der zugeordneten HA-Sensoren mit Plus-/Minus-Präfix.
     Negative Beiträge (Minus-Präfix) werden abgezogen, nie als Betrag addiert.
+    Dateiwerte sind nur der Cache von ha_live_reader, nie eine zweite Quelle.
     """
     from flow_roles import (
         add_to_role_sum,
@@ -222,23 +219,8 @@ def _collect_role_contributions(
     hidden = _hidden_builtins(dash_cfg)
     sums = empty_role_sums()
     details: List[Dict[str, Any]] = []
-    if direct_builtin is None:
-        direct_builtin = _control_logger_builtin_kw()
 
-    snapshot = None
-    ha_cfg = None
-    try:
-        from dashboard_sources import _load_ha_snapshot
-        from ha_entity_mapping import load_config as load_ha_config
-
-        snapshot = _load_ha_snapshot()
-        ha_cfg = load_ha_config()
-    except Exception:
-        snapshot = None
-        ha_cfg = None
-
-    # Steuer-Logger (pv, kelag, battery): Direktwerte, sonst Datei/Parameter, nie der HA-Snapshot.
-    # Wasserkraft, Wohnhaus, Betrieb: weiter Live-HA (mit +/−), sonst Datei.
+    # Jeder Builtin-Punkt: Live-HA, und nur wenn das fehlt der Datei-Cache.
     builtin_file_fallback = {
         "pv": pv_f,
         "wasserkraft": hydro_f,
@@ -260,16 +242,11 @@ def _collect_role_contributions(
             continue
         role = builtin_role(dash_cfg, point_key)
         value = None
-        if point_key in _CONTROL_LOGGER_POINTS:
-            value = direct_builtin.get(point_key)
-            if value is None:
-                value = fallback
-        else:
-            ha_key = builtin_ha_field.get(point_key)
-            if ha_key:
-                value = _signed_ha_field_kw(ha_key, ha_cfg, snapshot)
-            if value is None:
-                value = fallback
+        ha_key = builtin_ha_field.get(point_key)
+        if ha_key:
+            value = _signed_ha_field_kw(ha_key, ha_cfg, snapshot)
+        if value is None:
+            value = fallback
         # signed value unverändert zur Rollensumme (Minus-Sensor → negativer Beitrag)
         add_to_role_sum(sums, role, value)
         if value is not None:
@@ -300,27 +277,6 @@ def _collect_role_contributions(
             custom_fields[fid] = entry
         if val is not None:
             details.append({"point": f"custom:{fid}", "role": role, "kw": float(val)})
-
-    # Zusätzliche Wechselrichter (nicht der Steuer-Logger) direkt über Solarman
-    try:
-        from bms_seite import extra_inverter_flow_values
-
-        for extra in extra_inverter_flow_values():
-            fid = str(extra.get("flow_field_id") or "")
-            if not fid:
-                continue
-            kw = extra.get("kw")
-            add_to_role_sum(sums, extra.get("role") or "erzeugung", kw)
-            display = "n/a" if kw is None else f"{float(kw):.2f}"
-            entry = dict(custom_fields.get(fid) or {})
-            entry["value_kw"] = kw
-            entry["display"] = display
-            entry["role"] = extra.get("role") or "erzeugung"
-            custom_fields[fid] = entry
-            if kw is not None:
-                details.append({"point": f"custom:{fid}", "role": entry["role"], "kw": float(kw)})
-    except Exception:
-        pass
 
     return sums, custom_fields, details
 
@@ -372,11 +328,20 @@ def build_flow_response(
     betrieb_f = _to_float(betrieb if betrieb not in (None, "n/a") else None)
 
     dash_cfg = _load_dash_cfg()
-    direct_builtin = _control_logger_builtin_kw()
-    if direct_builtin.get("pv") is not None:
-        pv = _format_kw(float(direct_builtin["pv"]))
-    if direct_builtin.get("kelag") is not None:
-        grid = _format_kw(float(direct_builtin["kelag"]))
+    ha_cfg, snapshot = _load_ha_context()
+    live_pv = _signed_ha_field_kw("pv", ha_cfg, snapshot)
+    if live_pv is not None:
+        pv = _format_kw(live_pv)
+    live_grid = _signed_ha_field_kw("kelag", ha_cfg, snapshot)
+    if live_grid is not None:
+        grid = _format_kw(live_grid)
+    live_haus = _signed_ha_field_kw("wohnhaus", ha_cfg, snapshot)
+    if live_haus is not None:
+        haus = _format_kw(live_haus)
+    live_hydro = _signed_ha_field_kw("wasserkraft", ha_cfg, snapshot)
+    if live_hydro is not None:
+        hydro = _format_kw(live_hydro)
+    live_betrieb = _signed_ha_field_kw("betrieb", ha_cfg, snapshot)
     role_sums, custom_fields, role_details = _collect_role_contributions(
         base_dir,
         pv_f=pv_f,
@@ -386,7 +351,8 @@ def build_flow_response(
         betrieb_f=betrieb_f,
         battery_power_kw=battery_power_kw,
         dash_cfg=dash_cfg,
-        direct_builtin=direct_builtin,
+        ha_cfg=ha_cfg,
+        snapshot=snapshot,
     )
 
     # Verbraucher-Summe ersetzt den früheren reinen Wohnhaus-Wert
@@ -407,9 +373,14 @@ def build_flow_response(
     else:
         erzeugung_gesamt = gesamt or "n/a"
 
-    betrieb_anzeige = "n/a" if betrieb_f is None else (
-        str(betrieb).strip() if betrieb not in (None, "", "n/a") else _format_kw(betrieb_f)
-    )
+    if live_betrieb is not None:
+        betrieb_anzeige = _format_kw(live_betrieb)
+    elif betrieb_f is None:
+        betrieb_anzeige = "n/a"
+    else:
+        betrieb_anzeige = (
+            str(betrieb).strip() if betrieb not in (None, "", "n/a") else _format_kw(betrieb_f)
+        )
 
     if verbrauch_gesamt != "n/a":
         try:
@@ -430,7 +401,11 @@ def build_flow_response(
             except Exception:
                 pass
 
-    soc = battery_soc_loader() if battery_soc_loader else None
+    soc_live = _signed_ha_field_kw("battery_soc", ha_cfg, snapshot)
+    if soc_live is not None:
+        soc = _format_soc(soc_live)
+    else:
+        soc = battery_soc_loader() if battery_soc_loader else None
 
     try:
         from flow_roles import normalize_flow_point_roles

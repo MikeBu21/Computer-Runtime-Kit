@@ -84,20 +84,15 @@ class ConsumerSumTests(unittest.TestCase):
 
             with mock.patch.object(miner_flow_data, "_load_dash_cfg", return_value=cfg):
                 with mock.patch.object(miner_flow_data, "_signed_ha_field_kw", return_value=None):
-                    with mock.patch.object(
-                        miner_flow_data,
-                        "_control_logger_builtin_kw",
-                        return_value={"pv": None, "kelag": None, "battery": None},
+                    with mock.patch(
+                        "dashboard_sources.resolve_custom_flow_values",
+                        return_value={
+                            "ups": {"id": "ups", "name": "UPS NOTSTROM Haus", "value_kw": 0.4},
+                            "pool": {"id": "pool", "name": "Pool", "value_kw": 0.6},
+                            "wr2": {"id": "wr2", "name": "WR2", "value_kw": 1.25},
+                        },
                     ):
-                        with mock.patch(
-                            "dashboard_sources.resolve_custom_flow_values",
-                            return_value={
-                                "ups": {"id": "ups", "name": "UPS NOTSTROM Haus", "value_kw": 0.4},
-                                "pool": {"id": "pool", "name": "Pool", "value_kw": 0.6},
-                                "wr2": {"id": "wr2", "name": "WR2", "value_kw": 1.25},
-                            },
-                        ):
-                            flow = miner_flow_data.build_flow_response(str(base))
+                        flow = miner_flow_data.build_flow_response(str(base))
 
         self.assertEqual(flow["role_sums"]["verbraucher"], 2.0)
         self.assertEqual(flow["verbrauch_gesamt"], "2")

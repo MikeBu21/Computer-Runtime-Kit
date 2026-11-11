@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest import mock
 
 import bms_seite
 from bms_seite import (
@@ -167,8 +168,9 @@ class ProgramAndReleaseTests(unittest.TestCase):
         self.assertEqual(ZERO_EXPORT_IDLE_W, 20)
         self.assertEqual(values[0x008E], WORK_MODE_ZERO_EXPORT_CT)
         self.assertEqual(values[0x008D], ENERGY_PATTERN_LOAD_FIRST)
-        self.assertEqual(values[0x00A6], TOU_HOLD_SOC)
-        self.assertEqual(values[0x00AC], 1)
+        self.assertNotIn(0x00A6, values)
+        self.assertNotIn(0x00AC, values)
+        self.assertNotIn(0x009A, values)
         self.assertEqual(values[0x0080], 0)
         self.assertEqual(values[0x0082], 0)
         self.assertEqual(values[0x00BF], 8000)
@@ -202,9 +204,28 @@ class ProgramAndReleaseTests(unittest.TestCase):
         self.assertEqual(values[0x00BF], 5000)
         self.assertEqual(values[0x00E9], 600)
         self.assertEqual(values[0x006D], 150)
-        self.assertEqual(values[0x00A6], 40)
+        self.assertNotIn(0x00A6, values)
+        self.assertNotIn(0x00AC, values)
+        self.assertNotIn(0x009F, values)
+
+    def test_release_restores_saved_program_instead_of_tou_hold(self):
+        values = _by_addr(
+            _release_writes(
+                _item(),
+                {
+                    "program_soc": [35, 35, 35, 35, 35, 28],
+                    "program_power": [1500, 1500, 1500, 1500, 1500, 1500],
+                    "program_charging": [0, 0, 0, 0, 0, 0],
+                    "idle_tou_soc": 40,
+                },
+            )
+        )
+        self.assertEqual(values[0x00A6], 35)
+        self.assertEqual(values[0x00AB], 28)
+        self.assertEqual(values[0x009F], 1500)
         self.assertEqual(values[0x00AC], 0)
-        self.assertEqual(values[0x009F], 2000)
+        self.assertNotEqual(values[0x00A6], 40)
+        self.assertNotEqual(values[0x00A6], TOU_HOLD_SOC)
 
     def test_release_clears_micro_export_cutoff_and_keeps_peak_shaving(self):
         # Bit 0 gesetzt, Bit 4 aus: Abschaltung aus, Kappung an -> nur Bit 4.
@@ -218,6 +239,138 @@ class ProgramAndReleaseTests(unittest.TestCase):
         text = bms_seite.readback_diff(0x0091, "Solar Sell", 0, 1)
         self.assertIn("Solar Sell", text)
         self.assertIn("gelesen 1", text)
+
+
+class SocWindowTests(unittest.TestCase):
+    def _settings(self):
+        return {
+            "soc_stop": True,
+            "program_soc": [40, 20, 30, 25, 20, 35],
+            "program_time": [0, 600, 1200, 1800, 2200, 2300],
+            "program_power": [1000] * 6,
+            "program_charging": [1] * 6,
+        }
+
+    def test_floor_is_the_lowest_of_the_six_windows(self):
+        self.assertEqual(bms_seite._program_soc_floor(self._settings()), 20)
+
+    def test_active_slot_follows_the_clock_and_wraps(self):
+        settings = self._settings()
+        morning = bms_seite.datetime(2026, 11, 11, 10, 0, tzinfo=bms_seite.TZ)
+        afternoon = bms_seite.datetime(2026, 11, 11, 13, 0, tzinfo=bms_seite.TZ)
+        after_midnight = bms_seite.datetime(2026, 11, 11, 1, 0, tzinfo=bms_seite.TZ)
+        self.assertEqual(bms_seite._active_program_index(settings, morning), 1)
+        self.assertEqual(bms_seite._active_program_soc(settings, morning), 20)
+        self.assertEqual(bms_seite._active_program_index(settings, afternoon), 2)
+        self.assertEqual(bms_seite._active_program_soc(settings, afternoon), 30)
+        self.assertEqual(bms_seite._active_program_index(settings, after_midnight), 0)
+        later = {"program_time": [600, 800, 1200, 1800, 2200, 2300]}
+        self.assertEqual(bms_seite._active_program_index(later, after_midnight), 5)
+
+    def test_equal_start_times_use_the_highest_index(self):
+        settings = {"program_time": [0, 0, 0, 0, 0, 0]}
+        now = bms_seite.datetime(2026, 11, 11, 15, 0, tzinfo=bms_seite.TZ)
+        self.assertEqual(bms_seite._active_program_index(settings, now), 5)
+
+    def test_stop_at_or_below_floor_and_when_soc_is_missing(self):
+        settings = self._settings()
+        self.assertTrue(bms_seite._soc_floor_hit(settings, {"soc_percent": 20}))
+        self.assertTrue(bms_seite._soc_floor_hit(settings, {"soc_percent": 19}))
+        self.assertFalse(bms_seite._soc_floor_hit(settings, {"soc_percent": 21}))
+        self.assertTrue(bms_seite._soc_floor_hit(settings, {"soc_percent": None}))
+        self.assertTrue(bms_seite._soc_floor_hit({}, {"soc_percent": 80}))
+
+    def test_resume_needs_soc_above_the_floor_and_planning(self):
+        settings = self._settings()
+        now = bms_seite.datetime(2026, 11, 11, 13, 0, tzinfo=bms_seite.TZ)
+        with mock.patch.object(bms_seite, "_planning_enabled", return_value=True):
+            self.assertFalse(bms_seite._resume_ready(settings, {"soc_percent": 20}, now))
+            self.assertTrue(bms_seite._resume_ready(settings, {"soc_percent": 21}, now))
+            self.assertFalse(bms_seite._resume_ready(settings, {"soc_percent": None}, now))
+        with mock.patch.object(bms_seite, "_planning_enabled", return_value=False):
+            self.assertFalse(bms_seite._resume_ready(settings, {"soc_percent": 80}, now))
+        stopped = dict(settings)
+        stopped["soc_stop"] = False
+        with mock.patch.object(bms_seite, "_planning_enabled", return_value=True):
+            self.assertFalse(bms_seite._resume_ready(stopped, {"soc_percent": 80}, now))
+
+    def test_gate_clears_soc_stop_only_above_floor_while_planning_stays_on(self):
+        settings = self._settings()
+        settings["real_mode"] = False
+        settings["release_pending"] = False
+
+        def remember(updates):
+            merged = dict(settings)
+            merged.update(updates)
+            return merged
+
+        with mock.patch.object(bms_seite, "_planning_enabled", return_value=True), mock.patch.object(
+            bms_seite, "save_settings", side_effect=remember
+        ) as save:
+            resumed = bms_seite.apply_soc_gate(settings, {"soc_percent": 21})
+        self.assertFalse(resumed["soc_stop"])
+        save.assert_called_once_with({"soc_stop": False})
+
+        with mock.patch.object(bms_seite, "_planning_enabled", return_value=True), mock.patch.object(
+            bms_seite, "save_settings", side_effect=remember
+        ) as save:
+            held = bms_seite.apply_soc_gate(settings, {"soc_percent": 20})
+        self.assertTrue(held["soc_stop"])
+        save.assert_not_called()
+
+        with mock.patch.object(bms_seite, "_planning_enabled", return_value=False), mock.patch.object(
+            bms_seite, "save_settings", side_effect=remember
+        ) as save:
+            parked = bms_seite.apply_soc_gate(settings, {"soc_percent": 80})
+        self.assertTrue(parked["soc_stop"])
+        save.assert_not_called()
+
+    def test_planning_restarts_writes_after_the_soc_stop_lifts(self):
+        base = {
+            "soc_stop": False,
+            "planning_hold": True,
+            "real_mode": False,
+            "community_hold": False,
+            "exchange_hold": False,
+            "target_grid_kw": 1.0,
+            "program_soc": [40, 20, 30, 25, 20, 35],
+        }
+
+        def remember(updates):
+            merged = dict(base)
+            merged.update(updates)
+            return merged
+
+        with mock.patch("energie_steuerung.load_settings", return_value={"algorithmische_planung": True}), mock.patch(
+            "grundverbrauch_rechner.recommended_import_kw", return_value=1.2
+        ), mock.patch.object(bms_seite, "save_settings", side_effect=remember) as save:
+            started = bms_seite.apply_planning_hold(base, {"soc_percent": 21})
+        self.assertTrue(started["real_mode"])
+        self.assertTrue(started["planning_hold"])
+        self.assertEqual(started["target_grid_kw"], 1.2)
+        save.assert_called_once()
+
+        blocked = dict(base)
+        blocked["soc_stop"] = True
+        with mock.patch("energie_steuerung.load_settings", return_value={"algorithmische_planung": True}), mock.patch(
+            "grundverbrauch_rechner.recommended_import_kw", return_value=1.2
+        ), mock.patch.object(bms_seite, "save_settings", side_effect=remember) as save:
+            stayed = bms_seite.apply_planning_hold(blocked, {"soc_percent": 21})
+        self.assertTrue(stayed["soc_stop"])
+        self.assertFalse(stayed["real_mode"])
+        save.assert_not_called()
+
+    def test_autocapture_only_on_a_new_control_serial(self):
+        self.assertTrue(bms_seite._should_autocapture(0, 123, {"install_captured": False}))
+        self.assertFalse(
+            bms_seite._should_autocapture(123, 123, {"install_captured": False, "install_captured_serial": 0})
+        )
+        self.assertFalse(
+            bms_seite._should_autocapture(123, 123, {"install_captured": True, "install_captured_serial": 123})
+        )
+        self.assertTrue(
+            bms_seite._should_autocapture(123, 456, {"install_captured": True, "install_captured_serial": 123})
+        )
 
 
 class InstallerCeilingTests(unittest.TestCase):

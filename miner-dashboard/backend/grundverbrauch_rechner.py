@@ -31,8 +31,6 @@ LOOKBACK_RATE = 7
 LOOKBACK_CHART = 30
 BASE_ARCHIVE_DAYS = 366
 YEAR_DAYS = 365
-WEEKLY_STEP = 0.25
-WEEKLY_STEP_SEASON = 0.50
 DAILY_STEP_REL = 0.08
 DAILY_STEP_ABS = 0.15
 # Der Tageswert bleibt stehen und wird höchstens alle 10 Stunden nachgezogen,
@@ -296,12 +294,12 @@ def apply_recommendation_locks(
     season_shift: bool,
     fingerprint: str,
 ) -> Dict[str, Any]:
-    """Wochenwert höchstens einmal je ISO-Woche, Tageswert einmal je Kalendertag.
+    """Wochenwert folgt sofort dem Rohwert aus dem 7-Tage-Schnitt.
 
-    Eine neue Miner-Annahme ist eine andere Rechnung, kein Messrauschen:
-    dann werden beide Werte sofort auf den neuen Rohwert gesetzt.
-    Von 0 kW darf der Wochenwert beim nächsten Termin voll auf den Rohwert,
-    sonst bliebe ein relativer Schritt an der Null hängen.
+    Kein kW-Deckel und keine Sperre auf eine Änderung je Kalenderwoche.
+    Der Tageswert bleibt einmal je Kalendertag, höchstens alle 10 Stunden,
+    und bewegt sich nur in kleinen Schritten. Eine neue Miner-Annahme setzt
+    den Tageswert sofort auf den Rohwert.
     """
     week_id = _iso_week_id(today)
     daily_id = today.isoformat()
@@ -332,16 +330,8 @@ def apply_recommendation_locks(
         }
 
     raw_kw = max(0.0, raw_kw)
-    if assumption_changed or weekly_prev is None:
-        weekly = round(raw_kw, 3)
-        weekly_updated = True
-    elif prev.get("week_id") != week_id or season_shift:
-        step = WEEKLY_STEP_SEASON if season_shift else WEEKLY_STEP
-        weekly = _clamp_step(weekly_prev, raw_kw, step, 0.2)
-        weekly_updated = True
-    else:
-        weekly = round(weekly_prev, 3)
-        weekly_updated = False
+    weekly = round(raw_kw, 3)
+    weekly_updated = weekly_prev is None or abs(weekly - weekly_prev) >= 0.0005
 
     now = datetime.now()
     refreshed_at = _parsed_stamp(prev.get("daily_updated_at"))

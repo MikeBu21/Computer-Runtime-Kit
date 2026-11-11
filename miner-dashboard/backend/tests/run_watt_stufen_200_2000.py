@@ -196,7 +196,8 @@ def disable_ok(rows: list[dict], last_hold_w: int) -> tuple[bool, str]:
     grid = fnum(last.get("grid"))
     want_zexp = int(settings.get("idle_grid_w") or 20)
     want_peak = int(settings.get("idle_peak_w") or 8000)
-    want_soc = int(settings.get("idle_tou_soc") or 20)
+    snapshot = settings.get("program_soc") or []
+    want_soc = int(snapshot[4]) if len(snapshot) == 6 else None
     reasons = []
     if settings.get("real_mode"):
         reasons.append("Häkchen noch an")
@@ -210,7 +211,7 @@ def disable_ok(rows: list[dict], last_hold_w: int) -> tuple[bool, str]:
         reasons.append(f"pattern={last.get('pattern')}")
     if peak is not None and abs(peak - want_peak) > 50:
         reasons.append(f"peak={last.get('peak')} soll {want_peak}")
-    if fnum(last.get("p5")) not in (None, float(want_soc)):
+    if want_soc is not None and fnum(last.get("p5")) not in (None, float(want_soc)):
         reasons.append(f"tou-soc={last.get('p5')} soll {want_soc}")
     if last.get("charge") not in ("off", "0", None):
         reasons.append(f"netzladen={last.get('charge')}")
