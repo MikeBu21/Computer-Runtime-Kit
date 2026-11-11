@@ -1899,7 +1899,8 @@ _sampler_started = False
 def _read_live_now() -> Dict[str, Any]:
     """Ladestand, Batterie, PV und Netz nur aus den Home-Assistant-Sensoren.
 
-    Die Hauslast bleibt die konfigurierte Summe. Modbus wird dafür nicht gelesen.
+    Die Hauslast ist „Verbrauch gesamt“: alle Stromfluss-Punkte mit Rolle Verbraucher.
+    Modbus wird dafür nicht gelesen.
     """
     powers = read_control_logger_powers()
     return {
@@ -2384,38 +2385,24 @@ def _choose_import_mode(target_w: int, live: Optional[Dict[str, Any]]) -> str:
 
 
 def _configured_house_kw() -> Optional[float]:
-    """Wohnhaus-Verbrauch: Summe der dort zugeordneten Sensoren."""
-    try:
-        from ha_entity_mapping import (
-            FIELD_DEFINITIONS,
-            compute_field_value,
-            load_config,
-            normalize_field_entry,
-        )
-        from energy_monitor.ha_live_reader import load_snapshot
+    """Hauslast oben: derselbe Wert wie „Verbrauch gesamt“ im Dashboard.
 
-        cfg = load_config()
-        entry = normalize_field_entry((cfg.get("fields") or {}).get("wohnhaus") or {})
-        if entry.get("enabled") and entry.get("sensors"):
-            val = compute_field_value(entry, FIELD_DEFINITIONS["wohnhaus"], load_snapshot())
-            if val is not None:
-                return round(float(val), 3)
-    except Exception:
-        pass
+    Summe aller Stromfluss-Punkte mit Rolle Verbraucher, nicht ein einzelnes Sensorfeld.
+    """
     try:
-        from miner_flow_data import _read_first, _to_float
+        from miner_flow_data import build_flow_response
 
-        raw = _read_first(str(BACKEND_DIR), ["wohnhaus_value.txt", "haus_value.txt"])
-        val = _to_float(raw if raw not in (None, "n/a") else None)
-        if val is not None:
-            return round(float(val), 3)
+        flow = build_flow_response(str(BACKEND_DIR))
+        raw = flow.get("verbrauch_gesamt")
+        if raw in (None, "", "n/a"):
+            return None
+        return round(float(str(raw).replace(",", ".").strip()), 3)
     except Exception:
-        pass
-    return None
+        return None
 
 
 def _house_load_kw(live: Optional[Dict[str, Any]]) -> Optional[float]:
-    """Hauslast ist der konfigurierte Wohnhaus-Wert."""
+    """Hauslast ist der Gesamtwert „Verbrauch gesamt“."""
     if not live or live.get("load_kw") is None:
         return None
     return round(float(live["load_kw"]), 3)

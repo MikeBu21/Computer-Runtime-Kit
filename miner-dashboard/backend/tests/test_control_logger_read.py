@@ -92,6 +92,16 @@ class ControlLoggerReadTests(unittest.TestCase):
         battery.assert_not_called()
         grid.assert_not_called()
 
+    def test_house_load_is_total_consumption_not_one_flow_field(self):
+        flow = {
+            "verbrauch_gesamt": "2.4",
+            "haus": "1.0",
+            "role_sums": {"verbraucher": 2.4},
+        }
+        with mock.patch("miner_flow_data.build_flow_response", return_value=flow) as build:
+            self.assertEqual(bms_seite._configured_house_kw(), 2.4)
+        build.assert_called_once()
+
     def test_extra_inverter_flow_does_not_read_modbus(self):
         settings = {
             "tracked_inverters": [
