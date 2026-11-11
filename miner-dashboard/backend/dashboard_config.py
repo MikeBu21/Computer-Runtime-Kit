@@ -26,7 +26,7 @@ SOURCE_OPTIONS: List[Dict[str, str]] = [
     {"group": "Stromfluss-Felder", "value": "field.lieferung", "label": "Lieferung / Einspeisung"},
     {"group": "Stromfluss-Felder", "value": "field.erzeugung_gesamt", "label": "Erzeugung Gesamt"},
     {"group": "Stromfluss-Felder", "value": "field.eigenverbrauch", "label": "Eigenverbrauch"},
-    {"group": "Berechnet", "value": "flow.verbrauch_gesamt", "label": "Aktueller Verbrauch (Gesamt)"},
+    {"group": "Berechnet", "value": "flow.verbrauch_gesamt", "label": "Verbrauch gesamt"},
     {"group": "Berechnet", "value": "flow.betrieb_anzeige", "label": "Betrieb (Anzeige)"},
     {"group": "Berechnet", "value": "computed.erzeugung", "label": "Erzeugung (PV + Wasser)"},
     {"group": "Berechnet", "value": "computed.grid_bezug", "label": "Netzbezug (+)"},
@@ -49,6 +49,24 @@ BUILTIN_FLOW_SLOTS: Dict[str, int] = {
     "battery": 5,
     "wohnhaus": 6,
     "betrieb": 7,
+}
+# Anzeigenamen. Der Punkt-Schlüssel bleibt stabil, der Name ist umbenennbar.
+DEFAULT_BUILTIN_LABELS: Dict[str, str] = {
+    "pv": "PV-Platten",
+    "wasserkraft": "Wasserkraftwerk",
+    "kelag": "Netz",
+    "battery": "Batterie",
+    "wohnhaus": "Wohnhaus",
+    "betrieb": "Betrieb",
+}
+_CONSUMER_COLORS = ("#9ccc65", "#ef5350", "#ffb74d", "#26c6da", "#ce93d8", "#ff8a65", "#b39ddb", "#80cbc4")
+_TOTAL_LINE_LABELS = {
+    "Aktueller Verbrauch",
+    "Aktueller Verbrauch (Gesamt)",
+    "Wohnhaus",
+    "Verbrauch",
+    "Verbrauch gesamt",
+    "",
 }
 
 
@@ -118,6 +136,7 @@ def default_config() -> Dict[str, Any]:
         "updated_at": None,
         "flow_hidden_builtins": [],
         "flow_builtin_slots": {},
+        "flow_builtin_labels": {},
         "flow_point_roles": dict(DEFAULT_BUILTIN_ROLES),
         "custom_flow_fields": [],
         "pie_generation": _default_pie_generation(),
@@ -290,13 +309,17 @@ def assign_slots(cfg: Dict[str, Any]) -> Dict[str, Any]:
 
 def _normalize_pie_slice(entry: Dict[str, Any], prefix: str) -> Dict[str, Any]:
     slice_id = str(entry.get("id") or "").strip() or f"{prefix}_{uuid.uuid4().hex[:6]}"
-    return {
+    out = {
         "id": slice_id,
         "label": str(entry.get("label") or "Segment").strip() or "Segment",
         "source": str(entry.get("source") or "field.pv").strip(),
         "color": str(entry.get("color") or "#ffc107").strip(),
         "enabled": bool(entry.get("enabled", True)),
     }
+    managed = str(entry.get("managed") or "").strip()
+    if managed in ("consumer", "verbrauch_gesamt"):
+        out["managed"] = managed
+    return out
 
 
 def _normalize_line_series(entry: Dict[str, Any]) -> Dict[str, Any]:
@@ -307,7 +330,7 @@ def _normalize_line_series(entry: Dict[str, Any]) -> Dict[str, Any]:
     source = str(entry.get("source") or "field.pv").strip()
     if y_axis == "percent" and source not in ("flow.battery_soc", "field.battery_soc"):
         source = "flow.battery_soc"
-    return {
+    out = {
         "id": series_id,
         "label": str(entry.get("label") or "Linie").strip() or "Linie",
         "source": source,
@@ -316,6 +339,276 @@ def _normalize_line_series(entry: Dict[str, Any]) -> Dict[str, Any]:
         "y_axis": y_axis,
         "enabled": bool(entry.get("enabled", True)),
     }
+    managed = str(entry.get("managed") or "").strip()
+    if managed in ("consumer", "verbrauch_gesamt"):
+        out["managed"] = managed
+    return out
+
+
+def _normalize_builtin_labels(raw: Any) -> Dict[str, str]:
+    if not isinstance(raw, dict):
+        return {}
+    out: Dict[str, str] = {}
+    for key in BUILTIN_FLOW_KEYS:
+        if key not in raw:
+            continue
+        name = str(raw.get(key) or "").strip()
+        if name:
+            out[key] = name[:80]
+    return out
+
+
+def builtin_label(cfg: Optional[Dict[str, Any]], key: str) -> str:
+    """Anzeigename eines Stromfluss-Felds. Ohne Umbenennung bleibt der Standardname."""
+    labels = (cfg or {}).get("flow_builtin_labels") or {}
+    name = ""
+    if isinstance(labels, dict):
+        name = str(labels.get(key) or "").strip()
+    if name:
+        return name
+    return DEFAULT_BUILTIN_LABELS.get(key, key)
+
+
+def consumer_points(cfg: Optional[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """Sichtbare Felder mit Rolle Verbraucher, jedes mit dem vom Nutzer gesetzten Namen."""
+    from flow_roles import builtin_role, custom_field_role
+
+    cfg = cfg or {}
+    hidden = hidden_builtins(cfg)
+    points: List[Dict[str, str]] = []
+    for key in BUILTIN_FLOW_KEYS:
+        if key in hidden:
+            continue
+        if builtin_role(cfg, key) != "verbraucher":
+            continue
+        source = "flow.battery_power" if key == "battery" else f"field.{key}"
+        points.append({"point": key, "source": source, "label": builtin_label(cfg, key)})
+    for field in cfg.get("custom_flow_fields") or []:
+        if not isinstance(field, dict) or not field.get("enabled", True):
+            continue
+        if custom_field_role(field) != "verbraucher":
+            continue
+        fid = str(field.get("id") or "").strip()
+        if not fid:
+            continue
+        name = str(field.get("name") or fid).strip() or fid
+        points.append({"point": f"custom:{fid}", "source": f"custom.{fid}", "label": name})
+    return points
+
+
+def _consumer_point_kw(flow: Dict[str, Any], point: str) -> float:
+    details = flow.get("role_details") if isinstance(flow.get("role_details"), list) else []
+    for item in details:
+        if not isinstance(item, dict):
+            continue
+        if item.get("point") == point and item.get("role") == "verbraucher":
+            try:
+                return float(item.get("kw") or 0.0)
+            except (TypeError, ValueError):
+                return 0.0
+    if point.startswith("custom:"):
+        fid = point.split(":", 1)[1]
+        custom = flow.get("custom_fields") if isinstance(flow.get("custom_fields"), dict) else {}
+        entry = custom.get(fid) if isinstance(custom.get(fid), dict) else {}
+        try:
+            val = entry.get("value_kw")
+            return float(val) if val is not None else 0.0
+        except (TypeError, ValueError):
+            return 0.0
+    if point == "wohnhaus":
+        raw = flow.get("haus")
+        if raw not in (None, "", "n/a"):
+            try:
+                return float(str(raw).replace(",", "."))
+            except (TypeError, ValueError):
+                return 0.0
+    return 0.0
+
+
+def build_consumer_statistics(
+    cfg: Optional[Dict[str, Any]], flow: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """Verbrauch gesamt plus jedes Verbraucherfeld. Die Einzelwerte ergeben die Summe."""
+    flow = flow or {}
+    items: List[Dict[str, Any]] = []
+    for point in consumer_points(cfg):
+        items.append(
+            {
+                "point": point["point"],
+                "label": point["label"],
+                "source": point["source"],
+                "kw": round(_consumer_point_kw(flow, point["point"]), 3),
+            }
+        )
+    total_kw = round(sum(float(item["kw"]) for item in items), 3)
+    return {
+        "total": {
+            "label": "Verbrauch gesamt",
+            "source": "flow.verbrauch_gesamt",
+            "kw": total_kw,
+        },
+        "items": items,
+    }
+
+
+def _stat_slug(prefix: str, point: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "_", str(point or "").lower()).strip("_") or "feld"
+    return f"{prefix}_{slug}"[:48]
+
+
+_LEGACY_CONSUMER_SLICE_IDS = {
+    "wohnhaus": ("con_haus", "con_wohnhaus"),
+    "betrieb": ("con_betrieb",),
+}
+
+
+def _fresh_stat_id(rows: List[Dict[str, Any]], preferred: str) -> str:
+    used = {str(row.get("id") or "") for row in rows}
+    if preferred not in used:
+        return preferred
+    n = 2
+    while f"{preferred}_{n}" in used:
+        n += 1
+    return f"{preferred}_{n}"
+
+
+def sync_consumer_statistics(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Statistik führt die Verbrauchersumme und jedes Verbraucherfeld unter seinem Namen."""
+    points = consumer_points(cfg)
+    sources = {p["source"] for p in points}
+    pie = [dict(sl) for sl in (cfg.get("pie_consumption") or []) if isinstance(sl, dict)]
+
+    def find_consumer_slice(point: Dict[str, str]) -> Optional[Dict[str, Any]]:
+        for sl in pie:
+            if sl.get("managed") == "verbrauch_gesamt":
+                continue
+            if sl.get("source") == point["source"]:
+                return sl
+        legacy_ids = _LEGACY_CONSUMER_SLICE_IDS.get(point["point"], ())
+        aliases = {
+            point["source"],
+            f"field.{point['point']}",
+            f"flow.{point['point']}",
+            "flow.betrieb_anzeige" if point["point"] == "betrieb" else "",
+        }
+        for sl in pie:
+            if sl.get("managed") == "verbrauch_gesamt":
+                continue
+            if sl.get("id") in legacy_ids and sl.get("source") in aliases:
+                return sl
+        return None
+
+    for idx, point in enumerate(points):
+        match = find_consumer_slice(point)
+        if match:
+            match["label"] = point["label"]
+            match["source"] = point["source"]
+            match["enabled"] = True
+            match["managed"] = "consumer"
+            continue
+        pie.append(
+            {
+                "id": _fresh_stat_id(pie, _stat_slug("con", point["point"])),
+                "label": point["label"],
+                "source": point["source"],
+                "color": _CONSUMER_COLORS[idx % len(_CONSUMER_COLORS)],
+                "enabled": True,
+                "managed": "consumer",
+            }
+        )
+
+    for sl in pie:
+        if sl.get("managed") == "consumer" and sl.get("source") not in sources:
+            sl["enabled"] = False
+
+    total = next(
+        (
+            sl
+            for sl in pie
+            if sl.get("managed") == "verbrauch_gesamt" or sl.get("id") == "con_verbrauch_gesamt"
+        ),
+        None,
+    )
+    if total is None:
+        pie.insert(
+            0,
+            {
+                "id": "con_verbrauch_gesamt",
+                "label": "Verbrauch gesamt",
+                "source": "flow.verbrauch_gesamt",
+                "color": "#ffea00",
+                "enabled": True,
+                "managed": "verbrauch_gesamt",
+            },
+        )
+    else:
+        total["label"] = "Verbrauch gesamt"
+        total["source"] = "flow.verbrauch_gesamt"
+        total["enabled"] = True
+        total["managed"] = "verbrauch_gesamt"
+        total.setdefault("color", "#ffea00")
+    cfg["pie_consumption"] = pie
+
+    lines = [dict(ser) for ser in (cfg.get("line_series") or []) if isinstance(ser, dict)]
+    for ser in lines:
+        if ser.get("id") == "line_verbrauch" and ser.get("source") in (
+            "field.wohnhaus",
+            "flow.verbrauch_gesamt",
+        ):
+            ser["source"] = "flow.verbrauch_gesamt"
+            if str(ser.get("label") or "") in _TOTAL_LINE_LABELS:
+                ser["label"] = "Verbrauch gesamt"
+            ser["managed"] = "verbrauch_gesamt"
+            ser["enabled"] = True
+            ser["y_axis"] = "kw"
+    if not any(
+        ser.get("source") == "flow.verbrauch_gesamt" and ser.get("enabled", True) for ser in lines
+    ):
+        lines.append(
+            {
+                "id": "line_verbrauch",
+                "label": "Verbrauch gesamt",
+                "source": "flow.verbrauch_gesamt",
+                "color": "#ffea00",
+                "fill": False,
+                "y_axis": "kw",
+                "enabled": True,
+                "managed": "verbrauch_gesamt",
+            }
+        )
+    for idx, point in enumerate(points):
+        match = next(
+            (
+                ser
+                for ser in lines
+                if ser.get("managed") != "verbrauch_gesamt" and ser.get("source") == point["source"]
+            ),
+            None,
+        )
+        if match:
+            match["label"] = point["label"]
+            match["source"] = point["source"]
+            match["enabled"] = True
+            match["managed"] = "consumer"
+            match["y_axis"] = "kw"
+            continue
+        lines.append(
+            {
+                "id": _fresh_stat_id(lines, _stat_slug("line", point["point"])),
+                "label": point["label"],
+                "source": point["source"],
+                "color": _CONSUMER_COLORS[idx % len(_CONSUMER_COLORS)],
+                "fill": False,
+                "y_axis": "kw",
+                "enabled": True,
+                "managed": "consumer",
+            }
+        )
+    for ser in lines:
+        if ser.get("managed") == "consumer" and ser.get("source") not in sources:
+            ser["enabled"] = False
+    cfg["line_series"] = lines
+    return cfg
 
 
 def normalize_config(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -325,6 +618,7 @@ def normalize_config(data: Dict[str, Any]) -> Dict[str, Any]:
     out["updated_at"] = data.get("updated_at")
     out["flow_hidden_builtins"] = _normalize_hidden_builtins(data.get("flow_hidden_builtins"))
     out["flow_builtin_slots"] = _normalize_builtin_slots(data.get("flow_builtin_slots"))
+    out["flow_builtin_labels"] = _normalize_builtin_labels(data.get("flow_builtin_labels"))
     out["flow_point_roles"] = normalize_flow_point_roles(data.get("flow_point_roles"))
     custom = data.get("custom_flow_fields")
     if isinstance(custom, list):
@@ -338,7 +632,7 @@ def normalize_config(data: Dict[str, Any]) -> Dict[str, Any]:
     line = data.get("line_series")
     if isinstance(line, list):
         out["line_series"] = [_normalize_line_series(x) for x in line if isinstance(x, dict)]
-    return out
+    return sync_consumer_statistics(out)
 
 
 def load_config() -> Dict[str, Any]:
@@ -372,6 +666,8 @@ def parse_json_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         cfg["flow_hidden_builtins"] = _normalize_hidden_builtins(payload.get("flow_hidden_builtins"))
     if "flow_builtin_slots" in payload:
         cfg["flow_builtin_slots"] = _normalize_builtin_slots(payload.get("flow_builtin_slots"))
+    if "flow_builtin_labels" in payload:
+        cfg["flow_builtin_labels"] = _normalize_builtin_labels(payload.get("flow_builtin_labels"))
     if "flow_point_roles" in payload:
         cfg["flow_point_roles"] = normalize_flow_point_roles(payload.get("flow_point_roles"))
     if "custom_flow_fields" in payload:
@@ -412,7 +708,7 @@ def source_options_for_flow(cfg: Optional[Dict[str, Any]] = None) -> List[Dict[s
 
     for key in ("pv", "wasserkraft", "kelag", "wohnhaus", "betrieb"):
         if key not in hidden:
-            options.append(_source_opt("Stromfluss-Felder", f"field.{key}"))
+            options.append(_source_opt("Stromfluss-Felder", f"field.{key}", builtin_label(cfg, key)))
 
     for field in cfg.get("custom_flow_fields") or []:
         if not field.get("enabled", True):

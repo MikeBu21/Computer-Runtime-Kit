@@ -689,6 +689,15 @@
       font-size: 0.72rem;
       color: var(--muted);
     }
+    .consumer-breakdown {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 0.35rem 0.85rem;
+      margin-top: 0.45rem;
+      width: 100%;
+    }
+    .consumer-breakdown strong { color: #e8eef5; font-weight: 700; }
     .energy-line-panel {
       margin-top: 1rem;
       background:
@@ -1052,7 +1061,7 @@
         <div class="role-sum-extra" id="role_sum_speicher_soc">— %</div>
       </div>
       <div class="role-sum-card role-verbrauch">
-        <div class="role-sum-label">Verbrauch</div>
+        <div class="role-sum-label">Verbrauch gesamt</div>
         <div class="role-sum-value" id="role_sum_verbrauch">—</div>
       </div>
     </div>
@@ -1102,7 +1111,7 @@
     </div>
     <div class="energy-line-legend" id="energy_line_legend">
       <span><i style="background:#00ff41"></i> Erzeugung (06 PV + 05 Wasser)</span>
-      <span><i style="background:#ffea00"></i> Verbrauch (Aktueller Verbrauch)</span>
+      <span><i style="background:#ffea00"></i> Verbrauch gesamt</span>
       <span><i style="background:#42a5f5"></i> Batteriestand %</span>
       <span><i style="background:#ce93d8"></i> Netz (+ Bezug / − Einspeisung)</span>
     </div>
@@ -1136,6 +1145,7 @@
           <div class="chart-empty" id="chart_consumption_empty">Keine Verbrauchsdaten</div>
         </div>
         <div class="chart-legend" id="legend_consumption"></div>
+        <div class="consumer-breakdown" id="consumer_breakdown_24h"></div>
       </div>
     </div>
   </div>
@@ -1165,6 +1175,7 @@
           <div class="chart-empty" id="chart_consumption_30d_empty">Keine Verbrauchsdaten</div>
         </div>
         <div class="chart-legend" id="legend_consumption_30d"></div>
+        <div class="consumer-breakdown" id="consumer_breakdown_30d"></div>
       </div>
     </div>
   </div>
@@ -1194,6 +1205,7 @@
           <div class="chart-empty" id="chart_consumption_year_empty">Keine Verbrauchsdaten</div>
         </div>
         <div class="chart-legend" id="legend_consumption_year"></div>
+        <div class="consumer-breakdown" id="consumer_breakdown_year"></div>
       </div>
     </div>
   </div>
@@ -1579,6 +1591,40 @@
       return v.toLocaleString("de-DE", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
     }
 
+    function formatBreakdownKw(n) {
+      const v = Number(n);
+      if (!Number.isFinite(v)) return "—";
+      return v.toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+
+    function escText(value) {
+      return String(value || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+
+    function renderConsumerBreakdown(elId, breakdown) {
+      const el = document.getElementById(elId);
+      if (!el) return;
+      const total = breakdown && breakdown.total;
+      const items = (breakdown && breakdown.items) || [];
+      if (!total) {
+        el.innerHTML = "";
+        return;
+      }
+      const itemHtml = items.map((it) =>
+        '<span class="chart-legend-item">' + escText(it.label) + ": " + formatBreakdownKw(it.kw) + " kW</span>"
+      ).join("");
+      el.innerHTML =
+        '<span class="chart-legend-item"><strong>' + escText(total.label || "Verbrauch gesamt") +
+        ": " + formatBreakdownKw(total.kw) + " kW</strong></span>" + itemHtml;
+    }
+
+    function renderAllConsumerBreakdowns() {
+      const box = (window._lastFlowData || {}).consumer_statistics;
+      ["consumer_breakdown_24h", "consumer_breakdown_30d", "consumer_breakdown_year"].forEach((id) => {
+        renderConsumerBreakdown(id, box);
+      });
+    }
+
     function setChartTotals(totals, erzeugId, verbrauchId, erzeugLabel, verbrauchLabel) {
       const t = totals || {};
       const erEl = document.getElementById(erzeugId);
@@ -1651,6 +1697,7 @@
         conPie.colors,
         unit
       );
+      renderAllConsumerBreakdowns();
 
       const dateEl = document.getElementById(dateElId);
       if (dateEl && dateFormatter) {
@@ -1673,7 +1720,7 @@
         erzeug: "total_erzeugung_24h",
         verbrauch: "total_verbrauch_24h",
         erzeugLabel: "Erzeugung 24 Stunden",
-        verbrauchLabel: "Verbrauch 24 Stunden",
+        verbrauchLabel: "Verbrauch gesamt",
       });
     }
 
@@ -1695,7 +1742,7 @@
         erzeug: "total_erzeugung_30d",
         verbrauch: "total_verbrauch_30d",
         erzeugLabel: "Erzeugung Monat",
-        verbrauchLabel: "Verbrauch Monat",
+        verbrauchLabel: "Verbrauch gesamt",
       });
     }
 
@@ -1718,7 +1765,7 @@
         erzeug: "total_erzeugung_year",
         verbrauch: "total_verbrauch_year",
         erzeugLabel: "Erzeugung Jahr",
-        verbrauchLabel: "Verbrauch Jahr",
+        verbrauchLabel: "Verbrauch gesamt",
       });
     }
 
@@ -2033,8 +2080,17 @@
       return fallback;
     }
 
+    function builtinDisplayName(pointKey, fallback) {
+      const labels = window._flowBuiltinLabels || {};
+      const name = String(labels[pointKey] || "").trim();
+      return name || fallback;
+    }
+
     function flowBuiltinDefs() {
-      return FLOW_BUILTIN.map((b) => Object.assign({}, b, { slot: builtinSlotFor(b.key, b.slot) }));
+      return FLOW_BUILTIN.map((b) => Object.assign({}, b, {
+        slot: builtinSlotFor(b.key, b.slot),
+        label: builtinDisplayName(b.key, b.label),
+      }));
     }
 
     function countVisibleFlowNodes() {
@@ -2315,6 +2371,11 @@
           const f = (window._dashCustomMeta || []).find((x) => x.id === id);
           return f ? f.name : id;
         }
+        const point = (k === "battery_soc" || k === "battery_power") ? "battery" : k;
+        if (point === "wohnhaus" || String((window._flowBuiltinLabels || {})[point] || "").trim()) {
+          const def = FLOW_BUILTIN.find((b) => b.key === point);
+          return builtinDisplayName(point, (def && def.label) || k);
+        }
         return (FLOW_FIELD_META[k] || {}).label || k;
       });
       openFlowConfigModal(keys, labels.join(" · "));
@@ -2543,6 +2604,7 @@
           }
           // Dieselben role_sums wie Steuerung / Energiemanagement (flow_roles / miner_flow_data)
           updateRoleSumSummary(data);
+          renderAllConsumerBreakdowns();
         })
         .catch(() => {});
     }
@@ -2558,6 +2620,7 @@
           window._dashCustomMeta = data.config?.custom_flow_fields || [];
           window._flowHiddenBuiltins = data.config?.flow_hidden_builtins || [];
           window._flowBuiltinSlots = data.config?.flow_builtin_slots || {};
+          window._flowBuiltinLabels = data.config?.flow_builtin_labels || {};
           renderFlowGrid(window._lastFlowData);
         })
         .catch(() => {});
@@ -3078,18 +3141,28 @@
         section.dataset.fieldKey = fieldKey;
         const isCustom = fieldKey.startsWith("custom:");
         const customMeta = (flowConfigDraft.customMeta || {})[fieldKey] || {};
+        const builtinMeta = (flowConfigDraft.builtinMeta || {})[fieldKey] || {};
+        const showBuiltinName = !isCustom && fieldKey !== "battery_power";
         let nameRow = "";
         if (isCustom) {
           nameRow =
             '<label style="display:block;margin-bottom:0.55rem;font-size:0.82rem;">Feldname' +
             '<input type="text" class="form-control flow-custom-name" data-field="' + fieldKey + '" value="' +
             (customMeta.name || "").replace(/"/g, "&quot;") + '" style="margin-top:0.25rem"></label>';
+        } else if (showBuiltinName) {
+          nameRow =
+            '<label style="display:block;margin-bottom:0.55rem;font-size:0.82rem;">Feldname' +
+            '<input type="text" class="form-control flow-builtin-name" data-field="' + fieldKey + '" value="' +
+            String(builtinMeta.name || meta.label || "").replace(/"/g, "&quot;") + '" style="margin-top:0.25rem"></label>';
         }
         const roleHtml = shouldShowRolePicker(fieldKey)
           ? buildFlowRoleRadios(fieldKey, field.role || defaultRoleForField(fieldKey))
           : "";
+        const heading = isCustom
+          ? (customMeta.name || "Eigenes Feld")
+          : (showBuiltinName ? (builtinMeta.name || meta.label) : meta.label);
         section.innerHTML =
-          '<h5>' + (isCustom ? (customMeta.name || "Eigenes Feld") : meta.label) + '</h5>' +
+          '<h5>' + heading + '</h5>' +
           '<small>' + (isCustom ? "Eigener Verbrauch / Erzeugung — Rolle unten wählen" : meta.hint) + '</small>' +
           nameRow +
           roleHtml +
@@ -3105,6 +3178,15 @@
           if (!flowConfigDraft.customMeta) flowConfigDraft.customMeta = {};
           if (!flowConfigDraft.customMeta[fieldKey]) flowConfigDraft.customMeta[fieldKey] = {};
           flowConfigDraft.customMeta[fieldKey].name = e.target.value;
+          const h5 = section.querySelector("h5");
+          if (h5) h5.textContent = e.target.value.trim() || "Eigenes Feld";
+        });
+        section.querySelector(".flow-builtin-name")?.addEventListener("input", (e) => {
+          if (!flowConfigDraft.builtinMeta) flowConfigDraft.builtinMeta = {};
+          if (!flowConfigDraft.builtinMeta[fieldKey]) flowConfigDraft.builtinMeta[fieldKey] = {};
+          flowConfigDraft.builtinMeta[fieldKey].name = e.target.value;
+          const h5 = section.querySelector("h5");
+          if (h5) h5.textContent = e.target.value.trim() || meta.label;
         });
         section.querySelectorAll(".flow-role-radio").forEach(radio => {
           radio.addEventListener("change", () => {
@@ -3239,7 +3321,7 @@
           flowConfigLiveTimer = setInterval(() => { reloadEntities(); }, 4000);
           const cfg = mappingData.config || {};
           const savedRoles = flowConfigDashCfg.flow_point_roles || {};
-          flowConfigDraft = { fields: {}, customMeta: {} };
+          flowConfigDraft = { fields: {}, customMeta: {}, builtinMeta: {} };
           fieldKeys.forEach(key => {
             if (key.startsWith("custom:")) {
               const id = key.slice(7);
@@ -3279,6 +3361,15 @@
               sensors: sensors,
               role: savedRoles[pointKey] || defaultRoleForField(key),
             };
+            if (key !== "battery_power") {
+              const pointDef = FLOW_BUILTIN.find((b) => b.key === pointKey);
+              const fallback = (pointDef && pointDef.label) || (FLOW_FIELD_META[key] || {}).label || key;
+              const stored = (flowConfigDashCfg.flow_builtin_labels || {})[pointKey];
+              flowConfigDraft.builtinMeta[key] = {
+                point: pointKey,
+                name: String(stored || "").trim() || fallback,
+              };
+            }
           });
           renderFlowConfigSections();
           if (statusEl && flowConfigEntities.length) statusEl.textContent = "";
@@ -3336,6 +3427,16 @@
       const dashPromise = fetch("/api/dashboard/config").then(r => r.json()).then(data => {
         const cfg = data.config || {};
         cfg.flow_point_roles = Object.assign({}, FLOW_ROLE_DEFAULTS, cfg.flow_point_roles || {});
+        cfg.flow_builtin_labels = Object.assign({}, cfg.flow_builtin_labels || {});
+        Object.keys(flowConfigDraft.builtinMeta || {}).forEach(key => {
+          if (key === "battery_power") return;
+          const meta = flowConfigDraft.builtinMeta[key] || {};
+          const point = meta.point || flowPointKeyForField(key);
+          const name = String(meta.name || "").trim();
+          if (!point) return;
+          if (name) cfg.flow_builtin_labels[point] = name;
+          else delete cfg.flow_builtin_labels[point];
+        });
         haKeys.forEach(key => {
           const draft = flowConfigDraft.fields[key];
           const point = flowPointKeyForField(key);

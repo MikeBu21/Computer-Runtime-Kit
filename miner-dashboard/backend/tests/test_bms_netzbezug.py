@@ -173,6 +173,7 @@ class ProgramAndReleaseTests(unittest.TestCase):
         self.assertEqual(values[0x0082], 0)
         self.assertEqual(values[0x00BF], 8000)
         self.assertEqual(values[0x0091], 0)
+        self.assertEqual(values[0x0084], 0)
         self.assertEqual(values[0x008F], 13180)
         self.assertEqual(values[0x00E9], 800)
         self.assertEqual(values[0x006C], 240)
@@ -204,6 +205,19 @@ class ProgramAndReleaseTests(unittest.TestCase):
         self.assertEqual(values[0x00A6], 40)
         self.assertEqual(values[0x00AC], 0)
         self.assertEqual(values[0x009F], 2000)
+
+    def test_release_clears_micro_export_cutoff_and_keeps_peak_shaving(self):
+        # Bit 0 gesetzt, Bit 4 aus: Abschaltung aus, Kappung an -> nur Bit 4.
+        rows = bms_seite._release_flag_row(_item(), 0x0001)
+        self.assertEqual(_by_addr(rows)[0x00B2], 1 << bms_seite.GRID_PEAK_ENABLE_BIT)
+        self.assertEqual(bms_seite._release_flag_row(_item(), 1 << bms_seite.GRID_PEAK_ENABLE_BIT), [])
+        self.assertEqual(bms_seite._release_flag_row(_item(), None), [])
+
+    def test_readback_reports_a_mismatch(self):
+        self.assertIsNone(bms_seite.readback_diff(0x0091, "Solar Sell", 0, 0))
+        text = bms_seite.readback_diff(0x0091, "Solar Sell", 0, 1)
+        self.assertIn("Solar Sell", text)
+        self.assertIn("gelesen 1", text)
 
 
 class InstallerCeilingTests(unittest.TestCase):

@@ -283,6 +283,9 @@ def build_pie_response(
     for sl in slices:
         if not sl.get("enabled"):
             continue
+        # Die Summe steht separat. Die Torte zeigt die einzelnen Verbraucher.
+        if sl.get("managed") == "verbrauch_gesamt" or sl.get("source") == "flow.verbrauch_gesamt":
+            continue
         sid = sl["id"]
         val = round(float(chart_kwh.get(sid, 0.0)), 2)
         labels.append(sl.get("label") or sid)

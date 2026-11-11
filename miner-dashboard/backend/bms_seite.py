@@ -280,6 +280,10 @@ SOLAR_SELL_OFF = 0
 # Nach dem Ausschalten: externer Zugriff / Zero-Export-Offset 20 W.
 ZERO_EXPORT_IDLE_W = 20
 GRID_PEAK_ENABLE_BIT = 4
+# Register 0x00B2, Bit 0: Microinverter Export cut-off. Aus, sobald kein Zukauf mehr gehalten wird.
+MICRO_EXPORT_CUTOFF_BIT = 0
+# Schalter Generator/Microinverter, Register 0x0084. 0 = aus.
+REG_MICROINVERTER = 0x0084
 MAX_DISCHARGE_AMPS = 240
 TOU_HOLD_SOC = 20
 TOU_HOLD_POWER_W = 12000
@@ -1001,6 +1005,10 @@ def track_logger(host: Optional[str] = None, persist: bool = True) -> Dict[str, 
 
 
 PV_POWER_REGISTERS = (0x00BA, 0x00BB, 0x00BC, 0x00BD)
+# Nicht für die Anzeige. Ladestand, Batterie, Netz und PV kommen nur aus Home Assistant.
+REG_BATTERY_SOC = 0x00B8
+REG_BATTERY_POWER = 0x00BE
+REG_GRID_POWER = 0x00A9
 _last_discovery: List[Dict[str, Any]] = []
 _pv_cache: Dict[str, Optional[float]] = {}
 _pv_poller_started = False
@@ -1164,10 +1172,25 @@ def scan_inverters() -> Dict[str, Any]:
     }
 
 
-def add_tracked_inverter(mac: str, name: str = "", serial: int = 0) -> Dict[str, Any]:
-    """Wechselrichter nur im Dashboard speichern. MAC bleibt, bis der Eintrag gelöscht wird."""
+def add_tracked_inverter(mac: str, name: str = "", serial: int = 0, host: str = "") -> Dict[str, Any]:
+    """Wechselrichter nur im Dashboard speichern. MAC bleibt, bis der Eintrag gelöscht wird.
+
+    Ohne MAC reicht eine IP: dann wird nur dieser Logger gefragt, nicht das ganze Netz.
+    """
     settings = load_settings()
     mac_text = _format_mac(mac)
+    ip = _host(host)
+    if not mac_text and ip:
+        found = _unicast_discover(ip, timeout=2.0)
+        if not found:
+            return {"ok": False, "message": "An dieser IP antwortet kein Solarman-Logger."}
+        mac_text = found["mac"]
+        ip = found["ip"] or ip
+        if not serial:
+            try:
+                serial = int(found.get("serial") or 0)
+            except (TypeError, ValueError):
+                serial = 0
     if not mac_text:
         return {"ok": False, "message": "MAC-Adresse fehlt."}
     for item in settings.get("tracked_inverters") or []:
@@ -1177,13 +1200,13 @@ def add_tracked_inverter(mac: str, name: str = "", serial: int = 0) -> Dict[str,
         serial_num = int(serial or 0)
     except (TypeError, ValueError):
         serial_num = 0
-    ip = ""
-    for item in _last_discovery:
-        if _format_mac(item.get("mac")) == mac_text:
-            ip = _host(item.get("ip"))
-            if not serial_num:
-                serial_num = int(item.get("serial") or 0)
-    if not serial_num or not ip:
+    if not ip:
+        for item in _last_discovery:
+            if _format_mac(item.get("mac")) == mac_text:
+                ip = _host(item.get("ip"))
+                if not serial_num:
+                    serial_num = int(item.get("serial") or 0)
+    if (not serial_num or not ip) and not _host(host):
         found = discover_logger(ip, mac=mac_text)
         if found:
             ip = ip or found["ip"]
@@ -1279,6 +1302,56 @@ def read_inverter_pv_kw(host: str, serial: int, unit: int = 1) -> Optional[float
     for address in PV_POWER_REGISTERS:
         watts += int(read_solarman_holding(ip, 8899, int(unit) or 1, int(serial), address))
     return round(max(0, watts) / 1000.0, 3)
+
+
+def _signed16(raw: int) -> int:
+    value = int(raw) & 0xFFFF
+    return value - 0x10000 if value >= 0x8000 else value
+
+
+def _empty_logger_powers() -> Dict[str, Optional[float]]:
+    return {"soc_percent": None, "battery_kw": None, "grid_kw": None, "pv_kw": None}
+
+
+# Anzeige-Felder. Nur die zugeordneten Home-Assistant-Sensoren, nie Modbus.
+_HA_DISPLAY_FIELDS = (
+    ("soc_percent", "battery_soc"),
+    ("battery_kw", "battery_power"),
+    ("grid_kw", "kelag"),
+    ("pv_kw", "pv"),
+)
+
+
+def read_control_logger_powers() -> Dict[str, Optional[float]]:
+    """Ladestand, Batterie, Netz und PV ausschließlich aus Home Assistant.
+
+    Die Zuordnung steht in ha_entity_mapping (Felder battery_soc, battery_power,
+    kelag, pv) inklusive Vorzeichen. Modbus-Register werden dafür nicht gelesen.
+    """
+    try:
+        from ha_entity_mapping import (
+            FIELD_DEFINITIONS,
+            compute_field_value,
+            load_config,
+            normalize_field_entry,
+        )
+        from energy_monitor.ha_live_reader import load_snapshot
+
+        cfg = load_config()
+        snapshot = load_snapshot()
+        fields = cfg.get("fields") or {}
+    except Exception:
+        return _empty_logger_powers()
+    out = _empty_logger_powers()
+    for key, field_name in _HA_DISPLAY_FIELDS:
+        entry = normalize_field_entry(fields.get(field_name) or {})
+        if not entry.get("enabled") or not entry.get("sensors"):
+            continue
+        try:
+            out[key] = compute_field_value(entry, FIELD_DEFINITIONS[field_name], snapshot)
+        except Exception:
+            out[key] = None
+    return out
 
 
 def extra_inverter_flow_values() -> List[Dict[str, Any]]:
@@ -1599,6 +1672,7 @@ def _control_item(item: Dict[str, Any], link: Optional[Dict[str, Any]]) -> Dict[
         chosen["max_export_register"] = 0x00E7
         chosen["max_import_register"] = 0x00E9
         chosen["sell_power_register"] = 0x008F
+        chosen["microinverter_register"] = REG_MICROINVERTER
     chosen["register_name"] = "Zero Export power"
     chosen["writable"] = True
     chosen["encoding"] = "watts"
@@ -1795,76 +1869,19 @@ _control_sample: Dict[str, Any] = {}
 _sampler_started = False
 
 
-HA_GRID_POWER = "sensor.192_168_1_176_grid_power"
-HA_BATTERY_POWER = "Beispiel"
-HA_BATTERY_SOC = (
-    "Beispiel",
-    "Beispiel_bms_soc",
-    "Beispiel_soc",
-    "sensor.192_168_1_176_soc",
-)
-
-
-def _ha_number(raw: Any) -> Optional[float]:
-    if raw in (None, "", "unavailable", "unknown", "n/a"):
-        return None
-    try:
-        return float(str(raw).replace(",", ".").strip())
-    except (TypeError, ValueError):
-        return None
-
-
 def _read_live_now() -> Dict[str, Any]:
-    """Wechselrichter-Zähler aus Home Assistant. Nicht daten.json (dort steht oft SOC 0)."""
-    soc = None
-    battery_kw = None
-    grid_kw = None
-    load_kw = None
-    try:
-        from ha_device_control import read_ha_entity_state
+    """Ladestand, Batterie, PV und Netz nur aus den Home-Assistant-Sensoren.
 
-        raw_grid = _ha_number(read_ha_entity_state(HA_GRID_POWER))
-        if raw_grid is not None:
-            grid_kw = round(raw_grid / 1000.0, 2)
-        load_kw = _configured_house_kw()
-        raw_batt = _ha_number(read_ha_entity_state(HA_BATTERY_POWER))
-        if raw_batt is not None:
-            # Solarman: Plus = Entladen. Hier: Plus = Laden.
-            battery_kw = round(-raw_batt / 1000.0, 2)
-        for entity in HA_BATTERY_SOC:
-            soc = _parse_soc(read_ha_entity_state(entity))
-            if soc is not None:
-                break
-    except Exception:
-        pass
-    if soc is None or battery_kw is None:
-        try:
-            from dashboard_battery import load_battery_data
-
-            battery = load_battery_data()
-            file_soc = _parse_soc(battery.get("soc"))
-            # 0 % aus der Datei ist der bekannte Totwert, nicht der Speicher.
-            if soc is None and file_soc not in (None, 0.0):
-                soc = file_soc
-            if battery_kw is None:
-                power = battery.get("power_kw")
-                battery_kw = None if power is None else round(float(power), 2)
-        except Exception:
-            pass
-    if grid_kw is None:
-        try:
-            from dashboard_control import get_grid_kw_for_control
-
-            grid = get_grid_kw_for_control(str(BACKEND_DIR))
-            grid_kw = None if grid is None else round(float(grid), 2)
-        except Exception:
-            pass
+    Die Hauslast bleibt die konfigurierte Summe. Modbus wird dafür nicht gelesen.
+    """
+    powers = read_control_logger_powers()
     return {
-        "soc_percent": None if soc is None else round(soc, 1),
-        "battery_kw": battery_kw,
-        "grid_kw": grid_kw,
-        "load_kw": load_kw,
-        "source": "Home Assistant / Solarman",
+        "soc_percent": powers.get("soc_percent"),
+        "battery_kw": powers.get("battery_kw"),
+        "grid_kw": powers.get("grid_kw"),
+        "pv_kw": powers.get("pv_kw"),
+        "load_kw": _configured_house_kw(),
+        "source": "Home Assistant",
     }
 
 
@@ -2100,6 +2117,13 @@ def write_solarman_multiple(host: str, port: int, unit: int, serial: int, addres
     _solarman_exchange(host, port, serial, modbus, lambda answer: answer[:6] == modbus[:6])
 
 
+def readback_diff(address: int, name: str, wanted: int, actual: int) -> Optional[str]:
+    """Soll gegen Rücklesen. None, wenn der Wechselrichter den Wert übernommen hat."""
+    if _u16(actual) == _u16(wanted):
+        return None
+    return _phrase(address, name, wanted) + f", gelesen {_u16(actual)}"
+
+
 def read_solarman_holding(host: str, port: int, unit: int, serial: int, address: int) -> int:
     """Ein Holding-Register über den Solarman-Logger lesen (Funktionscode 3)."""
     modbus = struct.pack(">BBHH", int(unit) & 0xFF, 3, int(address) & 0xFFFF, 1)
@@ -2109,6 +2133,23 @@ def read_solarman_holding(host: str, port: int, unit: int, serial: int, address:
         lambda reply: len(reply) >= 5 and reply[0] == modbus[0] and reply[1] == 3 and reply[2] == 2,
     )
     return (answer[3] << 8) | answer[4]
+
+
+def read_holding(host: str, port: int, unit: int, serial: int, address: int) -> int:
+    """Holding-Register zurücklesen. Port 8899 über Solarman, sonst Modbus-TCP Funktionscode 3."""
+    if int(port) == 8899 or serial:
+        if not serial:
+            raise OSError("Solarman-Seriennummer fehlt")
+        return read_solarman_holding(host, port, unit, serial, address)
+    pdu = struct.pack(">BHH", 3, int(address) & 0xFFFF, 1)
+    message = struct.pack(">HHHB", 1, 0, len(pdu) + 1, int(unit) & 0xFF) + pdu
+    with socket.create_connection((host, int(port)), timeout=3.0) as sock:
+        sock.settimeout(3.0)
+        sock.sendall(message)
+        data = sock.recv(32)
+    if len(data) < 11 or data[7] != 3 or data[8] != 2:
+        raise OSError("Rücklesen ohne Nutzdaten")
+    return (data[9] << 8) | data[10]
 
 
 def reapply_dauerzukauf_test() -> None:
@@ -2371,6 +2412,22 @@ def _peak_enable_row(item: Dict[str, Any], peak_flags: Optional[int], enabled: b
     return [(int(register), "Grid Peak shaving enable", value)]
 
 
+def _release_flag_row(item: Dict[str, Any], peak_flags: Optional[int]) -> List[tuple]:
+    """Lösen: Spitzenkappung an (Bit 4), Export-Abschaltung der Mikros aus (Bit 0).
+
+    Nur das gelesene Wort wird verändert. Ohne Rücklesen des Wortes wird nichts geschrieben.
+    """
+    register = item.get("grid_peak_enable_register")
+    if register is None or peak_flags is None:
+        return []
+    value = int(peak_flags) | (1 << GRID_PEAK_ENABLE_BIT)
+    value &= ~(1 << MICRO_EXPORT_CUTOFF_BIT)
+    value &= 0xFFFF
+    if value == (int(peak_flags) & 0xFFFF):
+        return []
+    return [(int(register), "System work switch", value)]
+
+
 def _import_writes(
     item: Dict[str, Any],
     target_w: int,
@@ -2603,6 +2660,8 @@ def _release_writes(item: Dict[str, Any], settings: Optional[Dict[str, Any]] = N
         )
     if item.get("solar_sell_register") is not None:
         rows.append((int(item["solar_sell_register"]), "Solar Sell", SOLAR_SELL_OFF))
+    if item.get("microinverter_register") is not None:
+        rows.append((int(item["microinverter_register"]), "Microinverter", 0))
     if item.get("sell_power_register") is not None:
         rows.append(
             (int(item["sell_power_register"]), "Export Surplus Power", _install_value(settings, "install_max_sell_w"))
@@ -2679,16 +2738,17 @@ def _send_verified(settings: Dict[str, Any], serial: int, writes: List[tuple], r
     missed: List[str] = []
     for address, name, value in pending:
         wanted = _u16(value)
+        diff = ""
         ok = False
         for _attempt in range(2):
             try:
                 _send_holding(host, port, unit, serial, address, value)
-                if not serial:
-                    ok = True
-                    break
-                ok = read_solarman_holding(host, port, unit, serial, address) == wanted
+                actual = read_holding(host, port, unit, serial, address)
+                diff = readback_diff(address, name, wanted, actual) or ""
+                ok = not diff
             except OSError:
                 ok = False
+                diff = _phrase(address, name, value) + ", Rücklesen fehlgeschlagen"
             if ok:
                 break
         if ok:
@@ -2696,11 +2756,12 @@ def _send_verified(settings: Dict[str, Any], serial: int, writes: List[tuple], r
             done.append(_phrase(address, name, value))
         else:
             _confirmed.pop(int(address), None)
-            missed.append(_phrase(address, name, value))
+            missed.append(diff or _phrase(address, name, value))
     text = "Geschrieben und zurückgelesen: " + ("; ".join(done) if done else "nichts") + "."
     if missed:
-        text += " Nicht übernommen, nächster Durchlauf: " + "; ".join(missed) + "."
-    return _write_result(bool(done) or not missed, text, raw)
+        text += " Abweichung nach Rücklesen: " + "; ".join(missed) + "."
+        return _write_result(False, text, raw)
+    return _write_result(True, text, raw)
 
 
 def apply_write(
@@ -2730,7 +2791,9 @@ def apply_write(
             _clear_release_pending(settings)
             return _write_result(False, "Aus. Es wird nichts geschrieben.")
         serial = int(link.get("serial") or 0) if link else 0
-        writes = writes + _peak_enable_row(item, _read_peak_flags(item, settings, serial), enabled=True)
+        peak_flags = _read_peak_flags(item, settings, serial)
+        writes = writes + _release_flag_row(item, peak_flags)
+        flags_unread = item.get("grid_peak_enable_register") is not None and peak_flags is None
         with _lock:
             if _release_sent or not _release_due(settings):
                 return _write_result(False, "Aus. Es wird nichts geschrieben.")
@@ -2741,11 +2804,28 @@ def apply_write(
             _last_write["at"] = time.monotonic()
             _last_write["signature"] = ("release",)
             _last_write["result"] = result
-            if result.get("command_sent") and "Nicht übernommen" not in result.get("write_text", ""):
+            verified = bool(result.get("command_sent")) and "Abweichung" not in (result.get("write_text") or "")
+            if flags_unread:
+                result = _write_result(
+                    False,
+                    (result.get("write_text") or "")
+                    + " Abweichung nach Rücklesen: System work switch nicht gelesen, Export-Abschaltung ungeprüft.",
+                    result.get("raw"),
+                )
+                verified = False
+            if verified:
+                ha_errors = _sync_ha_release(settings)
+                if ha_errors:
+                    result = _write_result(
+                        False,
+                        (result.get("write_text") or "") + " Abweichung nach Rücklesen: " + "; ".join(ha_errors) + ".",
+                        result.get("raw"),
+                    )
+                    verified = False
+            if verified:
                 _release_sent = True
                 _needs_release = False
                 _clear_release_pending(settings)
-                _sync_ha_release(settings)
             else:
                 _release_sent = False
             return result
@@ -2793,12 +2873,27 @@ def apply_write(
         return result
 
 
-def _sync_ha_release(settings: Optional[Dict[str, Any]] = None) -> None:
-    """Nach dem Ausschalten HA auf die konfigurierte Standeinstellung setzen."""
+def _ha_matches(entity: str, expected: str, current: str) -> bool:
+    if expected == "off":
+        return current in ("off", "0")
+    if current == expected:
+        return True
+    try:
+        return float(current) == float(expected)
+    except (TypeError, ValueError):
+        return False
+
+
+def _sync_ha_release(settings: Optional[Dict[str, Any]] = None) -> List[str]:
+    """Nach dem Ausschalten HA auf die Standeinstellung setzen und zurücklesen.
+
+    Solar Sell, Mikrowechselrichter und die Export-Abschaltung müssen aus sein.
+    Weicht der gelesene Zustand ab, kommt die Stelle in der Fehlerliste zurück.
+    """
     try:
         from ha_device_control import ha_service, read_ha_entity_state
-    except Exception:
-        return
+    except Exception as exc:
+        return [f"Home Assistant nicht erreichbar: {exc}"]
     idle_w = _idle_grid_w(settings)
     work_name = "Export First" if _idle_work_mode(settings) == WORK_MODE_EXPORT_FIRST else "Zero Export To CT"
     pattern_name = "Battery First" if _idle_energy_pattern(settings) == ENERGY_PATTERN_BATTERY_FIRST else "Load First"
@@ -2812,24 +2907,33 @@ def _sync_ha_release(settings: Optional[Dict[str, Any]] = None) -> None:
         ("select", "select_option", f"{select}_work_mode", {"option": work_name}),
         ("select", "select_option", f"{select}_energy_pattern", {"option": pattern_name}),
         ("switch", "turn_off", "switch.192_168_1_176_battery_grid_charging", {}),
+        ("switch", "turn_off", "switch.192_168_1_176_export_surplus", {}),
+        ("switch", "turn_off", "switch.192_168_1_176_microinverter", {}),
+        ("switch", "turn_off", "switch.192_168_1_176_microinverter_export_cut_off", {}),
     ]
     for index in range(1, 7):
         wanted.append(("number", "set_value", f"{prefix}_program_{index}_soc", {"value": _idle_tou_soc(settings)}))
         wanted.append(("number", "set_value", f"{prefix}_program_{index}_power", {"value": _idle_tou_power_w(settings)}))
         wanted.append(("select", "select_option", f"{select}_program_{index}_charging", {"option": charge_name}))
+    errors: List[str] = []
     for domain, service, entity, extra in wanted:
         current = (read_ha_entity_state(entity) or "").strip()
-        target = str(extra.get("value") if extra.get("value") is not None else extra.get("option") or "")
-        if service == "turn_off" and current in ("off", "0"):
-            continue
-        if target and current == target:
+        target = "off" if service == "turn_off" else str(
+            extra.get("value") if extra.get("value") is not None else extra.get("option") or ""
+        )
+        if target and _ha_matches(entity, target, current):
             continue
         try:
             data = {"entity_id": entity}
             data.update(extra)
             ha_service(domain, service, data)
-        except Exception:
-            pass
+        except Exception as exc:
+            errors.append(f"{entity}: Schreiben fehlgeschlagen ({exc})")
+            continue
+        seen = (read_ha_entity_state(entity) or "").strip()
+        if not _ha_matches(entity, target, seen):
+            errors.append(f"{entity}: Soll {target}, gelesen {seen or 'unbekannt'}")
+    return errors
 
 
 def _load_log() -> List[Dict[str, Any]]:
@@ -3097,7 +3201,8 @@ def _ensure_writer() -> None:
                 )
                 item = INVERTERS[settings["inverter"]]
                 write = apply_write(settings, plan, live)
-                if settings.get("real_mode") or write.get("command_sent"):
+                text = write.get("write_text") or ""
+                if settings.get("real_mode") or write.get("command_sent") or "Abweichung" in text:
                     _remember(live, plan, write, item["label"])
             except Exception:
                 pass

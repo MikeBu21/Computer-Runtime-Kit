@@ -710,12 +710,13 @@ def api_bms_inverters_add():
     payload = request.get_json(silent=True) or {}
     mac = request.form.get("mac") or payload.get("mac") or ""
     name = request.form.get("name") or payload.get("name") or ""
+    host = request.form.get("ip") or request.form.get("host") or payload.get("ip") or payload.get("host") or ""
     serial_raw = request.form.get("serial") or payload.get("serial") or 0
     try:
         serial = int(serial_raw or 0)
     except (TypeError, ValueError):
         serial = 0
-    result = add_tracked_inverter(str(mac), str(name), serial)
+    result = add_tracked_inverter(str(mac), str(name), serial, host=str(host))
     code = 200 if result.get("ok") or result.get("need_serial") else 400
     return jsonify(result), code
 

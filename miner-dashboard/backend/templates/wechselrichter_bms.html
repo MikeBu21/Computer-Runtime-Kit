@@ -15,7 +15,7 @@
         <label class="form-label" for="inverter">Wechselrichtertyp</label>
         <select class="form-control" id="inverter" name="inverter">
           {% for item in inverters %}
-            <option value="{{ item.id }}" data-note="{{ item.note }}" data-register="{{ item.register_text }}" {% if settings.inverter == item.id %}selected{% endif %}>{{ item.label }} — {{ item.register_text }}</option>
+            <option value="{{ item.id }}" data-note="{{ item.note }}" data-register="{{ item.register_text }}" data-needs-password="{% if item.id.startswith('deye') %}0{% elif item.needs_password %}1{% else %}0{% endif %}" {% if settings.inverter == item.id %}selected{% endif %}>{{ item.label }} — {{ item.register_text }}</option>
           {% endfor %}
         </select>
         <p id="type_note" style="color: var(--muted); font-size: 0.82rem; margin: 0.45rem 0 0;"></p>
@@ -29,12 +29,31 @@
   </div>
 
   <div class="panel" style="max-width: none;">
-    <h5 class="panel-title">Wechselrichter im Netz</h5>
-    <p style="color: var(--muted); font-size: 0.82rem; margin: 0 0 0.6rem;">Netzwerkscan sucht den Solarman-Logger und zeigt IP, MAC und Seriennummer. Hinzufügen speichert das Gerät hier. Die MAC bleibt gespeichert, bis du den Eintrag löschst.</p>
-    <p id="scan_need_note" style="color: var(--muted); font-size: 0.82rem; margin: 0 0 0.6rem;">Für Deye über Solarman ist kein Passwort nötig. Die Seriennummer kommt vom Scan und wird nur abgefragt, wenn sie fehlt.</p>
-    <button type="button" id="inverter_scan_btn" class="btn-primary-custom">Netzwerkscan</button>
-    <p id="scan_hint" style="color: var(--muted); min-height: 1.2rem;"></p>
-    <div id="inverter_found_list"></div>
+    <h5 class="panel-title">Wechselrichter hinzufügen</h5>
+    <p style="color: var(--muted); font-size: 0.82rem; margin: 0 0 0.6rem;">IP des Solarman-Loggers eintragen. Die MAC wird an dieser Adresse gelesen und danach stündlich weiterverfolgt, bis du den Eintrag löschst.</p>
+    <p id="password_note" style="color: var(--muted); font-size: 0.82rem; margin: 0 0 0.6rem;">Deye über Solarman braucht kein Passwort.</p>
+    <form id="logger_form" class="field-grid">
+      <div>
+        <label class="form-label" for="logger_name">Name</label>
+        <input class="form-control" id="logger_name" name="name" type="text" value="Wechselrichter" autocomplete="off">
+      </div>
+      <div>
+        <label class="form-label" for="logger_ip">IP-Adresse</label>
+        <input class="form-control" id="logger_ip" name="ip" type="text" inputmode="decimal" placeholder="z. B. 192.168.1.176" autocomplete="off" required>
+      </div>
+      <div>
+        <label class="form-label" for="logger_serial">Seriennummer</label>
+        <input class="form-control" id="logger_serial" name="serial" type="text" inputmode="numeric" placeholder="Logger-Seriennummer" autocomplete="off">
+      </div>
+      <div id="logger_password_wrap" hidden>
+        <label class="form-label" for="logger_password">Passwort</label>
+        <input class="form-control" id="logger_password" name="password" type="password" autocomplete="off">
+      </div>
+    </form>
+    <div class="action-row">
+      <button type="submit" form="logger_form" class="btn-primary-custom">Hinzufügen</button>
+    </div>
+    <p id="logger_hint" style="color: var(--muted); min-height: 1.2rem;"></p>
     <h5 style="margin-top: 0.9rem;">Gespeichert</h5>
     <div id="inverter_saved_list"></div>
   </div>
@@ -57,13 +76,24 @@
   const form = document.getElementById("type_form");
   const hint = document.getElementById("save_hint");
 
-  function paintNote() {
+  function paintPassword() {
     const option = select.options[select.selectedIndex];
-    const extra = option.getAttribute("data-note") || "";
-    note.textContent = extra;
+    const needs = !!(option && option.getAttribute("data-needs-password") === "1");
+    const wrap = document.getElementById("logger_password_wrap");
+    const passwordNote = document.getElementById("password_note");
+    if (wrap) wrap.hidden = !needs;
+    if (passwordNote) passwordNote.hidden = needs;
   }
 
-  const scanHint = document.getElementById("scan_hint");
+  function paintNote() {
+    const option = select.options[select.selectedIndex];
+    const extra = option ? (option.getAttribute("data-note") || "") : "";
+    note.textContent = extra;
+    paintPassword();
+  }
+
+  const loggerHint = document.getElementById("logger_hint");
+  const loggerForm = document.getElementById("logger_form");
 
   function esc(value) {
     return String(value == null ? "" : value).replace(/[&<>"']/g, function (ch) {
@@ -71,66 +101,25 @@
     });
   }
 
-  function paintInverters(data) {
-    const foundHost = document.getElementById("inverter_found_list");
+  function paintSaved(data) {
     const savedHost = document.getElementById("inverter_saved_list");
-    if (!foundHost || !savedHost) return;
-    const found = data.discovered || [];
+    if (!savedHost) return;
     const saved = data.tracked_inverters || [];
-    foundHost.innerHTML = found.length ? found.map(function (item) {
-      const action = item.tracked
-        ? '<span style="color: var(--muted);">gespeichert</span>'
-        : '<button type="button" class="btn-primary-custom inverter-add" data-mac="' + esc(item.mac) + '" data-serial="' + esc(item.serial || "") + '">Hinzufügen</button>';
-      return '<p style="margin:0.35rem 0;">' + esc(item.ip) +
-        ' · <span style="color:#00e676;">' + esc(item.mac) + '</span>' +
-        (item.serial ? (' · SN ' + esc(item.serial)) : '') +
-        ' · ' + action + '</p>';
-    }).join("") : '<p style="color: var(--muted); margin:0.35rem 0;">Noch keine Suche.</p>';
     savedHost.innerHTML = saved.length ? saved.map(function (item) {
       const role = item.control ? "Steuerung" : "Erzeugung";
       return '<p style="margin:0.35rem 0;"><strong>' + esc(item.name || "Wechselrichter") + '</strong> · ' + role +
         '<br><span style="color:#00e676; font-weight:700;">' + esc(item.ip || "—") + '</span>' +
         ' · ' + esc(item.mac || "") +
-        (item.serial ? (' · SN ' + esc(item.serial)) : '') +
-        '<br><span style="color: var(--muted); font-size:0.82rem;">Zuletzt: ' + esc(item.tracked_at || "—") + '</span>' +
+        (item.serial ? (' · Seriennummer ' + esc(item.serial)) : '') +
+        '<br><span style="color: var(--muted); font-size:0.82rem;">Letzter Check: ' + esc(item.tracked_at || "—") + '</span>' +
         ' <button type="button" class="btn-delete inverter-delete" data-mac="' + esc(item.mac) + '" data-control="' + (item.control ? "1" : "0") + '">Löschen</button></p>';
     }).join("") : '<p style="color: var(--muted); margin:0.35rem 0;">Noch kein Wechselrichter gespeichert.</p>';
   }
 
-  async function refreshScan() {
+  async function refreshSaved() {
     const response = await fetch("/api/bms-netzbezug", { credentials: "same-origin" });
     const data = await response.json();
-    if (data.ok) paintInverters(data);
-  }
-
-  async function scanInverters() {
-    scanHint.textContent = "Suche Logger…";
-    const response = await fetch("/api/bms-netzbezug/inverters/scan", { method: "POST", credentials: "same-origin" });
-    const data = await response.json();
-    scanHint.textContent = data.message || "Suche fertig.";
-    scanHint.style.color = data.ok ? "var(--accent)" : "#f44336";
-    refreshScan();
-  }
-
-  async function addInverter(mac, serial) {
-    let name = window.prompt("Name für den Wechselrichter:", "Wechselrichter");
-    if (name == null) return;
-    const body = new FormData();
-    body.set("mac", mac);
-    body.set("name", name);
-    if (serial) body.set("serial", serial);
-    let response = await fetch("/api/bms-netzbezug/inverters/add", { method: "POST", body: body, credentials: "same-origin" });
-    let data = await response.json();
-    if (data.need_serial) {
-      const typed = window.prompt("Logger-Seriennummer:", "");
-      if (!typed) return;
-      body.set("serial", typed.trim());
-      response = await fetch("/api/bms-netzbezug/inverters/add", { method: "POST", body: body, credentials: "same-origin" });
-      data = await response.json();
-    }
-    scanHint.textContent = data.message || (data.ok ? "Hinzugefügt." : "Hinzufügen fehlgeschlagen.");
-    scanHint.style.color = data.ok ? "var(--accent)" : "#f44336";
-    if (data.ok) refreshScan();
+    if (data.ok) paintSaved(data);
   }
 
   async function deleteInverter(mac, control) {
@@ -145,26 +134,32 @@
       response = await fetch("/api/bms-netzbezug/inverters/delete", { method: "POST", body: body, credentials: "same-origin" });
       data = await response.json();
     }
-    scanHint.textContent = data.message || (data.ok ? "Entfernt." : "Löschen fehlgeschlagen.");
-    scanHint.style.color = data.ok ? "var(--accent)" : "#f44336";
-    if (data.ok) refreshScan();
+    loggerHint.textContent = data.message || (data.ok ? "Entfernt." : "Löschen fehlgeschlagen.");
+    loggerHint.style.color = data.ok ? "var(--accent)" : "#f44336";
+    if (data.ok) refreshSaved();
   }
 
   paintNote();
   select.addEventListener("change", paintNote);
-  document.getElementById("inverter_scan_btn").addEventListener("click", scanInverters);
-  document.getElementById("inverter_found_list").addEventListener("click", function (event) {
-    const button = event.target.closest(".inverter-add");
-    if (!button) return;
-    addInverter(button.dataset.mac, button.dataset.serial);
+  loggerForm.addEventListener("submit", async function (event) {
+    event.preventDefault();
+    const body = new FormData(loggerForm);
+    const passwordWrap = document.getElementById("logger_password_wrap");
+    if (passwordWrap && passwordWrap.hidden) body.delete("password");
+    loggerHint.textContent = "Logger wird gespeichert…";
+    const response = await fetch("/api/bms-netzbezug/inverters/add", { method: "POST", body: body, credentials: "same-origin" });
+    const data = await response.json();
+    loggerHint.textContent = data.message || (data.ok ? "Hinzugefügt." : "Hinzufügen fehlgeschlagen.");
+    loggerHint.style.color = data.ok ? "var(--accent)" : "#f44336";
+    if (data.ok) refreshSaved();
   });
   document.getElementById("inverter_saved_list").addEventListener("click", function (event) {
     const button = event.target.closest(".inverter-delete");
     if (!button) return;
     deleteInverter(button.dataset.mac, button.dataset.control);
   });
-  refreshScan();
-  setInterval(refreshScan, 5000);
+  refreshSaved();
+  setInterval(refreshSaved, 5000);
   form.addEventListener("submit", async function (event) {
     event.preventDefault();
     const response = await fetch("/api/bms-netzbezug/settings", {

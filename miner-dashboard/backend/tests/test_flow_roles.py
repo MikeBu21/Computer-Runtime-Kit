@@ -86,20 +86,25 @@ class MinerFlowRoleSumTests(unittest.TestCase):
 
             with mock.patch.object(miner_flow_data, "_load_dash_cfg", return_value=dash_cfg):
                 with mock.patch.object(miner_flow_data, "_signed_ha_field_kw", return_value=None):
-                    with mock.patch(
-                        "dashboard_sources.resolve_custom_flow_values",
-                        return_value={
-                            "inv2": {
-                                "id": "inv2",
-                                "name": "WR2",
-                                "value_kw": 1.25,
-                                "display": "1.250",
-                            }
-                        },
+                    with mock.patch.object(
+                        miner_flow_data,
+                        "_control_logger_builtin_kw",
+                        return_value={"pv": None, "kelag": None, "battery": None},
                     ):
-                        flow = miner_flow_data.build_flow_response(
-                            str(base), battery_power_kw=-0.8
-                        )
+                        with mock.patch(
+                            "dashboard_sources.resolve_custom_flow_values",
+                            return_value={
+                                "inv2": {
+                                    "id": "inv2",
+                                    "name": "WR2",
+                                    "value_kw": 1.25,
+                                    "display": "1.250",
+                                }
+                            },
+                        ):
+                            flow = miner_flow_data.build_flow_response(
+                                str(base), battery_power_kw=-0.8
+                            )
 
             self.assertEqual(flow["role_sums"]["erzeugung"], 6.25)  # 3 + 2 + 1.25
             self.assertEqual(flow["role_sums"]["verbraucher"], 1.5)  # 1.0 + 0.5
@@ -143,10 +148,15 @@ class MinerFlowRoleSumTests(unittest.TestCase):
                 with mock.patch.object(
                     miner_flow_data, "_signed_ha_field_kw", side_effect=fake_signed
                 ):
-                    with mock.patch(
-                        "dashboard_sources.resolve_custom_flow_values", return_value={}
+                    with mock.patch.object(
+                        miner_flow_data,
+                        "_control_logger_builtin_kw",
+                        return_value={"pv": None, "kelag": None, "battery": None},
                     ):
-                        flow = miner_flow_data.build_flow_response(str(base))
+                        with mock.patch(
+                            "dashboard_sources.resolve_custom_flow_values", return_value={}
+                        ):
+                            flow = miner_flow_data.build_flow_response(str(base))
 
             self.assertAlmostEqual(flow["role_sums"]["verbraucher"], 1.995, places=3)
             self.assertEqual(flow["verbrauch_gesamt"], "2")  # format_kw rundet 1.995 → 2.0 → "2"

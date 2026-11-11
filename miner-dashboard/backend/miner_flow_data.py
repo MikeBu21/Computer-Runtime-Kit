@@ -169,6 +169,31 @@ def _signed_ha_field_kw(
         return None
 
 
+# Builtin-Punkte des Steuer-Loggers. Die kommen aus der Direktlesung, nicht aus dem HA-Snapshot.
+_CONTROL_LOGGER_POINTS = ("pv", "kelag", "battery")
+
+
+def _control_logger_builtin_kw() -> Dict[str, Optional[float]]:
+    """PV, Netz und Batterie des Steuer-Loggers in kW. None, wenn er nicht antwortet."""
+    try:
+        from bms_seite import read_control_logger_powers
+
+        data = read_control_logger_powers() or {}
+    except Exception:
+        data = {}
+
+    def _num(key: str) -> Optional[float]:
+        raw = data.get(key)
+        if raw is None or raw == "":
+            return None
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return None
+
+    return {"pv": _num("pv_kw"), "kelag": _num("grid_kw"), "battery": _num("battery_kw")}
+
+
 def _collect_role_contributions(
     base_dir: str,
     *,
@@ -179,6 +204,7 @@ def _collect_role_contributions(
     betrieb_f: Optional[float],
     battery_power_kw: Optional[float],
     dash_cfg: Dict[str, Any],
+    direct_builtin: Optional[Dict[str, Optional[float]]] = None,
 ) -> Tuple[Dict[str, float], Dict[str, Dict[str, Any]], List[Dict[str, Any]]]:
     """Summiert sichtbare Punkte nach Rolle (mit Sensor-Vorzeichen +/−).
 
@@ -196,6 +222,8 @@ def _collect_role_contributions(
     hidden = _hidden_builtins(dash_cfg)
     sums = empty_role_sums()
     details: List[Dict[str, Any]] = []
+    if direct_builtin is None:
+        direct_builtin = _control_logger_builtin_kw()
 
     snapshot = None
     ha_cfg = None
@@ -209,7 +237,8 @@ def _collect_role_contributions(
         snapshot = None
         ha_cfg = None
 
-    # Built-ins: Live-HA (mit +/−) bevorzugen, sonst Datei-/Fallback-Wert
+    # Steuer-Logger (pv, kelag, battery): Direktwerte, sonst Datei/Parameter, nie der HA-Snapshot.
+    # Wasserkraft, Wohnhaus, Betrieb: weiter Live-HA (mit +/−), sonst Datei.
     builtin_file_fallback = {
         "pv": pv_f,
         "wasserkraft": hydro_f,
@@ -231,11 +260,16 @@ def _collect_role_contributions(
             continue
         role = builtin_role(dash_cfg, point_key)
         value = None
-        ha_key = builtin_ha_field.get(point_key)
-        if ha_key:
-            value = _signed_ha_field_kw(ha_key, ha_cfg, snapshot)
-        if value is None:
-            value = fallback
+        if point_key in _CONTROL_LOGGER_POINTS:
+            value = direct_builtin.get(point_key)
+            if value is None:
+                value = fallback
+        else:
+            ha_key = builtin_ha_field.get(point_key)
+            if ha_key:
+                value = _signed_ha_field_kw(ha_key, ha_cfg, snapshot)
+            if value is None:
+                value = fallback
         # signed value unverändert zur Rollensumme (Minus-Sensor → negativer Beitrag)
         add_to_role_sum(sums, role, value)
         if value is not None:
@@ -338,6 +372,11 @@ def build_flow_response(
     betrieb_f = _to_float(betrieb if betrieb not in (None, "n/a") else None)
 
     dash_cfg = _load_dash_cfg()
+    direct_builtin = _control_logger_builtin_kw()
+    if direct_builtin.get("pv") is not None:
+        pv = _format_kw(float(direct_builtin["pv"]))
+    if direct_builtin.get("kelag") is not None:
+        grid = _format_kw(float(direct_builtin["kelag"]))
     role_sums, custom_fields, role_details = _collect_role_contributions(
         base_dir,
         pv_f=pv_f,
@@ -347,6 +386,7 @@ def build_flow_response(
         betrieb_f=betrieb_f,
         battery_power_kw=battery_power_kw,
         dash_cfg=dash_cfg,
+        direct_builtin=direct_builtin,
     )
 
     # Verbraucher-Summe ersetzt den früheren reinen Wohnhaus-Wert
@@ -399,6 +439,25 @@ def build_flow_response(
     except Exception:
         flow_point_roles = {}
 
+    consumer_statistics: Dict[str, Any] = {
+        "total": {"label": "Verbrauch gesamt", "source": "flow.verbrauch_gesamt", "kw": 0.0},
+        "items": [],
+    }
+    try:
+        from dashboard_config import build_consumer_statistics
+
+        consumer_statistics = build_consumer_statistics(
+            dash_cfg,
+            {
+                "role_sums": role_sums,
+                "role_details": role_details,
+                "custom_fields": custom_fields,
+                "haus": haus,
+            },
+        )
+    except Exception:
+        pass
+
     return {
         "grid": grid,
         "hydro": hydro or "n/a",
@@ -412,4 +471,5 @@ def build_flow_response(
         "role_sums": role_sums,
         "role_details": role_details,
         "flow_point_roles": flow_point_roles,
+        "consumer_statistics": consumer_statistics,
     }
