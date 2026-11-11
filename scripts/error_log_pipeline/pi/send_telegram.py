@@ -244,6 +244,47 @@ def pending_packages(outbox: Path) -> List[Tuple[Path, Path]]:
     return pairs
 
 
+WISHES_FILENAME = "steuerung-wuensche.txt"
+
+
+def wishes_file(folder: Path) -> Path:
+    return folder / WISHES_FILENAME
+
+
+def read_wishes(folder: Path) -> str:
+    """Änderungswünsche, die mit dem nächsten echten Outbox-Versand mitgehen."""
+    try:
+        return wishes_file(folder).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def append_wishes(report: str, wishes: str) -> str:
+    text = (wishes or "").strip()
+    if not text:
+        return report
+    return (
+        report.rstrip()
+        + "\n\nÄnderungswünsche an der Steuerung\n"
+        + ("=" * 40)
+        + "\n"
+        + text
+        + "\n"
+    )
+
+
+def archive_wishes(outbox: Path, sent_dir: Path) -> None:
+    """Nach einem echten Versand aus der Outbox nehmen, damit sie nicht erneut gehen."""
+    src = wishes_file(outbox)
+    if not src.is_file():
+        return
+    sent_dir.mkdir(parents=True, exist_ok=True)
+    dest = wishes_file(sent_dir)
+    if dest.exists():
+        dest.unlink()
+    shutil.move(str(src), str(dest))
+
+
 def format_caption(meta: Dict[str, Any]) -> str:
     soft = meta.get("software") or {}
     top = meta.get("top_errors") or []
@@ -326,11 +367,17 @@ def deliver_package(recipients: List[Recipient], gz: Path, meta_path: Path) -> N
     so a retry after a pause only contacts chats that are still missing."""
     meta = _read_meta(meta_path)
     done = {str(x) for x in meta.get("delivered_to") or []}
+    wishes = read_wishes(gz.parent)
     caption = format_caption(meta)
+    if wishes:
+        caption += "\nÄnderungswünsche: in der Textdatei"
     txt_name = gz.name.replace(".jsonl.gz", ".txt")
     with tempfile.TemporaryDirectory(prefix="errlog-txt-") as tmp:
         txt_path = Path(tmp) / txt_name
-        txt_path.write_text(build_plaintext_report(gz, meta), encoding="utf-8")
+        txt_path.write_text(
+            append_wishes(build_plaintext_report(gz, meta), wishes),
+            encoding="utf-8",
+        )
         for r in recipients:
             if str(r.chat_id) in done:
                 continue
@@ -373,6 +420,7 @@ def process_outbox(cfg: Dict[str, Any]) -> Tuple[int, int]:
             continue
         deliver_package(recipients, gz, meta)
         mark_sent(gz, meta, sent)
+        archive_wishes(outbox, sent)
         ok_n += 1
     return ok_n, len(pairs)
 

@@ -12,6 +12,8 @@ from typing import Any, Dict, List, Optional, Tuple
 DEFAULT_CONFIG = Path(
     "/home/piminer/minersteuerung/scripts/error_log_pipeline/pi/config.json"
 )
+# Dieselbe Datei liest der Outbox-Versand und hängt sie an den Bericht.
+WISHES_FILENAME = "steuerung-wuensche.txt"
 PIPELINE_DIR = Path("/home/piminer/minersteuerung/scripts/error_log_pipeline/pi")
 PYTHON = Path("/home/piminer/minersteuerung/venv/bin/python")
 
@@ -201,6 +203,34 @@ def timer_status(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     return out
 
 
+def wishes_path(cfg: Optional[Dict[str, Any]] = None) -> Path:
+    cfg = cfg or load_pipeline_config()
+    return Path(str(cfg["outbox_dir"])) / WISHES_FILENAME
+
+
+def load_wishes(cfg: Optional[Dict[str, Any]] = None) -> str:
+    try:
+        return wishes_path(cfg).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def save_wishes(text: str, cfg: Optional[Dict[str, Any]] = None) -> str:
+    """In die Outbox legen. Leer räumt die Datei weg. Es wird dabei nichts gesendet."""
+    cfg = cfg or load_pipeline_config()
+    path = wishes_path(cfg)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        return ""
+    path.write_text(cleaned + "\n", encoding="utf-8")
+    return cleaned
+
+
 def build_status() -> Dict[str, Any]:
     cfg = load_pipeline_config()
     chats = resolve_chat_ids(cfg)
@@ -220,6 +250,7 @@ def build_status() -> Dict[str, Any]:
             "control_algorithm_daemon.log",
         ],
         "outbox": list_packages(outbox, "outbox"),
+        "wishes": load_wishes(cfg),
         "sent": list_packages(sent, "sent")[:20],
         "buffer": list_packages(buffer, "buffer"),
         "timers": timer_status(cfg),

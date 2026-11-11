@@ -58,6 +58,12 @@
       vertical-align: top;
     }
     .pkg-empty { color: var(--muted); font-size: 0.9rem; margin: 0; }
+    .wuensche-box {
+      width: 100%;
+      min-height: 7rem;
+      resize: vertical;
+      margin-top: 0.35rem;
+    }
     .chat-chip {
       display: inline-block;
       margin: 0.15rem 0.25rem 0.15rem 0;
@@ -137,10 +143,26 @@
     </div>
 
     <div class="panel">
+      <h5 class="panel-title">Änderungswünsche</h5>
+      <p style="color: var(--muted); font-size: 0.88rem; margin: 0 0 0.75rem;">
+        Was an der Steuerung geändert werden soll. Der Text liegt in der Outbox und wird mitgeschickt, wenn die Outbox ohnehin rausgeht. Es wird nicht sofort gesendet.
+      </p>
+      <label class="form-label" for="wuensche_text">Wunsch</label>
+      <textarea id="wuensche_text" class="form-control wuensche-box" maxlength="4000">{{ status.wishes }}</textarea>
+      <div style="margin-top: 0.75rem;">
+        <button type="button" class="btn-primary-custom" id="wuensche_btn">In die Outbox legen</button>
+      </div>
+      <p id="wuensche_message" style="margin: 0.75rem 0 0; color: var(--muted); min-height: 1.2rem;"></p>
+    </div>
+
+    <div class="panel">
       <div style="display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap;">
         <h5 class="panel-title" style="margin: 0;">Outbox</h5>
         <button type="button" class="btn-primary-custom" id="send_now_btn">📤 Jetzt an konfigurierte Empfänger senden</button>
       </div>
+      {% if status.wishes %}
+      <p style="margin: 0.75rem 0 0;">Änderungswünsche liegen in der Outbox und gehen mit dem nächsten Versand mit.</p>
+      {% endif %}
       <p id="send_message" style="margin: 0.75rem 0 0; color: var(--muted); min-height: 1.2rem;"></p>
       <pre id="send_detail" hidden></pre>
       {% if status.outbox %}
@@ -213,6 +235,34 @@
     msgEl.textContent = text || '';
     msgEl.style.color = ok ? 'var(--accent)' : '#f44336';
   }
+
+  const wuenscheBtn = document.getElementById('wuensche_btn');
+  const wuenscheText = document.getElementById('wuensche_text');
+  const wuenscheMsg = document.getElementById('wuensche_message');
+
+  wuenscheBtn.addEventListener('click', async () => {
+    wuenscheBtn.disabled = true;
+    wuenscheMsg.textContent = 'Lege in die Outbox …';
+    wuenscheMsg.style.color = 'var(--muted)';
+    try {
+      const res = await fetch('/api/fehlerberichte/wuensche', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'fetch' },
+        body: JSON.stringify({ text: wuenscheText.value }),
+      });
+      const data = await res.json();
+      wuenscheMsg.textContent = data.message || (data.ok ? 'Gespeichert.' : 'Speichern fehlgeschlagen.');
+      wuenscheMsg.style.color = data.ok ? 'var(--accent)' : '#f44336';
+      if (data.ok) {
+        setTimeout(() => location.reload(), 700);
+      }
+    } catch (err) {
+      wuenscheMsg.textContent = String(err);
+      wuenscheMsg.style.color = '#f44336';
+    } finally {
+      wuenscheBtn.disabled = false;
+    }
+  });
 
   btn.addEventListener('click', async () => {
     btn.disabled = true;

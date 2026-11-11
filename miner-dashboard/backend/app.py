@@ -1865,6 +1865,24 @@ def api_fehlerberichte_status():
     return jsonify(build_status())
 
 
+@app.route('/api/fehlerberichte/wuensche', methods=['POST'])
+def api_fehlerberichte_wuensche():
+    if not session.get('logged_in'):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    from error_reports_ui import save_wishes
+
+    payload = request.get_json(silent=True) or {}
+    text = payload.get("text")
+    if text is None:
+        text = request.form.get("text") or ""
+    saved = save_wishes(str(text))
+    if saved:
+        message = "In der Outbox. Geht mit dem nächsten Versand mit."
+    else:
+        message = "Änderungswünsche aus der Outbox genommen."
+    return jsonify({"ok": True, "message": message, "text": saved})
+
+
 @app.route('/api/fehlerberichte/send', methods=['POST'])
 def api_fehlerberichte_send():
     if not session.get('logged_in'):
