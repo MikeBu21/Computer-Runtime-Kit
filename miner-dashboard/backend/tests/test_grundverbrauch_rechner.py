@@ -398,20 +398,154 @@ class LockTests(unittest.TestCase):
         self.assertGreater(need["kw"], 0.4)
         self.assertLessEqual(need["kw"], 2.0)
 
-    def test_forward_smooth_updates_on_each_read_with_step_limit(self):
+    def test_forward_night_plateau_stays_flat_before_sunrise(self):
+        from grundverbrauch_rechner import forward_purchase_kw
+
+        common = dict(
+            soc_percent=35,
+            storage_kwh=41,
+            min_soc_percent=35,
+            daily_base_kwh=17,
+            base_load_scale=1.0,
+            tomorrow_pv_kwh=30.0,
+            day_after_pv_kwh=30.0,
+            forecast_trust=0.85,
+            daylight=False,
+            max_soc_percent=95,
+        )
+        at_0518 = forward_purchase_kw(hours_until_sun=2.7, **common)
+        at_0618 = forward_purchase_kw(hours_until_sun=1.0, **common)
+        self.assertEqual(at_0518["kw"], at_0618["kw"])
+        self.assertEqual(at_0618["kw"], 0.85)
+        self.assertEqual(at_0618["pv_credit_kwh"], 0.0)
+        self.assertLessEqual(at_0618["kw"], 1.2)
+        self.assertNotEqual(at_0618["kw"], 2.0)
+        huge = forward_purchase_kw(
+            hours_until_sun=1.0,
+            **{**common, "daily_base_kwh": 80.0, "tomorrow_pv_kwh": 0.0, "day_after_pv_kwh": 0.0},
+        )
+        self.assertEqual(huge["kw"], 1.2)
+
+    def test_forward_day_plateau_is_zero_near_max_soc(self):
+        from grundverbrauch_rechner import forward_purchase_kw
+
+        near_max = forward_purchase_kw(
+            soc_percent=93,
+            storage_kwh=41,
+            min_soc_percent=35,
+            daily_base_kwh=17,
+            base_load_scale=1.0,
+            tomorrow_pv_kwh=20.0,
+            day_after_pv_kwh=18.0,
+            forecast_trust=0.85,
+            hours_until_sun=4,
+            daylight=True,
+            max_soc_percent=95,
+        )
+        self.assertEqual(near_max["kw"], 0.0)
+        self.assertTrue(near_max["daylight"])
+        blocked = forward_purchase_kw(
+            soc_percent=50,
+            storage_kwh=41,
+            min_soc_percent=35,
+            daily_base_kwh=30,
+            base_load_scale=1.0,
+            tomorrow_pv_kwh=20.0,
+            day_after_pv_kwh=20.0,
+            forecast_trust=0.5,
+            hours_until_sun=10,
+            daylight=True,
+            max_soc_percent=95,
+        )
+        open_room = forward_purchase_kw(
+            soc_percent=50,
+            storage_kwh=41,
+            min_soc_percent=35,
+            daily_base_kwh=30,
+            base_load_scale=1.0,
+            tomorrow_pv_kwh=20.0,
+            day_after_pv_kwh=20.0,
+            forecast_trust=0.5,
+            hours_until_sun=10,
+            daylight=True,
+            max_soc_percent=100,
+        )
+        self.assertEqual(blocked["kw"], 0.0)
+        self.assertEqual(open_room["kw"], 0.65)
+
+    def test_forward_doubled_48h_load_raises_setpoint_under_cap(self):
+        from grundverbrauch_rechner import blend_forward_load_kwh, forward_purchase_kw
+
+        calm = blend_forward_load_kwh(17, 17, 17)
+        surge = blend_forward_load_kwh(17, 17, 34)
+        self.assertAlmostEqual(calm, 17.0)
+        self.assertAlmostEqual(surge, 0.70 * 34 + 0.20 * 17 + 0.10 * 17)
+        out = forward_purchase_kw(
+            soc_percent=35,
+            storage_kwh=41,
+            min_soc_percent=35,
+            daily_base_kwh=17,
+            weekday_kwh=17,
+            recent_48h_kwh=34,
+            base_load_scale=1.0,
+            tomorrow_pv_kwh=30.0,
+            day_after_pv_kwh=30.0,
+            forecast_trust=0.85,
+            hours_until_sun=1.0,
+            daylight=False,
+            max_soc_percent=95,
+        )
+        self.assertGreater(out["kw"], 1.0)
+        self.assertLessEqual(out["kw"], 1.5)
+        self.assertEqual(out["kw"], 1.35)
+        self.assertEqual(out["cap_kw"], 1.5)
+
+    def test_recent_48h_extrapolates_to_a_day(self):
         from datetime import datetime
 
-        from grundverbrauch_rechner import apply_forward_smooth
+        from grundverbrauch_rechner import recent_48h_daily_kwh, same_weekday_base_kwh
 
-        first = apply_forward_smooth({}, 0.5, 0.0, now=datetime(2026, 11, 4, 10, 0, 0))
+        now = datetime(2026, 11, 12, 6, 18)
+        today = now.date()
+        days = []
+        for day in ("2026-11-10", "2026-11-11"):
+            days.append({"date": day, "base_hourly": [1.0] * 24})
+        actual = [None] * 24
+        for hour in range(7):
+            actual[hour] = 1.0
+        days.append({"date": "2026-11-12", "today_hourly_actual": actual, "base_hourly": [0.0] * 24})
+        self.assertAlmostEqual(recent_48h_daily_kwh(days, today, now), 24.0)
+        thursdays = [
+            {"date": "2026-11-05", "base_hourly": [0.75] * 24},
+            {"date": "2026-10-29", "base_hourly": [0.75] * 24},
+            {"date": "2026-11-12", "base_hourly": [9.0] * 24},
+        ]
+        self.assertAlmostEqual(same_weekday_base_kwh(thursdays, today), 18.0)
+
+    def test_forward_smooth_holds_two_hours_then_steps(self):
+        from datetime import datetime, timedelta
+
+        from grundverbrauch_rechner import FORWARD_REFRESH, FORWARD_SMOOTH_ABS, apply_forward_smooth
+
+        opened = datetime(2026, 11, 4, 10, 0, 0)
+        first = apply_forward_smooth({}, 0.5, 0.0, now=opened)
         self.assertTrue(first["updated"])
         self.assertEqual(first["kw"], 0.5)
-        nxt = apply_forward_smooth(
-            first, 1.0, 0.0, now=datetime(2026, 11, 4, 10, 0, 10)
+        held = apply_forward_smooth(first, 1.0, 0.0, now=opened + timedelta(seconds=10))
+        self.assertFalse(held["updated"])
+        self.assertEqual(held["kw"], 0.5)
+        self.assertEqual(held["updated_at"], first["updated_at"])
+        later = apply_forward_smooth(first, 1.0, 0.0, now=opened + FORWARD_REFRESH)
+        self.assertTrue(later["updated"])
+        self.assertEqual(later["kw"], 0.6)
+        self.assertLessEqual(later["kw"] - first["kw"], FORWARD_SMOOTH_ABS)
+        self.assertNotEqual(later["kw"], 1.0)
+        emergency = apply_forward_smooth(
+            first, 1.0, 0.0, now=opened + FORWARD_REFRESH, emergency=True
         )
-        self.assertTrue(nxt["updated"])
-        self.assertGreater(nxt["kw"], 0.5)
-        self.assertLessEqual(nxt["kw"], 0.65)
+        self.assertEqual(emergency["kw"], 0.65)
+        capped = apply_forward_smooth({}, 2.0, 0.0, now=opened)
+        self.assertEqual(capped["kw"], 1.5)
 
     def test_zero_anchor_can_reach_new_raw_next_week(self):
         first = apply_recommendation_locks(

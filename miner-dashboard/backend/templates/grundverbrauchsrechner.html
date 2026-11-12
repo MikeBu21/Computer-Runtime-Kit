@@ -234,7 +234,7 @@
       if (parts.relief_kwh != null) bits.push("Speicher " + nf1.format(parts.relief_kwh) + " kWh/Tag");
       if (parts.min_soc_percent != null) bits.push("Min-SoC " + nf1.format(parts.min_soc_percent) + " %");
       if (short) bits.push("Nachtboden aktiv");
-      sub.textContent = bits.join(" · ") || "Dauerzukauf aus Last, PV-Prognose und Speicher — Anzeige immer aktuell.";
+      sub.textContent = bits.join(" · ") || "Dauerzukauf aus Last, PV-Prognose und Speicher — neuer Soll alle 2 Stunden.";
     } else {
       const bits = [];
       if (data.weekly_kwh_per_day != null) bits.push(nf1.format(data.weekly_kwh_per_day) + " kWh am Tag");

@@ -2265,7 +2265,11 @@ _grundverbrauch_tick_at = 0.0
 def _maybe_tick_grundverbrauch(base: str) -> None:
     global _grundverbrauch_tick_at
     now = time.time()
-    if now - _grundverbrauch_tick_at < 900:
+    try:
+        from grundverbrauch_rechner import FORWARD_REFRESH_SEC
+    except Exception:
+        FORWARD_REFRESH_SEC = 7200
+    if now - _grundverbrauch_tick_at < FORWARD_REFRESH_SEC:
         return
     _grundverbrauch_tick_at = now
     try:
