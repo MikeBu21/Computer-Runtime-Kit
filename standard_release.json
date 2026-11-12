@@ -1,6 +1,6 @@
 {
   "channel": "standard",
-  "created": "2026-11-12T17:11:48+0100",
+  "created": "2026-11-12T19:01:13+0100",
   "files": {
     "AGENTS.md": "80cbbeae8bec122292d37f093e879ceae5d45f6625e7582e0b4e93288a4988ce",
     "Desktop/Alles starten.desktop": "85873226fbffe9a8d4f9d3ecee426a588e89740ad2da39dd5a47651e4c7a37ca",
@@ -20,7 +20,7 @@
     "miner-dashboard/backend/app.py": "1c3a0c2ad233bc84de00085d0de66a3c251c6092f7dd4e5f95513b10a0a37dde",
     "miner-dashboard/backend/apply_automatik_app_patch.py": "363b56106cb0bb3bda7de02a32858c877522ea0cdc73424ccf93bfaaa3441cc0",
     "miner-dashboard/backend/automation_rules.py": "c6959a240882b4d899262b75dc19df50a2c1182d67eb2068840e925a4ebf7f10",
-    "miner-dashboard/backend/bms_seite.py": "21a236e4930ac6807d86c48733e0711caf3445fb0aa890526cd2a328a9fd9381",
+    "miner-dashboard/backend/bms_seite.py": "edad48b5571e417e56db9ff4c301bd7ca42f5368c060e70b8f0c9bd214616c05",
     "miner-dashboard/backend/boersenhandel.py": "eb524fccc0a5bc488b6b7b3e5eb227a8aca6126dd9a8baae5bae9a480773863c",
     "miner-dashboard/backend/boot_repair_after_powerloss.py": "30b5369d1e3da27be6c5e9f561f8767a7febf4a07ad1cf453e846c9eb60ff866",
     "miner-dashboard/backend/config/energy_chat_ids.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
@@ -189,7 +189,7 @@
     "miner-dashboard/backend/tests/test_anchor_window.py": "a0028864fca391f5f1a73172cbd33b40c5c19f4f1be542abacbbca838e352c24",
     "miner-dashboard/backend/tests/test_auto_control_steering.py": "f9927a0d0a9b52488df58ebdff2dd9115a94ed27c0540f2363176aea6ee5b959",
     "miner-dashboard/backend/tests/test_battery_protection.py": "7f9a1b24e0e13738535f8eff7edc32a49394b42c4fe9fb39ee8d42a0d99581b0",
-    "miner-dashboard/backend/tests/test_bms_netzbezug.py": "6b32483ca25dcebeee5f24de88850b0aea571c3eb7bec4dcd0336c1dccdf2046",
+    "miner-dashboard/backend/tests/test_bms_netzbezug.py": "db40d31f814f8172c589e0fba6604273671512c305568889b393a360db40d682",
     "miner-dashboard/backend/tests/test_boersenhandel_range.py": "d86faac990ac5deea03ce19c8a43096e24ff6e5b7c9fc07c54dbef66ac0c1b87",
     "miner-dashboard/backend/tests/test_consumer_statistics.py": "5606c6ea046d84962baad442c900c7d16e009c9516e028cefbb3ca857faeec0f",
     "miner-dashboard/backend/tests/test_consumption_history.py": "01f1c8765c4f70deec06215f49f0c34a3457e2afe5ee61081f5f80bb74e05b09",
@@ -316,5 +316,5 @@
   },
   "format": 2,
   "notes": "Download nutzt den Soft-Scan: nur Token im Programmcode, und der Scan wird nach jedem Update wiederhergestellt. Der Upload-Scan bleibt streng. Standardwerte ohne persönliche Daten.",
-  "version": 45
+  "version": 46
 }

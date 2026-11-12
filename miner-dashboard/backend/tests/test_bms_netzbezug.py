@@ -254,6 +254,12 @@ class SocWindowTests(unittest.TestCase):
     def test_floor_is_the_lowest_of_the_six_windows(self):
         self.assertEqual(bms_seite._program_soc_floor(self._settings()), 20)
 
+    def test_stop_limit_is_the_electricians_active_window(self):
+        settings = self._settings()
+        afternoon = bms_seite.datetime(2026, 11, 11, 13, 0, tzinfo=bms_seite.TZ)
+        self.assertEqual(bms_seite._electrician_soc_limit(settings, afternoon), 30)
+        self.assertNotEqual(bms_seite._electrician_soc_limit(settings, afternoon), 20)
+
     def test_active_slot_follows_the_clock_and_wraps(self):
         settings = self._settings()
         morning = bms_seite.datetime(2026, 11, 11, 10, 0, tzinfo=bms_seite.TZ)
@@ -274,18 +280,19 @@ class SocWindowTests(unittest.TestCase):
 
     def test_stop_at_or_below_floor_and_when_soc_is_missing(self):
         settings = self._settings()
-        self.assertTrue(bms_seite._soc_floor_hit(settings, {"soc_percent": 20}))
-        self.assertTrue(bms_seite._soc_floor_hit(settings, {"soc_percent": 19}))
-        self.assertFalse(bms_seite._soc_floor_hit(settings, {"soc_percent": 21}))
-        self.assertTrue(bms_seite._soc_floor_hit(settings, {"soc_percent": None}))
-        self.assertTrue(bms_seite._soc_floor_hit({}, {"soc_percent": 80}))
+        afternoon = bms_seite.datetime(2026, 11, 11, 13, 0, tzinfo=bms_seite.TZ)
+        self.assertTrue(bms_seite._soc_floor_hit(settings, {"soc_percent": 30}, afternoon))
+        self.assertTrue(bms_seite._soc_floor_hit(settings, {"soc_percent": 25}, afternoon))
+        self.assertFalse(bms_seite._soc_floor_hit(settings, {"soc_percent": 31}, afternoon))
+        self.assertTrue(bms_seite._soc_floor_hit(settings, {"soc_percent": None}, afternoon))
+        self.assertTrue(bms_seite._soc_floor_hit({}, {"soc_percent": 80}, afternoon))
 
     def test_resume_needs_soc_above_the_floor_and_planning(self):
         settings = self._settings()
         now = bms_seite.datetime(2026, 11, 11, 13, 0, tzinfo=bms_seite.TZ)
         with mock.patch.object(bms_seite, "_planning_enabled", return_value=True):
-            self.assertFalse(bms_seite._resume_ready(settings, {"soc_percent": 20}, now))
-            self.assertTrue(bms_seite._resume_ready(settings, {"soc_percent": 21}, now))
+            self.assertFalse(bms_seite._resume_ready(settings, {"soc_percent": 30}, now))
+            self.assertTrue(bms_seite._resume_ready(settings, {"soc_percent": 31}, now))
             self.assertFalse(bms_seite._resume_ready(settings, {"soc_percent": None}, now))
         with mock.patch.object(bms_seite, "_planning_enabled", return_value=False):
             self.assertFalse(bms_seite._resume_ready(settings, {"soc_percent": 80}, now))
@@ -304,17 +311,18 @@ class SocWindowTests(unittest.TestCase):
             merged.update(updates)
             return merged
 
+        afternoon = bms_seite.datetime(2026, 11, 11, 13, 0, tzinfo=bms_seite.TZ)
         with mock.patch.object(bms_seite, "_planning_enabled", return_value=True), mock.patch.object(
             bms_seite, "save_settings", side_effect=remember
         ) as save:
-            resumed = bms_seite.apply_soc_gate(settings, {"soc_percent": 21})
+            resumed = bms_seite.apply_soc_gate(settings, {"soc_percent": 31}, afternoon)
         self.assertFalse(resumed["soc_stop"])
         save.assert_called_once_with({"soc_stop": False})
 
         with mock.patch.object(bms_seite, "_planning_enabled", return_value=True), mock.patch.object(
             bms_seite, "save_settings", side_effect=remember
         ) as save:
-            held = bms_seite.apply_soc_gate(settings, {"soc_percent": 20})
+            held = bms_seite.apply_soc_gate(settings, {"soc_percent": 30}, afternoon)
         self.assertTrue(held["soc_stop"])
         save.assert_not_called()
 
@@ -334,7 +342,10 @@ class SocWindowTests(unittest.TestCase):
             "exchange_hold": False,
             "target_grid_kw": 1.0,
             "program_soc": [40, 20, 30, 25, 20, 35],
+            "program_time": [0, 600, 1200, 1800, 2200, 2300],
         }
+        morning = bms_seite.datetime(2026, 11, 11, 10, 0, tzinfo=bms_seite.TZ)
+        afternoon = bms_seite.datetime(2026, 11, 11, 13, 0, tzinfo=bms_seite.TZ)
 
         def remember(updates):
             merged = dict(base)
@@ -344,7 +355,7 @@ class SocWindowTests(unittest.TestCase):
         with mock.patch("energie_steuerung.load_settings", return_value={"algorithmische_planung": True}), mock.patch(
             "grundverbrauch_rechner.recommended_import_kw", return_value=1.2
         ), mock.patch.object(bms_seite, "save_settings", side_effect=remember) as save:
-            started = bms_seite.apply_planning_hold(base, {"soc_percent": 21})
+            started = bms_seite.apply_planning_hold(base, {"soc_percent": 21}, morning)
         self.assertTrue(started["real_mode"])
         self.assertTrue(started["planning_hold"])
         self.assertEqual(started["target_grid_kw"], 1.2)
@@ -355,10 +366,27 @@ class SocWindowTests(unittest.TestCase):
         with mock.patch("energie_steuerung.load_settings", return_value={"algorithmische_planung": True}), mock.patch(
             "grundverbrauch_rechner.recommended_import_kw", return_value=1.2
         ), mock.patch.object(bms_seite, "save_settings", side_effect=remember) as save:
-            stayed = bms_seite.apply_planning_hold(blocked, {"soc_percent": 21})
+            stayed = bms_seite.apply_planning_hold(blocked, {"soc_percent": 21}, morning)
         self.assertTrue(stayed["soc_stop"])
         self.assertFalse(stayed["real_mode"])
         save.assert_not_called()
+
+        running = dict(base)
+        running["real_mode"] = True
+        running["target_grid_kw"] = 1.2
+
+        def remember_running(updates):
+            merged = dict(running)
+            merged.update(updates)
+            return merged
+
+        with mock.patch("energie_steuerung.load_settings", return_value={"algorithmische_planung": True}), mock.patch(
+            "grundverbrauch_rechner.recommended_import_kw", return_value=1.2
+        ), mock.patch.object(bms_seite, "save_settings", side_effect=remember_running) as save:
+            stopped = bms_seite.apply_planning_hold(running, {"soc_percent": 25}, afternoon)
+        self.assertFalse(stopped["real_mode"])
+        self.assertTrue(stopped["soc_stop"])
+        save.assert_called_once_with({"real_mode": False, "soc_stop": True})
 
     def test_autocapture_only_on_a_new_control_serial(self):
         self.assertTrue(bms_seite._should_autocapture(0, 123, {"install_captured": False}))

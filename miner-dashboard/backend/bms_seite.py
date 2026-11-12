@@ -1811,9 +1811,9 @@ def save_settings(updates: Dict[str, Any]) -> Dict[str, Any]:
             data["release_pending"] = True
             _release_sent = False
         if wanted and not data["real_mode"] and data.get("soc_stop"):
-            # Hand einschalten hebt den SOC-Stopp nur über dem Sechs-Fenster-Minimum auf.
+            # Hand einschalten hebt den Stopp nur über der gerade geltenden Elektrikergrenze auf.
             soc = _live_soc(None)
-            floor = _program_soc_floor(data)
+            floor = _electrician_soc_limit(data)
             if floor is not None and soc is not None and soc > float(floor):
                 data["soc_stop"] = False
         data["real_mode"] = wanted
@@ -2692,9 +2692,21 @@ def _active_program_soc(settings: Optional[Dict[str, Any]], now: Optional[dateti
     return socs[index]
 
 
-def _soc_floor_hit(settings: Optional[Dict[str, Any]], live: Optional[Dict[str, Any]] = None) -> bool:
-    """Schreiben stoppen: kein Snapshot, kein Ladestand, oder Ladestand auf/unter dem Minimum der sechs."""
-    floor = _program_soc_floor(settings)
+def _electrician_soc_limit(
+    settings: Optional[Dict[str, Any]],
+    now: Optional[datetime] = None,
+) -> Optional[int]:
+    """SoC-Grenze des Elektriker-Fensters, das gerade gilt. Nicht das Minimum aller sechs."""
+    return _active_program_soc(settings, now)
+
+
+def _soc_floor_hit(
+    settings: Optional[Dict[str, Any]],
+    live: Optional[Dict[str, Any]] = None,
+    now: Optional[datetime] = None,
+) -> bool:
+    """Schreiben stoppen: kein Snapshot, kein Ladestand, oder Ladestand auf/unter der Elektrikergrenze."""
+    floor = _electrician_soc_limit(settings, now)
     soc = _live_soc(live)
     if floor is None or soc is None:
         return True
@@ -2715,17 +2727,16 @@ def _resume_ready(
     live: Optional[Dict[str, Any]] = None,
     now: Optional[datetime] = None,
 ) -> bool:
-    """Wieder an, sobald der Ladestand über dem Minimum der sechs liegt und die Planung an ist.
+    """Wieder an, sobald der Ladestand über der geltenden Elektrikergrenze liegt und die Planung an ist.
 
-    Der Stopp bleibt, solange der SOC auf oder unter diesem Mindestwert liegt oder der
-    Schalter „Planung, keine Netzspitzen“ aus ist. Die Uhrzeit ändert die Schwelle nicht.
+    Der Stopp bleibt, solange der SOC auf oder unter dem Fenster liegt, das der Elektriker
+    für diese Uhrzeit gesetzt hat, oder der Schalter „Planung, keine Netzspitzen“ aus ist.
     """
-    del now
     if not settings or not settings.get("soc_stop"):
         return False
     if not _planning_enabled():
         return False
-    floor = _program_soc_floor(settings)
+    floor = _electrician_soc_limit(settings, now)
     soc = _live_soc(live)
     if floor is None or soc is None:
         return False
@@ -2838,19 +2849,37 @@ def capture_install_from_inverter() -> Dict[str, Any]:
     return {"ok": True, "message": "Elektrikerwerte vom Wechselrichter gelesen.", "settings": saved}
 
 
-def apply_soc_gate(settings: Dict[str, Any], live: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def _stopped_for_soc(
+    settings: Dict[str, Any],
+    live: Optional[Dict[str, Any]] = None,
+    now: Optional[datetime] = None,
+) -> Optional[Dict[str, Any]]:
+    """Settings, wenn der Hold nicht schreiben darf. BMS aus, solange die Elektrikergrenze gilt."""
+    hit = _soc_floor_hit(settings, live, now)
+    if not hit and not settings.get("soc_stop"):
+        return None
+    if settings.get("real_mode") or (hit and not settings.get("soc_stop")):
+        return save_settings({"real_mode": False, "soc_stop": True})
+    return settings
+
+
+def apply_soc_gate(
+    settings: Dict[str, Any],
+    live: Optional[Dict[str, Any]] = None,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
     """Vor den Holds: Stopp merken oder den automatischen Wiederanlauf freigeben."""
     if settings.get("soc_stop"):
         if settings.get("release_pending"):
             if settings.get("real_mode"):
                 return save_settings({"real_mode": False, "soc_stop": True})
             return settings
-        if _resume_ready(settings, live):
+        if _resume_ready(settings, live, now):
             return save_settings({"soc_stop": False})
         if settings.get("real_mode"):
             return save_settings({"real_mode": False, "soc_stop": True})
         return settings
-    if settings.get("real_mode") and _soc_floor_hit(settings, live):
+    if settings.get("real_mode") and _soc_floor_hit(settings, live, now):
         return save_settings({"real_mode": False, "soc_stop": True})
     return settings
 
@@ -3249,13 +3278,14 @@ def planning_write_kw(raw: Optional[float]) -> Optional[float]:
 def apply_planning_hold(
     settings: Optional[Dict[str, Any]] = None,
     live: Optional[Dict[str, Any]] = None,
+    now: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     """Planung, keine Netzspitzen: angezeigter Zukauf ab 0,2 kW ins BMS-Register.
 
     Nur bei eingeschaltetem Schalter. Aus schreibt keinen Zukauf. Hielt die Planung
     vorher einen Wert, wird er freigegeben. Der Rest der letzten Tage (0,02 kW) zählt nicht.
     Nach einem SOC-Stopp bleibt der Schalter an; geschrieben wird erst wieder, wenn
-    der Ladestand über dem Minimum der sechs Fenster liegt.
+    der Ladestand über der SoC-Grenze des gerade geltenden Elektriker-Fensters liegt.
     """
     if settings is None:
         settings = load_settings()
@@ -3282,13 +3312,14 @@ def apply_planning_hold(
         if holding:
             return save_settings({"real_mode": False, "planning_hold": False})
         return settings
+    stopped = _stopped_for_soc(settings, live, now)
+    if stopped is not None:
+        return stopped
     if (
         holding
         and settings.get("real_mode")
         and abs(float(settings.get("target_grid_kw") or 0) - kw) < 0.01
     ):
-        return settings
-    if settings.get("soc_stop") or _soc_floor_hit(settings, live):
         return settings
     return save_settings({"real_mode": True, "target_grid_kw": kw, "planning_hold": True})
 
@@ -3328,13 +3359,14 @@ def apply_community_hold(settings: Optional[Dict[str, Any]] = None) -> Dict[str,
                 updates["real_mode"] = False
             return save_settings(updates)
         return settings
+    stopped = _stopped_for_soc(settings)
+    if stopped is not None:
+        return stopped
     if (
         holding
         and settings.get("real_mode")
         and abs(float(settings.get("target_grid_kw") or 0) - kw) < 0.01
     ):
-        return settings
-    if settings.get("soc_stop") or _soc_floor_hit(settings):
         return settings
     return save_settings({"real_mode": True, "target_grid_kw": kw, "community_hold": True})
 
@@ -3390,13 +3422,14 @@ def apply_exchange_hold(settings: Optional[Dict[str, Any]] = None) -> Dict[str, 
                 updates["real_mode"] = False
             return save_settings(updates)
         return settings
+    stopped = _stopped_for_soc(settings)
+    if stopped is not None:
+        return stopped
     if (
         holding
         and settings.get("real_mode")
         and abs(float(settings.get("target_grid_kw") or 0) - kw) < 0.01
     ):
-        return settings
-    if settings.get("soc_stop") or _soc_floor_hit(settings):
         return settings
     return save_settings({"real_mode": True, "target_grid_kw": kw, "exchange_hold": True})
 
