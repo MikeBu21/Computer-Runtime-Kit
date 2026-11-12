@@ -21,13 +21,27 @@ log() {
   echo "[$(date -Iseconds)] $*" | tee -a "$LOG_DIR/restart_control_services.log"
 }
 
+exec 9>"$LOG_DIR/restart_control_services.lock"
+if ! flock -n 9; then
+  log "Neustart läuft bereits, übersprungen"
+  exit 0
+fi
+
 stop_proc() {
-  pkill -f "$PYTHON .*$1" 2>/dev/null || true
+  # Manche Prozesse (z. B. der Telegram-Bot) ignorieren SIGTERM und behalten
+  # sonst den alten Code. Erst bitten, dann beenden.
+  pkill -TERM -f "$PYTHON .*$1" 2>/dev/null || true
+  sleep 0.4
+  pkill -KILL -f "$PYTHON .*$1" 2>/dev/null || true
 }
 
 run_bg() {
   local title="$1"
   local script="$2"
+  if pgrep -f "$PYTHON .*$script" >/dev/null 2>&1; then
+    log "bereits neu gestartet: $title"
+    return 0
+  fi
   local logfile="$LOG_DIR/$(echo "$title" | tr ' /' '__').log"
   echo "[$(date -Iseconds)] Restart $title" >> "$logfile"
   (
@@ -38,6 +52,24 @@ run_bg() {
   )
   log "gestartet: $title"
   sleep 0.25
+}
+
+# Der Wartungsprozess startet gestoppte Dienste parallel. Eine zweite Kopie beenden.
+dedupe_proc() {
+  local script="$1"
+  local pids=()
+  mapfile -t pids < <(pgrep -f "$PYTHON .*$script" || true)
+  if [ "${#pids[@]}" -le 1 ]; then
+    return 0
+  fi
+  local keep="${pids[-1]}"
+  local pid
+  for pid in "${pids[@]}"; do
+    if [ "$pid" != "$keep" ]; then
+      kill -KILL "$pid" 2>/dev/null || true
+      log "Doppelten Prozess beendet: $script ($pid)"
+    fi
+  done
 }
 
 if [ ! -x "$PYTHON" ]; then
@@ -82,5 +114,13 @@ if [ -f "$BACKEND/telegram_config.json" ]; then
 else
   log "Telegram-Bot übersprungen (keine Config)"
 fi
+
+dedupe_proc app.py
+dedupe_proc scheduler.py
+dedupe_proc control_algorithm_daemon.py
+dedupe_proc "energy_monitor/auto_control.py"
+dedupe_proc status.py
+dedupe_proc heizstap.py
+dedupe_proc minerbot.py
 
 log "=== Software-Neustart fertig (kein Reboot) ==="

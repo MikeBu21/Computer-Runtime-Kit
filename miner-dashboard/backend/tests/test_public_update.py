@@ -541,4 +541,5 @@ class HaRepairTests(unittest.TestCase):
             "ha-data-bridge.service",
         ):
             self.assertIn(name, text)
+        self.assertIn("pkill -KILL", text)
         self.assertNotIn("reboot", text)

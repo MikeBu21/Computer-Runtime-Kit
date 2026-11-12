@@ -14,7 +14,7 @@ Environment=MINER_LOG_DIR=/dev/shm/minersteuerung/logs
 Environment=MINER_ROOT=/home/piminer/minersteuerung
 ExecStartPre=/home/piminer/minersteuerung/miner-dashboard/boot_repair_after_powerloss.sh
 ExecStart=/home/piminer/minersteuerung/miner-dashboard/start_all.sh
-ExecStop=/bin/bash -c 'PY="/home/piminer/minersteuerung/venv/bin/python"; for s in app.py scheduler.py control_algorithm_daemon.py "energy_monitor/auto_control.py" minerbot.py status.py heizstap.py; do pkill -f "$PY .*$s" || true; done; fuser -k 5000/tcp 2>/dev/null || true'
+ExecStop=/bin/bash -c 'PY="/home/piminer/minersteuerung/venv/bin/python"; for s in app.py scheduler.py control_algorithm_daemon.py "energy_monitor/auto_control.py" minerbot.py status.py heizstap.py; do pkill -TERM -f "$PY .*$s" || true; done; sleep 0.5; for s in app.py scheduler.py control_algorithm_daemon.py "energy_monitor/auto_control.py" minerbot.py status.py heizstap.py; do pkill -KILL -f "$PY .*$s" || true; done; fuser -k 5000/tcp 2>/dev/null || true'
 Restart=on-failure
 RestartSec=20
 
