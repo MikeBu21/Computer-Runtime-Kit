@@ -1,6 +1,6 @@
 {
   "channel": "standard",
-  "created": "2026-11-12T21:04:30+0100",
+  "created": "2026-11-12T21:05:29+0100",
   "files": {
     "AGENTS.md": "80cbbeae8bec122292d37f093e879ceae5d45f6625e7582e0b4e93288a4988ce",
     "Desktop/Alles starten.desktop": "85873226fbffe9a8d4f9d3ecee426a588e89740ad2da39dd5a47651e4c7a37ca",
@@ -287,7 +287,7 @@
     "miner-dashboard/open_service_status_terminal.sh": "8ff207ab04e66f58d6e7769858b22066ce0d12a243d046361c9884d2a5ebea46",
     "miner-dashboard/pi5-boot.sh": "c97c1b14707a717cf324dc595a46b3c2ea938df9ac2853b38d1d92fb8cde29a0",
     "miner-dashboard/restart_automation_services.sh": "41a75230a6510e5fcc47e3b4bf3c67a7a2db970165b42c99aa9c75c7e0fee37d",
-    "miner-dashboard/restart_control_services.sh": "f136a00fbaa13eced9717c168668677c6d939f07cba9189a3df91ba335409566",
+    "miner-dashboard/restart_control_services.sh": "03d0163ec3a8b08f0fe6f841ad6423742ebb8cdebb65a2dbd789a919ad364d99",
     "miner-dashboard/start-all-services.sh": "33e87de15a9cbbd65b7a4cb8f5177416b4f99185201dc2c9e8a1f34f89401637",
     "miner-dashboard/start_all.sh": "bcc78100d4518b32b626fe95840dce1e7089187e7e3af008b8ca9d7098a8d99d",
     "miner-dashboard/start_all_desktop.sh": "d41caaa81a873f20ca25fc763e8c9fb45502b7b8716e3683b3a1492de67fd43a",
@@ -316,5 +316,5 @@
   },
   "format": 2,
   "notes": "Download nutzt den Soft-Scan: nur Token im Programmcode, und der Scan wird nach jedem Update wiederhergestellt. Der Upload-Scan bleibt streng. Standardwerte ohne persönliche Daten.",
-  "version": 49
+  "version": 50
 }

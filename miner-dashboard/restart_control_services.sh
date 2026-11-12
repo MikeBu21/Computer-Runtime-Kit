@@ -21,7 +21,7 @@ log() {
   echo "[$(date -Iseconds)] $*" | tee -a "$LOG_DIR/restart_control_services.log"
 }
 
-exec 9>"$LOG_DIR/restart_control_services.lock"
+exec 9>"$LOG_DIR/restart_control_services.run.lock"
 if ! flock -n 9; then
   log "Neustart läuft bereits, übersprungen"
   exit 0
@@ -45,6 +45,7 @@ run_bg() {
   local logfile="$LOG_DIR/$(echo "$title" | tr ' /' '__').log"
   echo "[$(date -Iseconds)] Restart $title" >> "$logfile"
   (
+    exec 9>&-
     cd "$BACKEND"
     nohup env MINER_RAM_CACHE=1 MINER_RAM_ROOT=/dev/shm/minersteuerung \
       MINER_RAM_FLUSH_SEC=3600 MINER_LOG_DIR="$LOG_DIR" MINER_ROOT="$ROOT" \
