@@ -1,6 +1,6 @@
 {
   "channel": "standard",
-  "created": "2026-11-12T21:01:19+0100",
+  "created": "2026-11-12T21:02:02+0100",
   "files": {
     "AGENTS.md": "80cbbeae8bec122292d37f093e879ceae5d45f6625e7582e0b4e93288a4988ce",
     "Desktop/Alles starten.desktop": "85873226fbffe9a8d4f9d3ecee426a588e89740ad2da39dd5a47651e4c7a37ca",
@@ -138,7 +138,7 @@
     "miner-dashboard/backend/patch_flow_dashboard.py": "d21d3d499dfc6791007a3a540e24751ca8d174212392c5dd20c469a407d86a37",
     "miner-dashboard/backend/patch_flow_data_enline.py": "65610712f880a7028938109f22407355fc700762315e25167b90a6326d8c4916",
     "miner-dashboard/backend/power_outage_detect.py": "b296406d08655358b322baaf7508e37df31bb65b7bf8645bb25f0510346cd50d",
-    "miner-dashboard/backend/public_update.py": "ce70302c42b920fc71292a54732698ae4b6dc3fc3dc6a98d9b387a03ba646667",
+    "miner-dashboard/backend/public_update.py": "ae30fb9d37f938363dbb16e213e9a70f3f28eca7ad1bcc6e0dc82fe1becc1c9a",
     "miner-dashboard/backend/ram_cache.py": "af50196a69ed3cb753cabc29f15ec386f15d9d31603b8af6cdc66425e276cc13",
     "miner-dashboard/backend/recommended_grid_import.py": "b19e88e9c45c1aa3994d984853688d42486b2a9f829708cd5c9e8b94382d90b5",
     "miner-dashboard/backend/replace_app_tail.py": "db03435fbbef7528e18d9a9db927a25c66579ab569f6f1cdd9acbb8d7bcc9db1",
@@ -316,5 +316,5 @@
   },
   "format": 2,
   "notes": "Download nutzt den Soft-Scan: nur Token im Programmcode, und der Scan wird nach jedem Update wiederhergestellt. Der Upload-Scan bleibt streng. Standardwerte ohne persönliche Daten.",
-  "version": 47
+  "version": 48
 }

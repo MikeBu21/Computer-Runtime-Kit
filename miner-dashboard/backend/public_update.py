@@ -2067,8 +2067,10 @@ def restart_control_services_soon() -> None:
                 script.chmod(script.stat().st_mode | 0o111)
             except Exception:
                 pass
+            # Eigene Sitzung: überlebt das Ende des Upload-Prozesses und startet erst,
+            # wenn die Erfolgsmeldung geschrieben ist.
             subprocess.Popen(
-                ["bash", str(script)],
+                ["bash", "-c", "sleep 2; exec bash \"$1\"", "restart-control", str(script)],
                 cwd=str(REPO_ROOT / "miner-dashboard"),
                 env={
                     **os.environ,
@@ -2086,7 +2088,7 @@ def restart_control_services_soon() -> None:
         # Fallback: nur Flask, falls Hilfsskript fehlt
         _restart_flask_soon()
 
-    threading.Timer(2.0, _restart).start()
+    _restart()
 
 
 def _ensure_soft_download_scan_file(path: Optional[Path] = None) -> None:
