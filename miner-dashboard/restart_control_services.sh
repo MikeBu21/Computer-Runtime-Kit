@@ -52,12 +52,14 @@ systemctl --user restart ha-data-bridge.service 2>/dev/null \
   || systemctl --user start ha-data-bridge.service 2>/dev/null \
   || log "WARNUNG: ha-data-bridge nicht neu startbar"
 
-log "Flask-Backend / Scheduler / Energiemonitor / Steuerungsalgorithmus / Telegram stoppen …"
+log "Steuerungsprozesse stoppen …"
 stop_proc app.py
 stop_proc scheduler.py
 stop_proc control_algorithm_daemon.py
 stop_proc "energy_monitor/auto_control.py"
 stop_proc minerbot.py
+stop_proc status.py
+stop_proc heizstap.py
 fuser -k 5000/tcp 2>/dev/null || true
 sleep 1
 
@@ -65,6 +67,10 @@ run_bg "Flask Backend" "app.py"
 run_bg "Scheduler" "scheduler.py"
 run_bg "Steuerungsalgorithmus" "control_algorithm_daemon.py"
 run_bg "Energiemonitor" "energy_monitor/auto_control.py"
+run_bg "Miner Status" "status.py"
+if [ -f "$BACKEND/heizstap.py" ]; then
+  run_bg "Heizstabsteuerung" "heizstap.py"
+fi
 
 if [ -f "$BACKEND/telegram_config.json" ]; then
   TOKEN=$(python3 -c "import json; print(json.load(open('$BACKEND/telegram_config.json')).get('telegram_token','') or '')" 2>/dev/null || true)

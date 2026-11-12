@@ -1593,11 +1593,15 @@ def _upload_worker(version: int, force: bool = False) -> None:
         _write_job(
             uploading=False,
             phase="done",
-            message=f"Version {version} ist öffentlich. Nur Programmcode und Beispielwerte, ohne persönliche Daten.",
+            message=(
+                f"Version {version} ist öffentlich. Nur Programmcode und Beispielwerte, ohne persönliche Daten. "
+                "Steuerungsprozesse werden neu gestartet (kein Anlagen-Neustart)."
+            ),
             notes=notes,
             skipped_files=skipped,
             syntax_errors=syntax,
         )
+        restart_control_services_soon()
     except Exception as exc:
         _write_job(
             uploading=False,

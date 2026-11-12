@@ -1,6 +1,6 @@
 {
   "channel": "standard",
-  "created": "2026-11-12T19:01:13+0100",
+  "created": "2026-11-12T21:01:19+0100",
   "files": {
     "AGENTS.md": "80cbbeae8bec122292d37f093e879ceae5d45f6625e7582e0b4e93288a4988ce",
     "Desktop/Alles starten.desktop": "85873226fbffe9a8d4f9d3ecee426a588e89740ad2da39dd5a47651e4c7a37ca",
@@ -138,7 +138,7 @@
     "miner-dashboard/backend/patch_flow_dashboard.py": "d21d3d499dfc6791007a3a540e24751ca8d174212392c5dd20c469a407d86a37",
     "miner-dashboard/backend/patch_flow_data_enline.py": "65610712f880a7028938109f22407355fc700762315e25167b90a6326d8c4916",
     "miner-dashboard/backend/power_outage_detect.py": "b296406d08655358b322baaf7508e37df31bb65b7bf8645bb25f0510346cd50d",
-    "miner-dashboard/backend/public_update.py": "c2d53e8fa2e447e44fca88417545fa55ae7798299e10314c0cf131f610a42165",
+    "miner-dashboard/backend/public_update.py": "ce70302c42b920fc71292a54732698ae4b6dc3fc3dc6a98d9b387a03ba646667",
     "miner-dashboard/backend/ram_cache.py": "af50196a69ed3cb753cabc29f15ec386f15d9d31603b8af6cdc66425e276cc13",
     "miner-dashboard/backend/recommended_grid_import.py": "b19e88e9c45c1aa3994d984853688d42486b2a9f829708cd5c9e8b94382d90b5",
     "miner-dashboard/backend/replace_app_tail.py": "db03435fbbef7528e18d9a9db927a25c66579ab569f6f1cdd9acbb8d7bcc9db1",
@@ -232,7 +232,7 @@
     "miner-dashboard/backend/tests/test_planning_target.py": "217f9f5020205f0b477905bc8e472703c09fda19be1de5fb9d91b801eaec7457",
     "miner-dashboard/backend/tests/test_priority_runtime.py": "b2ec83563a3d1271300fcc07dbec5d1d78b8268d004b6d74f4ff1650ad66168e",
     "miner-dashboard/backend/tests/test_proactive_raw_pv.py": "75f42c6dbfcea90157a8f4908492e6a10c332d6b0ff6d504b68491e49081dc90",
-    "miner-dashboard/backend/tests/test_public_update.py": "35f718cc08beb5d484da5470a3b0198a966bee1a40d3220f2cf33c810c5863bc",
+    "miner-dashboard/backend/tests/test_public_update.py": "c191957114a1dfaedaf1f35b7f564ea6ef639c0f4ec877b932278dbf648a41f1",
     "miner-dashboard/backend/tests/test_pv_absorption.py": "3dd50741387fec08aaddecb612850302a5537bb27f76a4dd847c4103dbfbabf6",
     "miner-dashboard/backend/tests/test_pv_outage_learning_block.py": "3faf73b1706557ee2a0547dca685a3f369acc79d49093219b4426a65a012f492",
     "miner-dashboard/backend/tests/test_pv_pattern_estimate.py": "10620a4f435adeb98e7517746ecea0439673585cdb165d5692b9fcb44f0361d8",
@@ -279,7 +279,7 @@
     "miner-dashboard/docs/systemd-user/ha-data-bridge.service": "af2e7d0b403186a5151aa95e0a26e6c96ceb4b4e5ef8c9b4314e02c1db70d5d6",
     "miner-dashboard/docs/systemd-user/home-assistant.service": "cc732639b3c8a555bc38e2cfde11604703bbe01212965ee447e432f93c05e196",
     "miner-dashboard/docs/systemd-user/miner-boot-repair.service": "9454f7f79048f2a3e439e5a009bceb4d8d15c4e806ca95a1d03e2bb4f25b7f4b",
-    "miner-dashboard/docs/systemd-user/miner-dashboard.service": "90d04d2fc6944a5cdd1314706a05968e1eb7f3a4a6c9439a158cbe2c80f4fd4e",
+    "miner-dashboard/docs/systemd-user/miner-dashboard.service": "c59fe5b9d536b13c84abb54d8a2be83e65def004bfd5e8b02cdf370989d27033",
     "miner-dashboard/docs/systemd-user/miner-maintenance.service": "0843ec125fcb5254e352a14939ea2b95493d8c7250617d4fd8e835cd4bc66c8c",
     "miner-dashboard/docs/systemd-user/miner-ram-hydrate.service": "61b1d8536c2c1e137cb2973cf23c2d83caa322d95d1b6cebb02cc6309f94bb6c",
     "miner-dashboard/docs/systemd-user/tailscale-notify.service": "574dd22009a9bf97c18d78b77db81ef404e7f4cc97b2abd015afe74c0479940a",
@@ -287,7 +287,7 @@
     "miner-dashboard/open_service_status_terminal.sh": "8ff207ab04e66f58d6e7769858b22066ce0d12a243d046361c9884d2a5ebea46",
     "miner-dashboard/pi5-boot.sh": "c97c1b14707a717cf324dc595a46b3c2ea938df9ac2853b38d1d92fb8cde29a0",
     "miner-dashboard/restart_automation_services.sh": "41a75230a6510e5fcc47e3b4bf3c67a7a2db970165b42c99aa9c75c7e0fee37d",
-    "miner-dashboard/restart_control_services.sh": "7b165e9132e2e22b92f189255d992f70c76bb8a23aec266d3d146ad2ec90aa5b",
+    "miner-dashboard/restart_control_services.sh": "28cf64e3e79d26a943d7af5ebad6791074689da176d9c1090e966d774459073c",
     "miner-dashboard/start-all-services.sh": "33e87de15a9cbbd65b7a4cb8f5177416b4f99185201dc2c9e8a1f34f89401637",
     "miner-dashboard/start_all.sh": "bcc78100d4518b32b626fe95840dce1e7089187e7e3af008b8ca9d7098a8d99d",
     "miner-dashboard/start_all_desktop.sh": "d41caaa81a873f20ca25fc763e8c9fb45502b7b8716e3683b3a1492de67fd43a",
@@ -316,5 +316,5 @@
   },
   "format": 2,
   "notes": "Download nutzt den Soft-Scan: nur Token im Programmcode, und der Scan wird nach jedem Update wiederhergestellt. Der Upload-Scan bleibt streng. Standardwerte ohne persönliche Daten.",
-  "version": 46
+  "version": 47
 }

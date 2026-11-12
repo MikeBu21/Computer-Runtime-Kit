@@ -518,3 +518,27 @@ class HaRepairTests(unittest.TestCase):
             self.assertTrue(any("Home Assistant wird geprüft" in str(item.get("message")) for item in jobs))
             self.assertFalse((layout.config_dir / ".storage").exists())
             self.assertEqual((layout.config_dir / ".HA_VERSION").read_text(encoding="utf-8"), "2026.2.3\n")
+
+    def test_upload_restarts_control_processes_only_after_success(self):
+        source = inspect.getsource(pu._upload_worker)
+        done = source.index("ist öffentlich")
+        restart = source.index("restart_control_services_soon()")
+        failed = source.index("Upload fehlgeschlagen")
+        self.assertLess(done, restart)
+        self.assertLess(restart, failed)
+        download = inspect.getsource(pu._download_worker)
+        self.assertLess(download.index("Version {version} geladen"), download.index("restart_control_services_soon()"))
+        script = Path(__file__).resolve().parents[2] / "restart_control_services.sh"
+        text = script.read_text(encoding="utf-8")
+        for name in (
+            "app.py",
+            "scheduler.py",
+            "control_algorithm_daemon.py",
+            "energy_monitor/auto_control.py",
+            "minerbot.py",
+            "status.py",
+            "heizstap.py",
+            "ha-data-bridge.service",
+        ):
+            self.assertIn(name, text)
+        self.assertNotIn("reboot", text)
