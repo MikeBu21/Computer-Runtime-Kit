@@ -69,8 +69,9 @@ FORWARD_LOOKBACK_DAYS = 7
 FORWARD_PV_TOMORROW_W = 0.6
 FORWARD_PV_DAY_AFTER_W = 0.4
 FORWARD_RELIEF_DAYS = 2.0
-FORWARD_BUFFER_SOC = 3.0
-FORWARD_BUFFER_HOURS = 8.0
+# Lineares Pufferband über dem Min-SoC, in Prozentpunkten.
+# Am Min-SoC ist der Zuschlag die volle Basislast, bei +5 % die Hälfte, ab +10 % null.
+FORWARD_BUFFER_BAND_PCT = 10.0
 # Normal 50/35/15. Liegt die 48-Stunden-Last über dem 1,5-fachen des Wochentags: 70/20/10.
 FORWARD_RECENT_WEIGHT = 0.50
 FORWARD_WEEKDAY_WEIGHT = 0.35
@@ -1593,6 +1594,24 @@ def weekday_load_kwh(
     return same_weekday_base_kwh(days, today)
 
 
+def buffer_band_factor(soc_percent: float, min_soc_percent: float, width: float = FORWARD_BUFFER_BAND_PCT) -> float:
+    """1 am Min-SoC, 0 am oberen Bandrand, dazwischen linear. Darüber und im Band ohne Sprung."""
+    span = float(width)
+    if span <= 0:
+        return 0.0
+    distance = float(soc_percent) - float(min_soc_percent)
+    if distance <= 0:
+        return 1.0
+    if distance >= span:
+        return 0.0
+    return 1.0 - distance / span
+
+
+def buffer_band_extra_kw(base_kw: float, soc_percent: float, min_soc_percent: float) -> float:
+    """extra = Basislast × (1 − Abstand zum Min-SoC / Pufferbreite)."""
+    return max(0.0, float(base_kw)) * buffer_band_factor(soc_percent, min_soc_percent)
+
+
 def _purchase_step_kw(prev_kw: Optional[float], emergency: bool) -> float:
     """Höchstens 0,10 kW, in der Notlage unter Min-SoC 0,15 kW.
 
@@ -1624,9 +1643,9 @@ def forward_purchase_kw(
     """Dauer-Zukauf als Nacht- oder Tagplateau.
 
     Last = Mischung aus 48 Stunden, Wochentag und 7-Tage-Mittel, mal base_load_scale.
-    Nacht = Last/24 plus Pufferaufbau über 8 Stunden. PV zählt nachts nicht.
-    Tag = (Last − PV-Gutschrift − nutzbarer Speicher über Min-SoC und Puffer) / 24.
-    Erreicht Ladestand plus Prognose das Max-SoC, ist der Tagwert 0.
+    Nacht = Last/24, ohne PV. Tag = (Last − PV-Gutschrift − Speicher über dem Pufferband) / 24.
+    Im Band über dem Min-SoC kommt extra = Basislast × (1 − Abstand / Bandbreite) dazu.
+    Erreicht Ladestand plus Prognose das Max-SoC, fällt der Tag-Grundwert auf 0. Der Bandzuschlag bleibt.
     """
     empty: Dict[str, Any] = {
         "kw": None,
@@ -1673,11 +1692,12 @@ def forward_purchase_kw(
     storage = float(storage_kwh)
     soc = float(soc_percent)
     headroom = max(0.0, (soc - min_soc) / 100.0 * storage)
-    buffer_kwh = FORWARD_BUFFER_SOC / 100.0 * storage
-    usable = max(0.0, headroom - buffer_kwh)
-    rebuild_kw = max(0.0, buffer_kwh - headroom) / FORWARD_BUFFER_HOURS
-    p_night = load_kwh / HOURS + rebuild_kw
-    p_day = max(0.0, load_kwh - pv_credit - usable) / HOURS
+    band_kwh = FORWARD_BUFFER_BAND_PCT / 100.0 * storage
+    usable = max(0.0, headroom - band_kwh)
+    base_kw = load_kwh / HOURS
+    extra_kw = buffer_band_extra_kw(base_kw, soc, min_soc)
+    p_night = base_kw + extra_kw
+    p_day = max(0.0, load_kwh - pv_credit - usable) / HOURS + extra_kw
     try:
         max_soc = float(max_soc_percent)
     except (TypeError, ValueError):
@@ -1687,12 +1707,14 @@ def forward_purchase_kw(
     max_kwh = max_soc / 100.0 * storage
     stored_kwh = max(0.0, soc / 100.0 * storage)
     room_to_max = max(0.0, max_kwh - stored_kwh)
+    if stored_kwh + pv_blend >= max_kwh:
+        p_day = extra_kw
     if room_to_max <= 0:
         p_night = 0.0
+        p_day = 0.0
     else:
         p_night = min(p_night, room_to_max)
-    if stored_kwh + pv_blend >= max_kwh:
-        p_day = 0.0
+        p_day = min(p_day, room_to_max)
     if daylight is None:
         daylight = float(hours_until_sun) > 8.0
     active = p_day if daylight else p_night
@@ -1715,7 +1737,9 @@ def forward_purchase_kw(
         "headroom_kwh": round(headroom, 2),
         "min_soc_percent": round(min_soc, 1),
         "hours_until_sun": round(horizon, 2),
-        "short": bool(rebuild_kw > 0.02),
+        "short": bool(extra_kw > 0.02),
+        "extra_kw": round(extra_kw, 3),
+        "band_factor": round(buffer_band_factor(soc, min_soc), 3),
         "daylight": bool(daylight),
         "cap_kw": cap,
         "base_load_scale": round(scale, 4),
@@ -2153,9 +2177,10 @@ def get_report(base_dir: str) -> Dict[str, Any]:
             report["formula"] = (
                 "Empfohlener Zukauf: Last aus den letzten 48 Stunden, dem gleichen Wochentag "
                 "und dem 7-Tage-Mittel, mal base_load_scale. "
-                "Nachts Last/24 plus Pufferaufbau über 8 Stunden, ohne PV. "
-                "Tags (Last minus PV-Gutschrift aus morgen/übermorgen mal forecast_trust, "
-                "gedeckelt bei der Last, minus Speicher über Mindest-SoC plus Puffer) / 24. "
+                "Nachts Last/24 ohne PV. Tags (Last minus PV-Gutschrift aus morgen/übermorgen "
+                "mal forecast_trust, gedeckelt bei der Last, minus Speicher über dem Pufferband) / 24. "
+                "Im Band von 10 Prozentpunkten über dem Min-SoC gilt extra = Basislast × "
+                "(1 − Abstand zum Min-SoC / 10). Bei +5 % ist der Zuschlag halb, ab +10 % null. "
                 "Nahe am maximalen SoC ist der Tagwert 0. "
                 "Der Soll bleibt zwei Stunden stehen und ändert sich dann höchstens um 0,10 kW "
                 "(0,15 kW nur unter dem Mindest-SoC). Normal bis 1,2 kW, bei hoher 48-Stunden-Last bis 1,5 kW. "

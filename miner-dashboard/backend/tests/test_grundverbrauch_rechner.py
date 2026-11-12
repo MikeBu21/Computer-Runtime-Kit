@@ -416,7 +416,8 @@ class LockTests(unittest.TestCase):
         at_0518 = forward_purchase_kw(hours_until_sun=2.7, **common)
         at_0618 = forward_purchase_kw(hours_until_sun=1.0, **common)
         self.assertEqual(at_0518["kw"], at_0618["kw"])
-        self.assertEqual(at_0618["kw"], 0.85)
+        self.assertEqual(at_0618["band_factor"], 1.0)
+        self.assertEqual(at_0618["kw"], 1.2)
         self.assertEqual(at_0618["pv_credit_kwh"], 0.0)
         self.assertLessEqual(at_0618["kw"], 1.2)
         self.assertNotEqual(at_0618["kw"], 2.0)
@@ -425,6 +426,42 @@ class LockTests(unittest.TestCase):
             **{**common, "daily_base_kwh": 80.0, "tomorrow_pv_kwh": 0.0, "day_after_pv_kwh": 0.0},
         )
         self.assertEqual(huge["kw"], 1.2)
+
+    def test_buffer_band_scales_linearly_and_fades_above_the_edge(self):
+        from grundverbrauch_rechner import buffer_band_extra_kw, buffer_band_factor, forward_purchase_kw
+
+        self.assertEqual(buffer_band_factor(35, 35), 1.0)
+        self.assertAlmostEqual(buffer_band_factor(40, 35), 0.5)
+        self.assertEqual(buffer_band_factor(45, 35), 0.0)
+        self.assertEqual(buffer_band_factor(50, 35), 0.0)
+        self.assertAlmostEqual(buffer_band_extra_kw(0.4, 40, 35), 0.2)
+        common = dict(
+            storage_kwh=41,
+            min_soc_percent=35,
+            daily_base_kwh=10,
+            base_load_scale=1.0,
+            tomorrow_pv_kwh=30.0,
+            day_after_pv_kwh=30.0,
+            forecast_trust=0.85,
+            hours_until_sun=1.0,
+            daylight=False,
+            max_soc_percent=95,
+        )
+        at_min = forward_purchase_kw(soc_percent=35, **common)
+        halfway = forward_purchase_kw(soc_percent=40, **common)
+        edge = forward_purchase_kw(soc_percent=45, **common)
+        above = forward_purchase_kw(soc_percent=50, **common)
+        self.assertEqual(at_min["kw"], 0.85)
+        self.assertEqual(halfway["kw"], 0.65)
+        self.assertEqual(edge["kw"], 0.40)
+        self.assertEqual(above["kw"], edge["kw"])
+        self.assertGreater(at_min["kw"], halfway["kw"])
+        self.assertGreater(halfway["kw"], edge["kw"])
+        sunny = forward_purchase_kw(soc_percent=40, hours_until_sun=10, daylight=True, **{
+            key: value for key, value in common.items() if key not in {"hours_until_sun", "daylight"}
+        })
+        self.assertEqual(sunny["band_factor"], 0.5)
+        self.assertEqual(sunny["kw"], 0.20)
 
     def test_forward_day_plateau_is_zero_near_max_soc(self):
         from grundverbrauch_rechner import forward_purchase_kw
@@ -471,7 +508,7 @@ class LockTests(unittest.TestCase):
             max_soc_percent=100,
         )
         self.assertEqual(blocked["kw"], 0.0)
-        self.assertEqual(open_room["kw"], 0.65)
+        self.assertEqual(open_room["kw"], 0.75)
 
     def test_forward_doubled_48h_load_raises_setpoint_under_cap(self):
         from grundverbrauch_rechner import blend_forward_load_kwh, forward_purchase_kw
@@ -497,8 +534,9 @@ class LockTests(unittest.TestCase):
         )
         self.assertGreater(out["kw"], 1.0)
         self.assertLessEqual(out["kw"], 1.5)
-        self.assertEqual(out["kw"], 1.35)
+        self.assertEqual(out["kw"], 1.5)
         self.assertEqual(out["cap_kw"], 1.5)
+        self.assertEqual(out["band_factor"], 1.0)
 
     def test_recent_48h_extrapolates_to_a_day(self):
         from datetime import datetime
