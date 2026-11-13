@@ -18,7 +18,7 @@ export MINER_LOG_DIR="$LOG_DIR"
 export MINER_ROOT="$ROOT"
 
 log() {
-  echo "[$(date -Iseconds)] $*" | tee -a "$LOG_DIR/restart_control_services.log"
+  echo "[$(date -Iseconds)] $*" >> "$LOG_DIR/restart_control_services.log"
 }
 
 exec 9>"$LOG_DIR/restart_control_services.run.lock"

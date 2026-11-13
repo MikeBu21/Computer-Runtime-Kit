@@ -17,7 +17,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 from zoneinfo import ZoneInfo
 
 BACKEND_DIR = Path(__file__).resolve().parent
@@ -74,6 +74,8 @@ GRID_CHARGE_SIZING_VOLT = 40
 GRID_CHARGE_CURRENT_MAX = 350
 LOG_LIMIT = 30
 SAMPLE_GAP_SEC = 6
+# Fehlgeschlagenes Elektriker-Lesen: ein späterer Nachzug, nicht jeder Writer-Tick.
+AUTOCAPTURE_RETRY_SEC = 900
 # Rechnung alle 3 s aus dem RAM. Die schnellen Werte bleiben dort und gehen nicht auf die SD-Karte.
 CONTROL_SAMPLE_SEC = 3
 
@@ -268,6 +270,10 @@ _needs_release = False
 _tou_hold_applied = False
 _tou_soc_applied: Optional[tuple] = None
 _release_sent = False
+# Einmaliger Elektriker-Leseversuch je Prozess. Erfolg steht in den Einstellungen.
+_autocapture_failures: Dict[int, int] = {}
+_autocapture_retry_at: Dict[int, float] = {}
+_autocapture_done: Set[int] = set()
 # Time of Use 255: alle Wochentage, eingeschaltet. Aus = Batterie steht, Hauslast aus dem Netz.
 TOU_WEEK_ENABLED = 0x00FF
 # Export First: Hauslast darf vom Netz kommen. Zero-Export-to-CT hält das Netz auf 0.
@@ -1811,10 +1817,11 @@ def save_settings(updates: Dict[str, Any]) -> Dict[str, Any]:
             data["release_pending"] = True
             _release_sent = False
         if wanted and not data["real_mode"] and data.get("soc_stop"):
-            # Hand einschalten hebt den Stopp nur über der gerade geltenden Elektrikergrenze auf.
+            # Über der geltenden Grenze, oder wenn noch keine Grenze da ist.
+            # Eine fehlende Grenze darf das Häkchen nicht festhalten.
             soc = _live_soc(None)
             floor = _electrician_soc_limit(data)
-            if floor is not None and soc is not None and soc > float(floor):
+            if floor is None or (soc is not None and soc > float(floor)):
                 data["soc_stop"] = False
         data["real_mode"] = wanted
     if "soc_stop" in updates:
@@ -2713,6 +2720,19 @@ def _soc_floor_hit(
     return soc <= float(floor)
 
 
+def _soc_limit_blocks(
+    settings: Optional[Dict[str, Any]],
+    live: Optional[Dict[str, Any]] = None,
+    now: Optional[datetime] = None,
+) -> bool:
+    """Nur eine bekannte Grenze bei bekanntem Ladestand. Fehlende Werte verriegeln nichts."""
+    floor = _electrician_soc_limit(settings, now)
+    soc = _live_soc(live)
+    if floor is None or soc is None:
+        return False
+    return soc <= float(floor)
+
+
 def _planning_enabled() -> bool:
     try:
         from energie_steuerung import load_settings as energy_settings
@@ -2755,9 +2775,95 @@ def _should_autocapture(previous_serial: int, new_serial: int, settings: Optiona
     data = settings or {}
     if data.get("install_captured") and int(data.get("install_captured_serial") or 0) == new:
         return False
+    # Bekannte Seriennummer ohne Snapshot: nicht hier bei jedem Tracking.
+    # Den einmaligen Versuch macht maybe_autocapture_install, solange BMS nicht schreibt.
     if previous == new and previous != 0 and not data.get("install_captured"):
         return False
     return previous != new
+
+
+def _reset_install_autocapture() -> None:
+    _autocapture_failures.clear()
+    _autocapture_retry_at.clear()
+    _autocapture_done.clear()
+
+
+def _install_snapshot_valid(settings: Optional[Dict[str, Any]]) -> bool:
+    """Gültig nur mit gesetztem Merker, passender Seriennummer und sechs vollständigen Programmen."""
+    data = settings or {}
+    if not data.get("install_captured"):
+        return False
+    try:
+        captured = int(data.get("install_captured_serial") or 0)
+        logger = int(data.get("logger_serial") or 0)
+    except (TypeError, ValueError):
+        return False
+    if not captured or captured != logger:
+        return False
+    for key, highest in (
+        ("program_soc", 100),
+        ("program_power", 65535),
+        ("program_charging", 65535),
+        ("program_time", 65535),
+    ):
+        if _coerce_program_list(data.get(key), highest=highest) is None:
+            return False
+    return True
+
+
+def maybe_autocapture_install(settings: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Einmal Elektrikerwerte lesen, wenn für diese Seriennummer noch kein gültiger Stand da ist.
+
+    Nach Erfolg nie wieder, auch nicht beim nächsten Prozessstart. Ein Lesefehler wird
+    gemerkt und genau einmal später nachgezogen, nicht bei jedem Writer-Tick.
+    Während real_mode oder release_pending stehen Stellwerte in den Registern, dann nicht lesen.
+    """
+    if settings is None:
+        settings = load_settings()
+    if _install_snapshot_valid(settings):
+        return settings
+    if settings.get("real_mode") or settings.get("release_pending"):
+        return settings
+    try:
+        serial = int(settings.get("logger_serial") or 0)
+    except (TypeError, ValueError):
+        return settings
+    if not serial or serial in _autocapture_done:
+        return settings
+    failures = _autocapture_failures.get(serial, 0)
+    if failures >= 2:
+        return settings
+    if failures == 1 and time.monotonic() < _autocapture_retry_at.get(serial, 0.0):
+        return settings
+    fresh = load_settings()
+    if _install_snapshot_valid(fresh):
+        _autocapture_done.add(serial)
+        return fresh
+    if fresh.get("real_mode") or fresh.get("release_pending"):
+        return fresh
+    try:
+        fresh_serial = int(fresh.get("logger_serial") or 0)
+    except (TypeError, ValueError):
+        fresh_serial = 0
+    if fresh_serial and fresh_serial != serial:
+        serial = fresh_serial
+        if serial in _autocapture_done or _autocapture_failures.get(serial, 0) >= 2:
+            return fresh
+    result = capture_install_from_inverter()
+    if result.get("skipped"):
+        return fresh
+    if result.get("ok"):
+        saved = result.get("settings") or load_settings()
+        if _install_snapshot_valid(saved):
+            done = int(saved.get("install_captured_serial") or serial)
+            _autocapture_done.add(done)
+            _autocapture_failures.pop(serial, None)
+            _autocapture_retry_at.pop(serial, None)
+            return saved
+    _autocapture_failures[serial] = failures + 1
+    if failures + 1 == 1:
+        _autocapture_retry_at[serial] = time.monotonic() + AUTOCAPTURE_RETRY_SEC
+    return fresh
 
 
 def _writer_serial(settings: Dict[str, Any]) -> int:
@@ -2811,6 +2917,7 @@ def capture_install_from_inverter() -> Dict[str, Any]:
     if settings.get("real_mode") or settings.get("release_pending"):
         return {
             "ok": False,
+            "skipped": True,
             "message": (
                 "BMS schreibt noch oder die Elektrikerwerte werden gerade zurückgeschrieben. "
                 "Bitte warten, bis das aus ist."
@@ -2854,13 +2961,19 @@ def _stopped_for_soc(
     live: Optional[Dict[str, Any]] = None,
     now: Optional[datetime] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Settings, wenn der Hold nicht schreiben darf. BMS aus, solange die Elektrikergrenze gilt."""
-    hit = _soc_floor_hit(settings, live, now)
-    if not hit and not settings.get("soc_stop"):
-        return None
-    if settings.get("real_mode") or (hit and not settings.get("soc_stop")):
-        return save_settings({"real_mode": False, "soc_stop": True})
-    return settings
+    """Settings, wenn der Hold nicht schreiben darf. Nur eine echte Elektrikergrenze stoppt."""
+    floor = _electrician_soc_limit(settings, now)
+    soc = _live_soc(live)
+    if floor is not None and soc is None:
+        # Kurz kein Ladestand, zum Beispiel direkt nach dem Start. Nicht verriegeln.
+        return settings
+    if floor is not None and soc is not None and soc <= float(floor):
+        if settings.get("real_mode") or not settings.get("soc_stop"):
+            return save_settings({"real_mode": False, "soc_stop": True})
+        return settings
+    if settings.get("soc_stop") and floor is not None:
+        return settings
+    return None
 
 
 def apply_soc_gate(
@@ -2868,18 +2981,22 @@ def apply_soc_gate(
     live: Optional[Dict[str, Any]] = None,
     now: Optional[datetime] = None,
 ) -> Dict[str, Any]:
-    """Vor den Holds: Stopp merken oder den automatischen Wiederanlauf freigeben."""
+    """Vor den Holds: Stopp merken oder den automatischen Wiederanlauf freigeben.
+
+    Fehlende Grenze und ein kurz fehlender Ladestand schalten das Häkchen nicht aus.
+    release_pending hält den Wiederanlauf nicht fest, sobald der Ladestand über der Grenze liegt.
+    """
+    if _electrician_soc_limit(settings, now) is None:
+        if settings.get("soc_stop"):
+            return save_settings({"soc_stop": False})
+        return settings
     if settings.get("soc_stop"):
-        if settings.get("release_pending"):
-            if settings.get("real_mode"):
-                return save_settings({"real_mode": False, "soc_stop": True})
-            return settings
         if _resume_ready(settings, live, now):
             return save_settings({"soc_stop": False})
-        if settings.get("real_mode"):
+        if settings.get("real_mode") and _soc_limit_blocks(settings, live, now):
             return save_settings({"real_mode": False, "soc_stop": True})
         return settings
-    if settings.get("real_mode") and _soc_floor_hit(settings, live, now):
+    if settings.get("real_mode") and _soc_limit_blocks(settings, live, now):
         return save_settings({"real_mode": False, "soc_stop": True})
     return settings
 
@@ -3035,8 +3152,14 @@ def apply_write(
     live: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     global _needs_release, _tou_hold_applied, _tou_soc_applied, _release_sent
-    if settings.get("real_mode") and _soc_floor_hit(settings, live):
+    if settings.get("real_mode") and _soc_limit_blocks(settings, live):
         settings = save_settings({"real_mode": False, "soc_stop": True})
+    elif (
+        settings.get("real_mode")
+        and _electrician_soc_limit(settings) is not None
+        and _live_soc(live) is None
+    ):
+        return _write_result(False, "Ladestand fehlt kurz. Es wird nichts geschrieben.")
     base = INVERTERS.get(settings.get("inverter"), INVERTERS[DEFAULT_INVERTER])
     link = resolve_ha_link(str(settings.get("inverter") or ""), settings.get("known_entry_ids") or [])
     item = _control_item(base, link)
@@ -3475,6 +3598,7 @@ def _ensure_writer() -> None:
             try:
                 settings = load_settings()
                 live = read_live()
+                settings = maybe_autocapture_install(settings)
                 settings = apply_soc_gate(settings, live)
                 settings = apply_community_hold(settings)
                 if not settings.get("community_hold"):
