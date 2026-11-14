@@ -641,23 +641,137 @@ class LockTests(unittest.TestCase):
     def test_remaining_today_does_not_count_produced_energy_twice(self):
         from datetime import datetime
 
-        from grundverbrauch_rechner import forecast_rest_today_kwh
+        from grundverbrauch_rechner import (
+            forecast_rest_today_kwh,
+            spread_daily_kwh,
+            today_pv_shortfall_kwh,
+        )
 
         now = datetime(2026, 11, 14, 8, 30)
         hours = {"h07": 10.0, "h08": 4.0, "h09": 8.0, "h12": 6.0}
-        # 07 Uhr ist vorbei und zählt nicht noch einmal. 08 Uhr nur zur Hälfte.
+        # 07 Uhr ist vorbei. 08 Uhr nur zur Hälfte in der Zukunft. Das Ist
+        # kürzt diese Zukunft nicht; der Rückstand ist Prognose minus Ist.
         self.assertAlmostEqual(
             forecast_rest_today_kwh(hours, now, day_total=43.0, actual_so_far=3.0),
             16.0,
         )
+        self.assertAlmostEqual(today_pv_shortfall_kwh(hours, now, 3.0, 43.0), 9.0)
+        self.assertAlmostEqual(today_pv_shortfall_kwh(hours, now, 20.0, 43.0), 0.0)
         self.assertAlmostEqual(
-            forecast_rest_today_kwh(None, now, day_total=43.0, actual_so_far=3.0),
-            40.0,
+            forecast_rest_today_kwh(hours, now, day_total=43.0, actual_so_far=20.0),
+            16.0,
         )
+
+        def _spread_split(total: float) -> tuple:
+            spread = spread_daily_kwh(total)
+            elapsed = 0.5
+            future = spread[8] * (1.0 - elapsed) + sum(spread[9:])
+            past = sum(spread[:8]) + spread[8] * elapsed
+            return future, past
+
+        future, past = _spread_split(43.0)
+        rest = forecast_rest_today_kwh(None, now, day_total=43.0, actual_so_far=3.0)
+        self.assertAlmostEqual(rest, future, places=4)
+        self.assertNotAlmostEqual(rest, 43.0 - 3.0, delta=0.05)
         self.assertAlmostEqual(
-            forecast_rest_today_kwh({}, now, day_total=42.96, actual_so_far=2.86),
-            40.1,
+            today_pv_shortfall_kwh(None, now, 3.0, 43.0),
+            max(0.0, past - 3.0),
+            places=4,
         )
+        future_empty, _past_empty = _spread_split(42.96)
+        empty = forecast_rest_today_kwh({}, now, day_total=42.96, actual_so_far=2.86)
+        self.assertAlmostEqual(empty, future_empty, places=4)
+        self.assertNotAlmostEqual(empty, 42.96 - 2.86, delta=0.01)
+
+    def test_noon_shortfall_raises_purchase_above_the_false_zero(self):
+        """40 kWh Prognose, mittags nur 5 kWh. Der Zielwert bleibt über 0.
+
+        40 minus das kleine Ist wären 35 kWh Gutschrift und decken die Last,
+        der Zukauf fiele auf 0. Die Zukunft bleibt 20 kWh. Die fehlenden 15 kWh
+        der Vergangenheit erhöhen den Rohwert sofort. Die Glättung startet bei
+        Soll 0 und lässt den angezeigten Wert erst nach der Haltezeit steigen.
+        """
+        from datetime import datetime, timedelta
+
+        from grundverbrauch_rechner import (
+            FORWARD_REFRESH,
+            apply_forward_smooth,
+            forecast_rest_today_kwh,
+            forward_purchase_kw,
+            today_pv_shortfall_kwh,
+        )
+
+        noon = datetime(2026, 11, 14, 12, 0, 0)
+        hours = {f"h{hour:02d}": 5.0 for hour in range(8, 16)}
+        future = forecast_rest_today_kwh(hours, noon, day_total=40.0, actual_so_far=5.0)
+        shortfall = today_pv_shortfall_kwh(hours, noon, 5.0, 40.0)
+        self.assertAlmostEqual(sum(hours.values()), 40.0)
+        self.assertAlmostEqual(future, 20.0)
+        self.assertAlmostEqual(shortfall, 15.0)
+        self.assertNotAlmostEqual(future, 40.0 - 5.0)
+
+        common = dict(
+            soc_percent=45,
+            storage_kwh=41,
+            min_soc_percent=35,
+            daily_base_kwh=16.0,
+            base_load_scale=1.0,
+            tomorrow_pv_kwh=0.0,
+            day_after_pv_kwh=0.0,
+            forecast_trust=0.85,
+            hours_until_sun=6,
+            daylight=True,
+            max_soc_percent=95,
+        )
+        false_credit = forward_purchase_kw(
+            today_pv_kwh=40.0 - 5.0,
+            today_shortfall_kwh=0.0,
+            **common,
+        )
+        self.assertEqual(false_credit["kw"], 0.0)
+        self.assertEqual(false_credit["p_raw"], 0.0)
+        cut_off = forward_purchase_kw(
+            today_pv_kwh=future,
+            today_shortfall_kwh=0.0,
+            **common,
+        )
+        self.assertEqual(cut_off["kw"], 0.0)
+        correct = forward_purchase_kw(
+            today_pv_kwh=future,
+            today_shortfall_kwh=shortfall,
+            **common,
+        )
+        self.assertAlmostEqual(correct["p_raw"], 15.0 / 24.0, places=3)
+        self.assertEqual(correct["kw"], 0.65)
+        self.assertGreater(correct["kw"], 0.0)
+        self.assertGreater(correct["p_raw"], 0.0)
+        self.assertNotEqual(correct["kw"], false_credit["kw"])
+
+        prev = {
+            "kw": 0.0,
+            "raw_kw": 0.0,
+            "updated_at": noon.isoformat(timespec="seconds"),
+        }
+        held = apply_forward_smooth(
+            prev,
+            correct["p_raw"],
+            0.0,
+            now=noon + timedelta(minutes=30),
+            pull_down=bool(correct["pull_down"]),
+        )
+        self.assertEqual(held["kw"], 0.0)
+        later = apply_forward_smooth(
+            prev,
+            correct["p_raw"],
+            0.0,
+            now=noon + FORWARD_REFRESH,
+            pull_down=bool(correct["pull_down"]),
+        )
+        self.assertGreater(later["raw_kw"], 0.0)
+        self.assertAlmostEqual(later["raw_kw"], correct["p_raw"], places=3)
+        self.assertGreater(later["kw"], 0.0)
+        self.assertEqual(later["kw"], 0.10)
+        self.assertNotEqual(later["kw"], 0.0)
 
     def test_clear_today_surplus_is_not_frozen_at_the_old_purchase(self):
         from datetime import datetime, timedelta

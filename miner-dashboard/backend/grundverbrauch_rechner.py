@@ -1636,14 +1636,10 @@ def _forecast_hour(key: Any) -> Optional[int]:
     return hour
 
 
-def remaining_today_pv_kwh(hours: Any, now: datetime) -> Optional[float]:
-    """Prognose-kWh ab jetzt. Die laufende Stunde nur anteilig, Vergangenheit nicht."""
+def _parsed_forecast_hours(hours: Any) -> Optional[Dict[int, float]]:
     if not isinstance(hours, dict) or not hours:
         return None
-    elapsed = (now.minute + now.second / 60.0) / 60.0
-    frac = max(0.0, min(1.0, 1.0 - elapsed))
-    total = 0.0
-    found = False
+    parsed: Dict[int, float] = {}
     for key, val in hours.items():
         hour = _forecast_hour(key)
         if hour is None:
@@ -1654,31 +1650,24 @@ def remaining_today_pv_kwh(hours: Any, now: datetime) -> Optional[float]:
             continue
         if kwh < 0:
             continue
-        found = True
-        if hour > now.hour:
-            total += kwh
-        elif hour == now.hour:
-            total += kwh * frac
-    if not found:
+        parsed[hour] = kwh
+    if not parsed:
         return None
-    return total
+    return parsed
 
 
-def forecast_rest_today_kwh(
+def _hours_for_today_split(
     hours: Any,
-    now: datetime,
     day_total: Optional[float] = None,
-    actual_so_far: Optional[float] = None,
-) -> Optional[float]:
-    """Noch erwarteter Rest von heute.
+) -> Optional[Dict[int, float]]:
+    """Stundenprognose, sonst der Tagesertrag auf die Tageslichtkurve gelegt.
 
-    Liegt eine Stundenprognose vor, zählt nur der Rest ab jetzt. Sonst der
-    Tagesertrag abzüglich des bereits erzeugten Ist, damit dieselbe Energie
-    nicht noch einmal als Gutschrift auftaucht.
+    Tagesertrag minus Ist ist keine Stundenaufteilung: der kleine Ist-Wert
+    ließe die ausgefallene Vergangenheit als noch kommende Energie stehen.
     """
-    rest = remaining_today_pv_kwh(hours, now)
-    if rest is not None:
-        return rest
+    parsed = _parsed_forecast_hours(hours)
+    if parsed is not None:
+        return parsed
     if day_total is None or day_total == "":
         return None
     try:
@@ -1687,7 +1676,81 @@ def forecast_rest_today_kwh(
         return None
     if total < 0:
         return None
-    return max(0.0, total - max(0.0, _f(actual_so_far)))
+    spread = spread_daily_kwh(total)
+    return {hour: spread[hour] for hour in range(HOURS)}
+
+
+def _hour_elapsed_fraction(now: datetime) -> float:
+    elapsed = (now.minute + now.second / 60.0) / 60.0
+    return max(0.0, min(1.0, elapsed))
+
+
+def _split_today_forecast(hours_map: Dict[int, float], now: datetime) -> Tuple[float, float]:
+    """Zukunft ab jetzt und Prognose der schon vergangenen Anteile.
+
+    Beides zusammen ist die Tagesprognose. Das Ist ersetzt nur den
+    vergangenen Teil, der zukünftige Forecast bleibt der Forecast.
+    """
+    elapsed = _hour_elapsed_fraction(now)
+    future = 0.0
+    past = 0.0
+    for hour, kwh in hours_map.items():
+        if hour > now.hour:
+            future += kwh
+        elif hour < now.hour:
+            past += kwh
+        else:
+            future += kwh * (1.0 - elapsed)
+            past += kwh * elapsed
+    return future, past
+
+
+def remaining_today_pv_kwh(hours: Any, now: datetime) -> Optional[float]:
+    """Prognose-kWh ab jetzt. Die laufende Stunde nur anteilig, Vergangenheit nicht."""
+    parsed = _parsed_forecast_hours(hours)
+    if parsed is None:
+        return None
+    future, _past = _split_today_forecast(parsed, now)
+    return future
+
+
+def today_pv_shortfall_kwh(
+    hours: Any,
+    now: datetime,
+    actual_so_far: Optional[float] = None,
+    day_total: Optional[float] = None,
+) -> float:
+    """Fehlbetrag vergangener Stunden: Prognose minus Ist, mindestens 0.
+
+    Das ist Energie, die fehlt. Sie ist keine PV-Gutschrift. Liegt kein Ist vor,
+    wird kein Rückstand erfunden.
+    """
+    mapped = _hours_for_today_split(hours, day_total)
+    if not mapped or actual_so_far is None or actual_so_far == "":
+        return 0.0
+    _future, past = _split_today_forecast(mapped, now)
+    return max(0.0, past - max(0.0, _f(actual_so_far)))
+
+
+def forecast_rest_today_kwh(
+    hours: Any,
+    now: datetime,
+    day_total: Optional[float] = None,
+    actual_so_far: Optional[float] = None,
+) -> Optional[float]:
+    """Prognose von jetzt bis Tagesende. Die laufende Stunde nur anteilig.
+
+    Das Ist zieht diese Zukunft nicht herunter und der Tagesertrag wird nicht
+    um das Ist gekürzt. Ein Rückstand steckt in today_pv_shortfall_kwh.
+    actual_so_far bleibt in der Signatur, damit Aufrufer ihn nicht hier als
+    Gutschrift abziehen.
+    """
+    del actual_so_far
+    mapped = _hours_for_today_split(hours, day_total)
+    if mapped is None:
+        return None
+    future, _past = _split_today_forecast(mapped, now)
+    return future
 
 
 def forward_purchase_kw(
@@ -1702,6 +1765,7 @@ def forward_purchase_kw(
     forecast_trust: float,
     hours_until_sun: float,
     today_pv_kwh: Optional[float] = None,
+    today_shortfall_kwh: Optional[float] = None,
     weekday_kwh: Optional[float] = None,
     recent_48h_kwh: Optional[float] = None,
     daylight: Optional[bool] = None,
@@ -1713,7 +1777,9 @@ def forward_purchase_kw(
     Nacht = Last/24, ohne PV, auch ohne die heutige Prognose.
     Tag = (Last − PV-Gutschrift − Speicher über dem Pufferband) / 24.
     PV-Gutschrift am Tag = (Rest heute + 0,6×morgen + 0,4×übermorgen) × forecast_trust,
-    gedeckelt bei der Last. today_pv_kwh ist der noch erwartete Rest, nicht das Ist.
+    gedeckelt bei der Last. today_pv_kwh ist die Prognose ab jetzt, nicht das Ist
+    und nicht der Tagesertrag minus Ist. today_shortfall_kwh ist der Fehlbetrag
+    vergangener Stunden und erhöht nur den Tag-Zukauf, ohne als Gutschrift zu zählen.
     Im Band über dem Min-SoC kommt extra = Basislast × (1 − Abstand / Bandbreite) dazu.
     Erreicht Ladestand plus Prognose das Max-SoC, fällt der Tag-Grundwert auf 0. Der Bandzuschlag bleibt.
     """
@@ -1763,7 +1829,9 @@ def forward_purchase_kw(
     else:
         daylight = bool(daylight)
     today_kwh = 0.0 if today_pv_kwh is None else max(0.0, _f(today_pv_kwh))
-    # Nur am Tag. Die Nachtformel bleibt Last/24 ohne PV.
+    # Nur am Tag. Die Nachtformel bleibt Last/24 ohne PV. Der Fehlbetrag ist
+    # keine zusätzliche Prognose: er kommt erst nach der PV-Rechnung dazu.
+    shortfall_kwh = max(0.0, _f(today_shortfall_kwh)) if daylight else 0.0
     pv_blend = forward_blend + (FORWARD_PV_TODAY_W * today_kwh if daylight else 0.0)
     pv_credit = min(load_kwh, pv_blend * trust)
     storage = float(storage_kwh)
@@ -1792,6 +1860,10 @@ def forward_purchase_kw(
     else:
         p_night = min(p_night, room_to_max)
         p_day = min(p_day, room_to_max)
+        # Rückstand in kWh, Zukauf in kW über dieselbe Tageslänge. Die
+        # PV-Gutschrift und der Volllade-Deckel rechnen ihn nicht auf 0.
+        if shortfall_kwh > 0.0:
+            p_day = min(room_to_max, p_day + shortfall_kwh / HOURS)
     today_trusted = today_kwh * trust if daylight else 0.0
     # Heute allein deckt die Last oder füllt bis zum Max-SoC: der Kauf ist überflüssig.
     pull_down = bool(
@@ -1828,6 +1900,7 @@ def forward_purchase_kw(
         "forecast_trust": round(trust, 3),
         "pv_blend_kwh": round(pv_blend, 2),
         "today_pv_kwh": None if today_pv_kwh is None else round(today_kwh, 2),
+        "today_shortfall_kwh": round(shortfall_kwh, 2),
         "pull_down": pull_down,
         "recent_48h_kwh": round(recent_48h_kwh, 2) if _optional_kwh(recent_48h_kwh) else None,
         "weekday_kwh": round(weekday_kwh, 2) if _optional_kwh(weekday_kwh) else None,
@@ -1967,11 +2040,18 @@ def _forward_for_report(
             day_total = effective_today_pv_kwh(algo)
         except Exception:
             pass
+        actual_pv = algo.get("live_pv_kwh_actual")
         today_pv = forecast_rest_today_kwh(
             today_hours,
             now,
             day_total,
-            algo.get("live_pv_kwh_actual"),
+            actual_pv,
+        )
+        today_shortfall = today_pv_shortfall_kwh(
+            today_hours,
+            now,
+            actual_pv,
+            day_total,
         )
         horizon = hours_until_morning_sun(
             now,
@@ -1996,6 +2076,7 @@ def _forward_for_report(
         tomorrow_pv_kwh=tomorrow_pv,
         day_after_pv_kwh=day_after_pv,
         today_pv_kwh=today_pv,
+        today_shortfall_kwh=today_shortfall,
         forecast_trust=trust,
         hours_until_sun=horizon,
         weekday_kwh=weekday,
@@ -2305,6 +2386,8 @@ def get_report(base_dir: str) -> Dict[str, Any]:
                 "erwarteten Rest von heute plus 0,6×morgen und 0,4×übermorgen, "
                 "mal forecast_trust, gedeckelt bei der Last, minus Speicher über dem Pufferband) / 24. "
                 "Schon erzeugte kWh von heute stecken nicht noch einmal in der Gutschrift. "
+                "Liegt das Ist hinter der Prognose der vergangenen Stunden, erhöht dieser "
+                "Fehlbetrag den Tag-Zukauf und zählt nicht als zusätzliche PV. "
                 "Im Band von 10 Prozentpunkten über dem Min-SoC gilt extra = Basislast × "
                 "(1 − Abstand zum Min-SoC / 10). Bei +5 % ist der Zuschlag halb, ab +10 % null. "
                 "Nahe am maximalen SoC ist der Tagwert 0. "

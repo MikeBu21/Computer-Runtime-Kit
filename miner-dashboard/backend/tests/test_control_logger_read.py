@@ -29,7 +29,7 @@ def _snapshot() -> dict:
         "Beispiel": sensor("-180", "W"),
         "Beispiel": sensor("1195", "W"),
         # Dieselbe Anlage noch einmal, plus ein Sollwert. Darf nicht in die Summe.
-        "sensor.inverter_2_microinverter_power": sensor("9000", "W"),
+        "Beispiel": sensor("9000", "W"),
         "number.192_168_1_176_pv_power": sensor("15000", "W"),
     }
     return {"devices": {"logger": {"entities": entities}}, "unassigned_entities": {}}
