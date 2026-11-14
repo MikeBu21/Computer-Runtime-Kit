@@ -3557,6 +3557,93 @@ def apply_exchange_hold(settings: Optional[Dict[str, Any]] = None) -> Dict[str, 
     return save_settings({"real_mode": True, "target_grid_kw": kw, "exchange_hold": True})
 
 
+# Zehn Punkte vor dem harten Stopp an der Elektrikergrenze den Netzbezug hochziehen.
+# Nur eine Sicherheit, wenn die Planung aus ist und BMS trotzdem schreibt.
+SOC_RAMP_MARGIN = 10
+SOC_RAMP_STEP_KW = 1.2
+SOC_RAMP_DEFAULT_ZIEL = 20
+
+
+def _gespeicherter_max_import_w(settings: Optional[Dict[str, Any]]) -> float:
+    """Gespeicherter Elektrikerwert install_max_import_w in Watt.
+
+    Nicht die Wechselrichter-Nennleistung. Fehlt der Wert, gilt die gespeicherte Vorgabe.
+    """
+    raw = None if settings is None else settings.get("install_max_import_w")
+    if raw in (None, ""):
+        return float(INSTALL_DEFAULTS["install_max_import_w"])
+    try:
+        return float(str(raw).replace(",", ".").strip())
+    except (TypeError, ValueError):
+        return float(INSTALL_DEFAULTS["install_max_import_w"])
+
+
+def netzbezug_rampe_schwelle(ziel_soc: Optional[float]) -> float:
+    """SoC-Schwelle: Ziel des aktiven Elektrikerfensters plus zehn Punkte. Ohne Ziel: 20."""
+    if ziel_soc is None:
+        ziel = float(SOC_RAMP_DEFAULT_ZIEL)
+    else:
+        try:
+            ziel = float(ziel_soc)
+        except (TypeError, ValueError):
+            ziel = float(SOC_RAMP_DEFAULT_ZIEL)
+    return ziel + SOC_RAMP_MARGIN
+
+
+def netzbezug_soc_rampe_kw(
+    soc: Optional[float],
+    ziel_soc: Optional[float],
+    max_import_w: float,
+) -> Optional[float]:
+    """Netzbezug in kW auf oder unter der Schwelle. Darüber None.
+
+    kW = 1,2 * (1 + (schwelle - soc)), gedeckelt auf max_import_w in kW.
+    An der Schwelle genau 1,2 kW. Der harte Stopp an der Elektrikergrenze bleibt außen vor.
+    """
+    if soc is None:
+        return None
+    try:
+        soc_value = float(soc)
+        cap_w = float(max_import_w)
+    except (TypeError, ValueError):
+        return None
+    schwelle = netzbezug_rampe_schwelle(ziel_soc)
+    if soc_value > schwelle:
+        return None
+    kw = SOC_RAMP_STEP_KW * (1.0 + (schwelle - soc_value))
+    cap_kw = max(0.0, cap_w) / 1000.0
+    return round(min(kw, cap_kw), 2)
+
+
+def soll_netzbezug_kw(
+    settings: Optional[Dict[str, Any]],
+    live: Optional[Dict[str, Any]] = None,
+    planning_on: bool = False,
+    now: Optional[datetime] = None,
+) -> float:
+    """Soll-Netzbezug fürs Register, bevor apply_write schreibt.
+
+    Planung an oder real_mode aus: den gespeicherten Sollwert lassen.
+    Planung aus und real_mode an: auf oder unter der Schwelle die Rampe, sonst den Sollwert.
+    Schreibt nichts und liest weder release_pending noch den Elektriker-Snapshot neu.
+    """
+    data = settings or {}
+    try:
+        base = float(data.get("target_grid_kw") or 0)
+    except (TypeError, ValueError):
+        base = 0.0
+    if planning_on or not data.get("real_mode"):
+        return base
+    rampe = netzbezug_soc_rampe_kw(
+        _live_soc(live),
+        _electrician_soc_limit(data, now),
+        _gespeicherter_max_import_w(data),
+    )
+    if rampe is None:
+        return base
+    return rampe
+
+
 _mac_tracker_started = False
 _mac_tracker_last = 0.0
 
@@ -3607,10 +3694,12 @@ def _ensure_writer() -> None:
                     settings = apply_planning_hold(settings, live)
                 if settings.get("real_mode"):
                     reapply_dauerzukauf_test()
+                # Planung aus und real_mode an: Soll aus der SoC-Rampe, bevor die Register geschrieben werden.
+                target_kw = soll_netzbezug_kw(settings, live, _planning_enabled())
                 plan = simulate(
                     live.get("grid_kw"),
                     live.get("battery_kw"),
-                    settings["target_grid_kw"],
+                    target_kw,
                     settings["peak_cap_kw"],
                 )
                 item = INVERTERS[settings["inverter"]]

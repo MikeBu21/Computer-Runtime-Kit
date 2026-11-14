@@ -658,5 +658,103 @@ class InstallerCeilingTests(unittest.TestCase):
         self.assertEqual(bms_seite._auto_peak_kw({"target_grid_kw": -3.0, "idle_peak_w": 8000}), 8.0)
 
 
+class SocImportRampTests(unittest.TestCase):
+    def _settings(self, max_import_w, target_kw=0.4):
+        return {
+            "real_mode": True,
+            "planning_hold": False,
+            "community_hold": False,
+            "exchange_hold": False,
+            "soc_stop": False,
+            "release_pending": True,
+            "install_captured": True,
+            "install_captured_serial": 2965822000,
+            "target_grid_kw": target_kw,
+            "install_max_import_w": max_import_w,
+            "program_soc": [40, 20, 30, 25, 20, 35],
+            "program_time": [0, 600, 1200, 1800, 2200, 2300],
+            "program_power": [1000] * 6,
+            "program_charging": [1] * 6,
+        }
+
+    def test_threshold_is_target_soc_plus_ten(self):
+        self.assertEqual(bms_seite.netzbezug_rampe_schwelle(20), 30)
+        self.assertEqual(bms_seite.netzbezug_rampe_schwelle(35), 45)
+        self.assertEqual(bms_seite.netzbezug_rampe_schwelle(None), 30)
+        morning = bms_seite.datetime(2026, 11, 14, 10, 0, tzinfo=bms_seite.TZ)
+        afternoon = bms_seite.datetime(2026, 11, 14, 13, 0, tzinfo=bms_seite.TZ)
+        settings = self._settings(8000)
+        self.assertEqual(bms_seite._electrician_soc_limit(settings, morning), 20)
+        self.assertEqual(
+            bms_seite.netzbezug_rampe_schwelle(bms_seite._electrician_soc_limit(settings, morning)),
+            30,
+        )
+        self.assertEqual(bms_seite._electrician_soc_limit(settings, afternoon), 30)
+        self.assertEqual(
+            bms_seite.netzbezug_rampe_schwelle(bms_seite._electrician_soc_limit(settings, afternoon)),
+            40,
+        )
+
+    def test_ramp_is_1_2_at_the_threshold_and_linear_below(self):
+        self.assertEqual(bms_seite.netzbezug_soc_rampe_kw(30, 20, 8000), 1.2)
+        self.assertEqual(bms_seite.netzbezug_soc_rampe_kw(29, 20, 8000), 2.4)
+        self.assertEqual(bms_seite.netzbezug_soc_rampe_kw(28, 20, 8000), 3.6)
+        self.assertEqual(bms_seite.netzbezug_soc_rampe_kw(45, 35, 8000), 1.2)
+        self.assertEqual(bms_seite.netzbezug_soc_rampe_kw(44, 35, 8000), 2.4)
+
+    def test_cap_is_the_stored_import_field_not_a_fixed_8000(self):
+        self.assertEqual(bms_seite.netzbezug_soc_rampe_kw(22, 20, 8000), 8.0)
+        self.assertEqual(bms_seite.netzbezug_soc_rampe_kw(22, 20, 3000), 3.0)
+        morning = bms_seite.datetime(2026, 11, 14, 10, 0, tzinfo=bms_seite.TZ)
+        for watts, expected in ((8000, 8.0), (3000, 3.0)):
+            settings = self._settings(watts, target_kw=0.2)
+            kw = bms_seite.soll_netzbezug_kw(
+                settings, {"soc_percent": 22}, planning_on=False, now=morning
+            )
+            self.assertEqual(kw, expected)
+            self.assertEqual(settings["install_max_import_w"], watts)
+
+    def test_above_threshold_leaves_the_existing_setpoint(self):
+        self.assertIsNone(bms_seite.netzbezug_soc_rampe_kw(31, 20, 8000))
+        self.assertIsNone(bms_seite.netzbezug_soc_rampe_kw(46, 35, 8000))
+        morning = bms_seite.datetime(2026, 11, 14, 10, 0, tzinfo=bms_seite.TZ)
+        settings = self._settings(8000, target_kw=2.0)
+        kw = bms_seite.soll_netzbezug_kw(
+            settings, {"soc_percent": 31}, planning_on=False, now=morning
+        )
+        self.assertEqual(kw, 2.0)
+
+    def test_planning_on_does_not_replace_the_planner_setpoint(self):
+        morning = bms_seite.datetime(2026, 11, 14, 10, 0, tzinfo=bms_seite.TZ)
+        settings = self._settings(8000, target_kw=0.4)
+        with mock.patch.object(bms_seite, "save_settings") as save, mock.patch.object(
+            bms_seite, "capture_install_from_inverter"
+        ) as capture, mock.patch.object(bms_seite, "load_settings") as load:
+            kept = bms_seite.soll_netzbezug_kw(
+                settings, {"soc_percent": 29}, planning_on=True, now=morning
+            )
+            ramped = bms_seite.soll_netzbezug_kw(
+                settings, {"soc_percent": 29}, planning_on=False, now=morning
+            )
+        self.assertEqual(kept, 0.4)
+        self.assertEqual(ramped, 2.4)
+        self.assertEqual(settings["target_grid_kw"], 0.4)
+        self.assertTrue(settings["release_pending"])
+        self.assertEqual(settings["install_captured_serial"], 2965822000)
+        save.assert_not_called()
+        capture.assert_not_called()
+        load.assert_not_called()
+
+    def test_active_window_not_the_lowest_of_six(self):
+        afternoon = bms_seite.datetime(2026, 11, 14, 13, 0, tzinfo=bms_seite.TZ)
+        settings = self._settings(8000, target_kw=0.5)
+        # Fenster 30, Schwelle 40. SoC 39 liegt einen Punkt darunter → 2,4 kW.
+        # Das Minimum aller sechs wäre 20 und würde hier keine Rampe erzwingen.
+        kw = bms_seite.soll_netzbezug_kw(
+            settings, {"soc_percent": 39}, planning_on=False, now=afternoon
+        )
+        self.assertEqual(kw, 2.4)
+
+
 if __name__ == "__main__":
     unittest.main()
