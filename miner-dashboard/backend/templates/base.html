@@ -555,6 +555,20 @@
     .sr-actions { display: flex; gap: 0.6rem; margin-top: 1rem; }
 
     .sr-error { color: #ffcdd2; min-height: 1.2rem; margin: 0.6rem 0 0; }
+
+    .sr-warn {
+      display: none;
+      margin: 0.7rem 0 0;
+      padding: 0.65rem 0.75rem;
+      border: 1px solid #c62828;
+      border-radius: 10px;
+      background: rgba(198, 40, 40, 0.16);
+      color: #ffcdd2;
+      font-size: 0.9rem;
+      line-height: 1.35;
+    }
+
+    .sr-warn.is-visible { display: block; }
   </style>
   {% block extra_head %}{% endblock %}
 </head>
@@ -672,20 +686,23 @@
   <div id="steuerungsreset_backdrop" class="sr-backdrop" hidden>
     <div class="sr-dialog" role="dialog" aria-modal="true" aria-labelledby="steuerungsreset_title">
       <h2 id="steuerungsreset_title">Steuerungsreset</h2>
-      <p>Einmal öffnen, Passwort selbst eintippen, Modus wählen und bestätigen. Danach schließt sich das Fenster. Es gibt keinen automatischen Reset.</p>
-      <p>Das Neulernen beginnt mit dem nächsten Tag. Nach etwa 14 Tagen sollten Hausverbrauch, PV-Produktion und das Wochentagsprofil wieder halbwegs stimmen, mit zwei Tagen je Wochentag. Die PV-Ratio wird auf 1 gesetzt und passt sich abends an.</p>
+      <p>Einmal öffnen, Passwort selbst eintippen, Punkt wählen und bestätigen. Danach schließt sich das Fenster. Es gibt keinen automatischen Reset.</p>
+      <p>Config, 50-Prozent-Schwelle, PV-Ratio-Grenzen, Lern-Sidecar, Stundenfaktoren und Lenkungs-Lernen bleiben unangetastet.</p>
       <form id="steuerungsreset_form" method="post" action="/steuerungsreset" autocomplete="off">
         <label for="steuerungsreset_password">Passwort</label>
         <input class="form-control" id="steuerungsreset_password" name="password" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" value="">
-        <label>Modus</label>
-        <label class="sr-choice">
-          <input type="radio" name="mode" value="last">
-          <span>Nur Lastprofil und Wochentagsprofil löschen. Das 365-Tage-Archiv bleibt.</span>
-        </label>
+        <label>Was löschen?</label>
         <label class="sr-choice">
           <input type="radio" name="mode" value="archiv">
-          <span>Zusätzlich das 365-Tage-Archiv löschen.</span>
+          <span>365-Tage-Archiv — nur das Verbrauchsarchiv löschen.</span>
         </label>
+        <label class="sr-choice">
+          <input type="radio" name="mode" value="sonst_alles" id="steuerungsreset_mode_sonst">
+          <span>Sonst alles — Energiestatistik (24h, 30 Tage, Jahr) und Grundverbrauchsrechner.</span>
+        </label>
+        <p class="sr-warn" id="steuerungsreset_gvr_warn" role="status">
+          Warnung: Der Grundverbrauchsrechner wird geleert. Zukauf-Soll, Halte-Sperren und Nutzerannahmen gehen verloren. Miner-Annahmen werden auf Standard zurückgesetzt.
+        </p>
         <p class="sr-error" id="steuerungsreset_error" role="alert"></p>
         <div class="sr-actions">
           <button type="submit" class="btn btn-danger" id="steuerungsreset_confirm">Bestätigen</button>
@@ -857,6 +874,14 @@
       const resetError = document.getElementById("steuerungsreset_error");
       const resetOpen = document.getElementById("steuerungsreset_open");
 
+      const resetGvrWarn = document.getElementById("steuerungsreset_gvr_warn");
+
+      function syncResetWarn() {
+        if (!resetForm || !resetGvrWarn) return;
+        const modeEl = resetForm.querySelector('input[name="mode"]:checked');
+        resetGvrWarn.classList.toggle("is-visible", !!(modeEl && modeEl.value === "sonst_alles"));
+      }
+
       function closeSteuerungsreset() {
         if (!resetBackdrop) return;
         resetBackdrop.hidden = true;
@@ -865,6 +890,7 @@
           resetForm.querySelectorAll('input[name="mode"]').forEach(function (el) { el.checked = false; });
         }
         if (resetError) resetError.textContent = "";
+        if (resetGvrWarn) resetGvrWarn.classList.remove("is-visible");
       }
 
       if (resetOpen && resetBackdrop && resetForm && resetPassword) {
@@ -877,6 +903,9 @@
         resetBackdrop.addEventListener("click", function (event) {
           if (event.target === resetBackdrop) closeSteuerungsreset();
         });
+        resetForm.querySelectorAll('input[name="mode"]').forEach(function (el) {
+          el.addEventListener("change", syncResetWarn);
+        });
         resetForm.addEventListener("submit", async function (event) {
           event.preventDefault();
           const typed = resetPassword.value;
@@ -886,8 +915,14 @@
             return;
           }
           if (!modeEl) {
-            resetError.textContent = "Bitte einen Modus wählen.";
+            resetError.textContent = "Bitte einen Punkt wählen.";
             return;
+          }
+          if (modeEl.value === "sonst_alles") {
+            const okWarn = window.confirm(
+              "Grundverbrauchsrechner wirklich leeren? Zukauf-Soll, Halte-Sperren und Nutzerannahmen gehen verloren."
+            );
+            if (!okWarn) return;
           }
           const body = new FormData();
           body.set("password", typed);

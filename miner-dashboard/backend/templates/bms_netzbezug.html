@@ -142,6 +142,14 @@
         <input class="form-control" id="install_max_import_w" name="install_max_import_w" type="number" min="0" max="80000" step="10" value="{{ settings.install_max_import_w }}" required>
       </div>
       <div>
+        <label class="form-label" for="install_solar_sell">Solar Sell</label>
+        <select class="form-control" id="install_solar_sell" name="install_solar_sell">
+          <option value="1" {% if settings.install_solar_sell == 1 %}selected{% endif %}>An</option>
+          <option value="0" {% if settings.install_solar_sell == 0 %}selected{% endif %}>Aus</option>
+        </select>
+        <div style="color: var(--muted); font-size: 0.78rem; margin-top: 0.3rem;">Wird beim Ausschalten von „Ins Register schreiben“ zurückgeschrieben.</div>
+      </div>
+      <div>
         <label class="form-label" for="idle_grid_w">Zero Export (W)</label>
         <input class="form-control" id="idle_grid_w" name="idle_grid_w" type="number" min="1" max="500" step="1" value="{{ settings.idle_grid_w }}" required>
         <div style="color: var(--muted); font-size: 0.78rem; margin-top: 0.3rem;">Nie 0.</div>
@@ -327,7 +335,8 @@
       "install_max_import_w",
       "install_shutdown_soc",
       "install_restart_soc",
-      "install_low_soc"
+      "install_low_soc",
+      "install_solar_sell"
     ].forEach(function (key) {
       const input = document.getElementById(key);
       if (input && saved[key] != null) input.value = saved[key];

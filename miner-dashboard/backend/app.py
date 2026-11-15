@@ -666,6 +666,7 @@ def api_bms_netzbezug_settings():
         "install_shutdown_soc",
         "install_restart_soc",
         "install_low_soc",
+        "install_solar_sell",
     ):
         if key in form:
             updates[key] = form.get(key)
@@ -1852,8 +1853,7 @@ def steuerungsreset():
     """Nur nach selbst getipptem Passwort und eigener Bestätigung."""
     from control_algorithm.config import BACKEND_DIR, load_state, save_state
     from control_algorithm.steuerungsreset import (
-        MODE_ARCHIV,
-        MODE_LAST,
+        RESET_MODES,
         apply_manual_reset,
         authorize_reset,
     )
@@ -1865,8 +1865,8 @@ def steuerungsreset():
         status = 403 if error == "Falsches Passwort." else 400
         return jsonify({"ok": False, "error": error}), status
     mode = (request.form.get("mode") or "").strip()
-    if mode not in (MODE_LAST, MODE_ARCHIV):
-        return jsonify({"ok": False, "error": "Bitte einen Modus wählen."}), 400
+    if mode not in RESET_MODES:
+        return jsonify({"ok": False, "error": "Bitte einen Punkt wählen."}), 400
     state = load_state()
     try:
         result = apply_manual_reset(str(BACKEND_DIR), mode, state)

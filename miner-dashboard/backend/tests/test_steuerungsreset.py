@@ -1,19 +1,17 @@
 # -*- coding: utf-8 -*-
-"""Manueller Steuerungsreset: Passwort, zwei Modi, kein Auto-Reset."""
+"""Manueller Steuerungsreset: Passwort, zwei Punkte, kein Auto-Reset."""
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
-from datetime import date, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
-from control_algorithm.consumption_history import get_weekday_profile, load_history
-from control_algorithm.learning_persistence import (
-    merge_learning_into_state,
-    save_learning_store,
-)
+from control_algorithm.consumption_history import load_history, save_history
 from control_algorithm.steuerungsreset import (
+    MODE_ARCHIV,
+    MODE_SONST,
     RESET_PASSWORD,
     apply_manual_reset,
     authorize_reset,
@@ -60,6 +58,28 @@ def _state():
     }
 
 
+def _seed_sonst(tmp: str) -> None:
+    monitor = Path(tmp) / "energy_monitor"
+    monitor.mkdir(parents=True, exist_ok=True)
+    for name in ("energy_stats_24h.json", "energy_stats_30d.json", "energy_stats_year.json"):
+        (monitor / name).write_text(
+            json.dumps({"marker": name, "verbrauch_gesamt_kwh": 42.0}),
+            encoding="utf-8",
+        )
+    (monitor / "grundverbrauch_rechner.json").write_text(
+        json.dumps(
+            {
+                "assumptions": {"miner:1": "on"},
+                "recommendation": {"kw": 3.5},
+                "base_archive": [{"date": "2026-10-01"}],
+                "targets": {"soc_hold_enabled": True, "soc_hold_percent": 40.0},
+                "forward_purchase": {"active": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 class TestSteuerungsreset(unittest.TestCase):
     def test_password_is_fixed_7777_and_not_in_the_page(self):
         self.assertEqual(RESET_PASSWORD, "7777")
@@ -70,6 +90,10 @@ class TestSteuerungsreset(unittest.TestCase):
         self.assertNotIn("7777", html)
         self.assertIn("Steuerungsreset", html)
         self.assertIn('id="steuerungsreset_open"', html)
+        self.assertIn('value="archiv"', html)
+        self.assertIn('value="sonst_alles"', html)
+        self.assertIn("steuerungsreset_gvr_warn", html)
+        self.assertNotIn('value="last"', html)
         self.assertIn('value=""', html)
         self.assertNotIn("threading", Path(__file__).resolve().parents[1].joinpath(
             "control_algorithm", "steuerungsreset.py"
@@ -81,111 +105,66 @@ class TestSteuerungsreset(unittest.TestCase):
         self.assertEqual(authorize_reset("7778", "1"), "Falsches Passwort.")
         self.assertIsNone(authorize_reset("7777", "1"))
 
-    def test_last_mode_clears_profiles_keeps_archive_and_resets_ratio(self):
+    def test_archiv_mode_clears_only_archive_days(self):
         with tempfile.TemporaryDirectory() as tmp:
-            from control_algorithm.consumption_history import save_history
-
             save_history(tmp, _history())
             state = _state()
-            result = apply_manual_reset(tmp, "last", state)
-            history = load_history(tmp)
-            self.assertEqual(len(history["days"]), 1)
-            self.assertEqual(history["weekday_profiles"]["0"]["sample_count"], 0)
-            self.assertEqual(history["profile_reset_from"], (date.today() + timedelta(days=1)).isoformat())
-            prof = get_weekday_profile(history, 0, tmp)
-            self.assertEqual(int(prof.get("sample_count") or 0), 0)
-            self.assertEqual(state["performance_ratio"], 1.0)
-            self.assertEqual(state["yield_factor"], 1.0)
-            self.assertEqual(state["days_since_reset"], 0)
-            self.assertEqual(state["hour_slot_factors"]["h08"], 1.2)
-            self.assertEqual(state["steering_learning"]["params"]["soc_preempt_margin"], 7.5)
-            self.assertEqual(len(state["yield_history"]), 1)
-            self.assertIn("Archiv bleibt", result["message"])
-
-    def test_archive_mode_also_deletes_raw_days(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            from control_algorithm.consumption_history import save_history
-
-            save_history(tmp, _history())
-            state = _state()
-            result = apply_manual_reset(tmp, "archiv", state)
+            result = apply_manual_reset(tmp, MODE_ARCHIV, state)
             history = load_history(tmp)
             self.assertEqual(history["days"], [])
+            self.assertEqual(history["weekday_profiles"]["0"]["sample_count"], 4)
             self.assertEqual(result["archived_days"], 0)
-            self.assertEqual(state["performance_ratio"], 1.0)
-            self.assertIn("365-Tage-Archiv", result["message"])
+            self.assertEqual(state["performance_ratio"], 1.0774)
+            self.assertEqual(state["yield_factor"], 1.0774)
+            self.assertEqual(state["days_since_reset"], 11)
+            self.assertEqual(state["hour_slot_factors"]["h08"], 1.2)
+            self.assertEqual(state["steering_learning"]["params"]["soc_preempt_margin"], 7.5)
+            self.assertEqual(state["last_manual_reset_mode"], MODE_ARCHIV)
+            self.assertIn("365-Tage-Verbrauchsarchiv", result["message"])
 
-    def test_saved_ratio_is_not_restored_from_the_learning_store(self):
+    def test_sonst_alles_clears_energy_stats_and_gvr_keeps_learning(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "learning.json"
-            save_learning_store(_state(), path)
-            reset_state = _state()
-            reset_state["performance_ratio"] = 1.0
-            reset_state["yield_factor"] = 1.0
-            reset_state["days_since_reset"] = 0
-            save_learning_store(reset_state, path)
-            restored = merge_learning_into_state(
-                {
-                    "performance_ratio": 1.0,
-                    "yield_factor": 1.0,
-                    "days_since_reset": 0,
-                    "yield_history": reset_state["yield_history"],
-                    "steering_learning": reset_state["steering_learning"],
-                },
-                path,
-            )
-            self.assertEqual(restored["days_since_reset"], 0)
-            self.assertEqual(restored["performance_ratio"], 1.0)
+            save_history(tmp, _history())
+            _seed_sonst(tmp)
+            state = _state()
+            result = apply_manual_reset(tmp, MODE_SONST, state)
+            monitor = Path(tmp) / "energy_monitor"
+            for name in ("energy_stats_24h.json", "energy_stats_30d.json", "energy_stats_year.json"):
+                data = json.loads((monitor / name).read_text(encoding="utf-8"))
+                self.assertNotIn("marker", data)
+                self.assertEqual(float(data.get("verbrauch_gesamt_kwh") or 0), 0.0)
+            gvr = json.loads((monitor / "grundverbrauch_rechner.json").read_text(encoding="utf-8"))
+            self.assertEqual(gvr.get("assumptions"), {})
+            self.assertEqual(gvr.get("recommendation"), {})
+            self.assertEqual(gvr.get("base_archive"), [])
+            self.assertFalse((gvr.get("targets") or {}).get("soc_hold_enabled"))
+            history = load_history(tmp)
+            self.assertEqual(len(history["days"]), 1)
+            self.assertEqual(state["performance_ratio"], 1.0774)
+            self.assertEqual(state["hour_slot_factors"]["h08"], 1.2)
+            self.assertEqual(state["steering_learning"]["params"]["soc_preempt_margin"], 7.5)
+            self.assertEqual(state["last_manual_reset_mode"], MODE_SONST)
+            self.assertIn("grundverbrauch_rechner.json", result["cleared"])
+            self.assertIn("Grundverbrauchsrechner", result["message"])
 
-    def test_first_evening_after_reset_does_not_freeze_ratio(self):
-        from control_algorithm.calibration import run_evening_calibration
-        from control_algorithm.slot_profiles import hour_slot_ids
-
-        hours = {hid: 25.0 for hid in hour_slot_ids()}
-        state = {
-            "morning_pv_forecast_kwh": 900.0,
-            "morning_forecast_slots": {},
-            "morning_forecast_hours": {hid: 50.0 for hid in hour_slot_ids()},
-            "morning_forecast_date": date.today().isoformat(),
-            "performance_ratio": 1.0,
-            "yield_factor": 1.0,
-            "hour_slot_factors": {hid: 1.0 for hid in hour_slot_ids()},
-            "days_since_reset": 0,
-            "yield_history": [],
-        }
-        import control_algorithm.calibration as cal
-
-        orig = cal.get_actual_pv_kwh_today
-        orig_slots = cal.get_actual_pv_kwh_by_slots_today
-        orig_hours = cal.get_actual_pv_kwh_by_hours_today
-        try:
-            cal.get_actual_pv_kwh_today = lambda _b: 450.0
-            cal.get_actual_pv_kwh_by_slots_today = lambda _b: {}
-            cal.get_actual_pv_kwh_by_hours_today = lambda _b: hours
-            state = run_evening_calibration(state, {"pv_kwp": 16, "has_pv": True}, "/tmp")
-        finally:
-            cal.get_actual_pv_kwh_today = orig
-            cal.get_actual_pv_kwh_by_slots_today = orig_slots
-            cal.get_actual_pv_kwh_by_hours_today = orig_hours
-        self.assertNotEqual(state["last_calibration_note"], "skipped_outlier")
-        self.assertLess(state["performance_ratio"], 1.0)
-        self.assertEqual(state["days_since_reset"], 1)
+    def test_unknown_mode_is_rejected(self):
+        with self.assertRaises(ValueError):
+            apply_manual_reset("/tmp", "last", _state())
 
     def test_route_does_not_reset_without_typed_confirm(self):
         import app as dashboard
 
         client = dashboard.app.test_client()
-        missing = client.post("/steuerungsreset", data={"password": "7777", "mode": "last"})
+        missing = client.post("/steuerungsreset", data={"password": "7777", "mode": "archiv"})
         self.assertEqual(missing.status_code, 400)
         wrong = client.post(
             "/steuerungsreset",
-            data={"password": "0000", "confirm": "1", "mode": "last"},
+            data={"password": "0000", "confirm": "1", "mode": "archiv"},
         )
         self.assertEqual(wrong.status_code, 403)
 
         def fake_apply(base_dir, mode, state):
-            state["performance_ratio"] = 1.0
-            state["days_since_reset"] = 0
+            state["last_manual_reset_mode"] = mode
             return {"message": "test", "mode": mode}
 
         with patch("control_algorithm.config.load_state", return_value=_state()), patch(
@@ -195,13 +174,13 @@ class TestSteuerungsreset(unittest.TestCase):
         ) as apply:
             ok = client.post(
                 "/steuerungsreset",
-                data={"password": "7777", "confirm": "1", "mode": "archiv"},
+                data={"password": "7777", "confirm": "1", "mode": "sonst_alles"},
             )
         self.assertEqual(ok.status_code, 200)
         apply.assert_called_once()
-        self.assertEqual(apply.call_args.args[1], "archiv")
+        self.assertEqual(apply.call_args.args[1], "sonst_alles")
         save_state.assert_called_once()
-        self.assertEqual(save_state.call_args.args[0]["performance_ratio"], 1.0)
+        self.assertEqual(save_state.call_args.args[0]["last_manual_reset_mode"], "sonst_alles")
 
 
 if __name__ == "__main__":

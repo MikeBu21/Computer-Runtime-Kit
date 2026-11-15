@@ -282,6 +282,7 @@ WORK_MODE_ZERO_EXPORT_CT = 2
 ENERGY_PATTERN_BATTERY_FIRST = 0
 ENERGY_PATTERN_LOAD_FIRST = 1
 SOLAR_SELL_OFF = 0
+SOLAR_SELL_ON = 1
 # Soll-Netzbezug in Watt ins Zero-Export-Register, nicht nur 20 W Offset.
 # Nach dem Ausschalten: externer Zugriff / Zero-Export-Offset 20 W.
 ZERO_EXPORT_IDLE_W = 20
@@ -290,6 +291,7 @@ GRID_PEAK_ENABLE_BIT = 4
 MICRO_EXPORT_CUTOFF_BIT = 0
 # Schalter Generator/Microinverter, Register 0x0084. 0 = aus.
 REG_MICROINVERTER = 0x0084
+REG_SOLAR_SELL = 0x0091
 MAX_DISCHARGE_AMPS = 240
 TOU_HOLD_SOC = 20
 TOU_HOLD_POWER_W = 12000
@@ -303,6 +305,8 @@ INSTALL_DEFAULTS = {
     "install_shutdown_soc": 9,
     "install_restart_soc": 10,
     "install_low_soc": 11,
+    # Solar Sell (0x0091): Elektriker-Soll, beim Release und beim BMS-Schreiben wiederherstellen.
+    "install_solar_sell": SOLAR_SELL_ON,
 }
 INSTALL_RANGES = {
     "install_max_charge_a": (0, 350),
@@ -312,6 +316,7 @@ INSTALL_RANGES = {
     "install_shutdown_soc": (0, 100),
     "install_restart_soc": (0, 100),
     "install_low_soc": (0, 100),
+    "install_solar_sell": (0, 1),
 }
 REG_MAX_CHARGE = 0x006C
 REG_MAX_DISCHARGE = 0x006D
@@ -334,6 +339,7 @@ INSTALL_REGISTER_SCALE = {
     "install_shutdown_soc": (REG_SHUTDOWN_SOC, 1),
     "install_restart_soc": (REG_RESTART_SOC, 1),
     "install_low_soc": (REG_LOW_SOC, 1),
+    "install_solar_sell": (REG_SOLAR_SELL, 1),
 }
 
 
@@ -515,6 +521,11 @@ def _install_value(settings: Optional[Dict[str, Any]], key: str) -> int:
         value = INSTALL_DEFAULTS[key]
     lowest, highest = INSTALL_RANGES[key]
     return max(lowest, min(highest, value))
+
+
+def _install_solar_sell(settings: Optional[Dict[str, Any]] = None) -> int:
+    """Elektriker-Soll für Solar Sell (0/1). Nicht fest aus."""
+    return _install_value(settings, "install_solar_sell")
 
 
 def _coerce_program_list(raw: Any, highest: int = 65535) -> Optional[List[int]]:
@@ -1653,7 +1664,7 @@ def _control_item(item: Dict[str, Any], link: Optional[Dict[str, Any]]) -> Dict[
         chosen["time_of_use_register"] = 0x0092
         chosen["work_mode_register"] = 0x008E
         chosen["energy_pattern_register"] = 0x008D
-        chosen["solar_sell_register"] = 0x0091
+        chosen["solar_sell_register"] = REG_SOLAR_SELL
         chosen["grid_peak_enable_register"] = 0x00B2
         chosen["grid_peak_power_register"] = 0x00BF
         chosen["max_discharge_register"] = 0x006D
@@ -2455,6 +2466,7 @@ def _import_writes(
     live: Optional[Dict[str, Any]],
     peak_flags: Optional[int],
     immediate: bool = False,
+    settings: Optional[Dict[str, Any]] = None,
 ) -> tuple:
     """Fester Netzbezug. Liefert (Registerzeilen, TOU-SOC, TOU-Laden).
 
@@ -2488,7 +2500,9 @@ def _import_writes(
     if item.get("energy_pattern_register") is not None:
         rows.append((int(item["energy_pattern_register"]), "Energy Pattern", ENERGY_PATTERN_LOAD_FIRST))
     if item.get("solar_sell_register") is not None:
-        rows.append((int(item["solar_sell_register"]), "Solar Sell", SOLAR_SELL_OFF))
+        rows.append(
+            (int(item["solar_sell_register"]), "Solar Sell", _install_solar_sell(settings))
+        )
     if item.get("max_import_register") is not None:
         # Scale 10, nur lose Obergrenze. Den Soll hält die Spitzenkappung.
         basis = peak_w if immediate else target_w + PEAK_TRIM_MAX_W + 500
@@ -2558,7 +2572,9 @@ def _feed_writes(
     if item.get("energy_pattern_register") is not None:
         rows.append((int(item["energy_pattern_register"]), "Energy Pattern", ENERGY_PATTERN_LOAD_FIRST))
     if item.get("solar_sell_register") is not None:
-        rows.append((int(item["solar_sell_register"]), "Solar Sell", 1))
+        # Einspeise-Halt braucht Solar Sell an; Elektriker-Soll sonst beibehalten.
+        sell = max(SOLAR_SELL_ON, _install_solar_sell(settings))
+        rows.append((int(item["solar_sell_register"]), "Solar Sell", sell))
     rows.append((int(item["sell_power_register"]), "Export Surplus Power", sell_w))
     if item.get("time_of_use_register") is not None:
         rows.append((int(item["time_of_use_register"]), "Time of Use", TOU_WEEK_ENABLED))
@@ -2632,6 +2648,47 @@ def _clear_release_pending(settings: Dict[str, Any]) -> None:
 
 def _release_due(settings: Dict[str, Any]) -> bool:
     return bool(_needs_release or settings.get("release_pending"))
+
+
+_last_drift_release = 0.0
+DRIFT_RELEASE_GAP_SEC = 60.0
+
+
+def _normalbetrieb_drift(settings: Optional[Dict[str, Any]] = None) -> bool:
+    """True, wenn bei ausgeschaltetem BMS noch Stellwerte vom Halt am Wechselrichter stehen.
+
+    Typisch nach Prozessneustart: release_pending ist schon false, Solar Sell oder die
+    Spitzenkappung weichen aber noch vom Elektriker-Normalbetrieb ab. Dann muss die Freigabe noch einmal.
+    """
+    regs = read_register_state()
+    sell = str(regs.get("solar_sell") or "").strip().lower()
+    sell_on = sell in ("on", "1", "true")
+    if sell_on != bool(_install_solar_sell(settings)):
+        return True
+    try:
+        peak = float(str(regs.get("peak_w") or "").replace(",", "."))
+    except (TypeError, ValueError):
+        peak = None
+    if peak is None:
+        return False
+    idle = float(_idle_peak_w(settings))
+    return abs(peak - idle) > 50.0
+
+
+def _queue_release_if_drift(settings: Dict[str, Any]) -> bool:
+    """Einmalig Freigabe anstoßen, wenn Solar Sell oder Spitze nicht zum Elektriker-Soll passen."""
+    global _last_drift_release, _release_sent
+    if settings.get("real_mode") or settings.get("release_pending"):
+        return False
+    if not _normalbetrieb_drift(settings):
+        return False
+    now = time.monotonic()
+    if now - _last_drift_release < DRIFT_RELEASE_GAP_SEC:
+        return False
+    _last_drift_release = now
+    _release_sent = False
+    _mark_release_pending(settings)
+    return True
 
 
 def _live_soc(live: Optional[Dict[str, Any]]) -> Optional[float]:
@@ -3044,7 +3101,9 @@ def _release_writes(item: Dict[str, Any], settings: Optional[Dict[str, Any]] = N
             )
         )
     if item.get("solar_sell_register") is not None:
-        rows.append((int(item["solar_sell_register"]), "Solar Sell", SOLAR_SELL_OFF))
+        rows.append(
+            (int(item["solar_sell_register"]), "Solar Sell", _install_solar_sell(settings))
+        )
     if item.get("microinverter_register") is not None:
         rows.append((int(item["microinverter_register"]), "Microinverter", 0))
     if item.get("sell_power_register") is not None:
@@ -3168,6 +3227,8 @@ def apply_write(
         if settings.get("release_pending"):
             _release_sent = False
         if not _release_due(settings):
+            _queue_release_if_drift(settings)
+        if not _release_due(settings):
             return _write_result(False, "Aus. Es wird nichts geschrieben.")
         if _release_sent:
             _needs_release = False
@@ -3237,7 +3298,12 @@ def apply_write(
         rows, tou_soc, tou_charging = _feed_writes(item, -target_w, live, settings, peak_flags)
     else:
         rows, tou_soc, tou_charging = _import_writes(
-            item, target_w, live, peak_flags, immediate=bool(settings.get("exchange_hold"))
+            item,
+            target_w,
+            live,
+            peak_flags,
+            immediate=bool(settings.get("exchange_hold")),
+            settings=settings,
         )
     writes.extend(rows)
     tou_state = (tou_soc, tou_charging)
@@ -3266,6 +3332,8 @@ def apply_write(
 def _ha_matches(entity: str, expected: str, current: str) -> bool:
     if expected == "off":
         return current in ("off", "0")
+    if expected == "on":
+        return current in ("on", "1", "true")
     if current == expected:
         return True
     try:
@@ -3277,7 +3345,7 @@ def _ha_matches(entity: str, expected: str, current: str) -> bool:
 def _sync_ha_release(settings: Optional[Dict[str, Any]] = None) -> List[str]:
     """Nach dem Ausschalten HA auf die Standeinstellung setzen und zurücklesen.
 
-    Solar Sell, Mikrowechselrichter und die Export-Abschaltung müssen aus sein.
+    Solar Sell folgt dem Elektriker-Soll. Mikrowechselrichter und Export-Abschaltung aus.
     Weicht der gelesene Zustand ab, kommt die Stelle in der Fehlerliste zurück.
     """
     try:
@@ -3287,6 +3355,7 @@ def _sync_ha_release(settings: Optional[Dict[str, Any]] = None) -> List[str]:
     idle_w = _idle_grid_w(settings)
     work_name = "Export First" if _idle_work_mode(settings) == WORK_MODE_EXPORT_FIRST else "Zero Export To CT"
     pattern_name = "Battery First" if _idle_energy_pattern(settings) == ENERGY_PATTERN_BATTERY_FIRST else "Load First"
+    solar_service = "turn_on" if _install_solar_sell(settings) else "turn_off"
     prefix = "number.192_168_1_176"
     select = "select.192_168_1_176"
     wanted = [
@@ -3296,7 +3365,7 @@ def _sync_ha_release(settings: Optional[Dict[str, Any]] = None) -> List[str]:
         ("select", "select_option", f"{select}_work_mode", {"option": work_name}),
         ("select", "select_option", f"{select}_energy_pattern", {"option": pattern_name}),
         ("switch", "turn_off", "switch.192_168_1_176_battery_grid_charging", {}),
-        ("switch", "turn_off", "switch.192_168_1_176_export_surplus", {}),
+        ("switch", solar_service, "switch.192_168_1_176_export_surplus", {}),
         ("switch", "turn_off", "switch.192_168_1_176_microinverter", {}),
         ("switch", "turn_off", "switch.192_168_1_176_microinverter_export_cut_off", {}),
     ]
@@ -3314,9 +3383,14 @@ def _sync_ha_release(settings: Optional[Dict[str, Any]] = None) -> List[str]:
     errors: List[str] = []
     for domain, service, entity, extra in wanted:
         current = (read_ha_entity_state(entity) or "").strip()
-        target = "off" if service == "turn_off" else str(
-            extra.get("value") if extra.get("value") is not None else extra.get("option") or ""
-        )
+        if service == "turn_off":
+            target = "off"
+        elif service == "turn_on":
+            target = "on"
+        else:
+            target = str(
+                extra.get("value") if extra.get("value") is not None else extra.get("option") or ""
+            )
         if target and _ha_matches(entity, target, current):
             continue
         try:
@@ -3557,11 +3631,25 @@ def apply_exchange_hold(settings: Optional[Dict[str, Any]] = None) -> Dict[str, 
     return save_settings({"real_mode": True, "target_grid_kw": kw, "exchange_hold": True})
 
 
-# Zehn Punkte vor dem harten Stopp an der Elektrikergrenze den Netzbezug hochziehen.
-# Nur eine Sicherheit, wenn die Planung aus ist und BMS trotzdem schreibt.
+# Not-Rampe relativ zum Storage-Sockel (aktives Elektriker-Programm-SoC / Tauchziel):
+# Nur fallend: Eintritt, wenn der SoC von oben die Schwelle Sockel+10 unterschreitet.
+# Im Fenster (Sockel, Sockel+10]: linear 10 % Cap an der Schwelle → nahe 100 % knapp über dem Sockel.
+# Am/unter dem Sockel und beim Anstieg aus dem Sockel heraus: Rampe aus (nur Planungswert).
+# Mit Planung: max(Plan, Rampe), aber nur solange die Rampe aktiv ist.
 SOC_RAMP_MARGIN = 10
-SOC_RAMP_STEP_KW = 1.2
-SOC_RAMP_DEFAULT_ZIEL = 20
+SOC_RAMP_START_FRACTION = 0.1
+# Nur Fallback, wenn kein Elektriker-Sockel (program_soc) lesbar ist.
+SOC_RAMP_DEFAULT_SOCKEL = 20
+
+_ramp_active = False
+_ramp_prev_soc: Optional[float] = None
+
+
+def reset_netzbezug_ramp_state() -> None:
+    """Rampen-Zustand zurücksetzen (Tests / klarer Neustart)."""
+    global _ramp_active, _ramp_prev_soc
+    _ramp_active = False
+    _ramp_prev_soc = None
 
 
 def _gespeicherter_max_import_w(settings: Optional[Dict[str, Any]]) -> float:
@@ -3578,41 +3666,81 @@ def _gespeicherter_max_import_w(settings: Optional[Dict[str, Any]]) -> float:
         return float(INSTALL_DEFAULTS["install_max_import_w"])
 
 
-def netzbezug_rampe_schwelle(ziel_soc: Optional[float]) -> float:
-    """SoC-Schwelle: Ziel des aktiven Elektrikerfensters plus zehn Punkte. Ohne Ziel: 20."""
-    if ziel_soc is None:
-        ziel = float(SOC_RAMP_DEFAULT_ZIEL)
+def _netzbezug_sockel_soc(sockel_soc: Optional[float]) -> float:
+    """Storage-Sockel / Tauchziel in Prozent. Dynamisch, kein fixer 20/30-Wert."""
+    if sockel_soc is None:
+        return float(SOC_RAMP_DEFAULT_SOCKEL)
+    try:
+        return float(sockel_soc)
+    except (TypeError, ValueError):
+        return float(SOC_RAMP_DEFAULT_SOCKEL)
+
+
+def netzbezug_rampe_schwelle(sockel_soc: Optional[float]) -> float:
+    """Rampen-Start: eingestellter Sockel plus zehn Prozentpunkte."""
+    return _netzbezug_sockel_soc(sockel_soc) + SOC_RAMP_MARGIN
+
+
+def _netzbezug_rampe_leistung_kw(
+    soc_value: float,
+    sockel: float,
+    schwelle: float,
+    max_import_w: float,
+) -> Optional[float]:
+    """Reine Leistung im offenen Fenster (Sockel, Schwelle]. Außerhalb None."""
+    if soc_value <= sockel or soc_value > schwelle or SOC_RAMP_MARGIN <= 0:
+        return None
+    try:
+        cap_w = float(max_import_w)
+    except (TypeError, ValueError):
+        return None
+    cap_kw = max(0.0, cap_w) / 1000.0
+    if cap_kw <= 0:
+        return 0.0
+    progress = (schwelle - soc_value) / float(SOC_RAMP_MARGIN)
+    progress = max(0.0, min(1.0, progress))
+    fraction = SOC_RAMP_START_FRACTION + (1.0 - SOC_RAMP_START_FRACTION) * progress
+    return round(min(cap_kw, cap_kw * fraction), 2)
+
+
+def _update_netzbezug_ramp_active(soc_value: float, sockel: float, schwelle: float) -> bool:
+    """Nur fallend aktiv: Eintritt von oberhalb der Schwelle, Aus am/unter Sockel oder darüber."""
+    global _ramp_active, _ramp_prev_soc
+    prev = _ramp_prev_soc
+    if soc_value > schwelle or soc_value <= sockel:
+        _ramp_active = False
+    elif _ramp_active:
+        pass
+    elif prev is not None and prev > schwelle:
+        _ramp_active = True
     else:
-        try:
-            ziel = float(ziel_soc)
-        except (TypeError, ValueError):
-            ziel = float(SOC_RAMP_DEFAULT_ZIEL)
-    return ziel + SOC_RAMP_MARGIN
+        _ramp_active = False
+    _ramp_prev_soc = soc_value
+    return _ramp_active
 
 
 def netzbezug_soc_rampe_kw(
     soc: Optional[float],
-    ziel_soc: Optional[float],
+    sockel_soc: Optional[float],
     max_import_w: float,
 ) -> Optional[float]:
-    """Netzbezug in kW auf oder unter der Schwelle. Darüber None.
+    """Notfall-Netzbezug in kW nur bei aktiver Fall-Rampe. Sonst None.
 
-    kW = 1,2 * (1 + (schwelle - soc)), gedeckelt auf max_import_w in kW.
-    An der Schwelle genau 1,2 kW. Der harte Stopp an der Elektrikergrenze bleibt außen vor.
+    Eintritt: SoC unterschreitet Sockel+10 von oben. Am/unter dem Sockel aus.
+    Anstieg aus dem Sockel (z. B. 20 → 21) aktiviert die Rampe nicht.
+    Sockel kommt aus dem aktiven Elektriker-Fenster (program_soc), nicht hart kodiert.
     """
     if soc is None:
         return None
     try:
         soc_value = float(soc)
-        cap_w = float(max_import_w)
     except (TypeError, ValueError):
         return None
-    schwelle = netzbezug_rampe_schwelle(ziel_soc)
-    if soc_value > schwelle:
+    sockel = _netzbezug_sockel_soc(sockel_soc)
+    schwelle = sockel + SOC_RAMP_MARGIN
+    if not _update_netzbezug_ramp_active(soc_value, sockel, schwelle):
         return None
-    kw = SOC_RAMP_STEP_KW * (1.0 + (schwelle - soc_value))
-    cap_kw = max(0.0, cap_w) / 1000.0
-    return round(min(kw, cap_kw), 2)
+    return _netzbezug_rampe_leistung_kw(soc_value, sockel, schwelle, max_import_w)
 
 
 def soll_netzbezug_kw(
@@ -3623,25 +3751,27 @@ def soll_netzbezug_kw(
 ) -> float:
     """Soll-Netzbezug fürs Register, bevor apply_write schreibt.
 
-    Planung an oder real_mode aus: den gespeicherten Sollwert lassen.
-    Planung aus und real_mode an: auf oder unter der Schwelle die Rampe, sonst den Sollwert.
-    Schreibt nichts und liest weder release_pending noch den Elektriker-Snapshot neu.
+    Ohne „Planung, keine Netzspitzen“: kein Zukauf (0); der Rampen-Zustand wird trotzdem
+    mitgeführt, damit der Fall-Eintritt nicht verpasst wird.
+    Mit Planung: Primärwert = Planungs-Soll; aktive Fall-Rampe → max(Plan, Rampe).
+    Das eigentliche Modbus-Schreiben bleibt an real_mode („Ins Register schreiben“) gebunden.
     """
     data = settings or {}
     try:
         base = float(data.get("target_grid_kw") or 0)
     except (TypeError, ValueError):
         base = 0.0
-    if planning_on or not data.get("real_mode"):
-        return base
+    sockel = _electrician_soc_limit(data, now)
     rampe = netzbezug_soc_rampe_kw(
         _live_soc(live),
-        _electrician_soc_limit(data, now),
+        sockel,
         _gespeicherter_max_import_w(data),
     )
+    if not planning_on:
+        return 0.0
     if rampe is None:
         return base
-    return rampe
+    return max(base, rampe)
 
 
 _mac_tracker_started = False
@@ -3694,7 +3824,7 @@ def _ensure_writer() -> None:
                     settings = apply_planning_hold(settings, live)
                 if settings.get("real_mode"):
                     reapply_dauerzukauf_test()
-                # Planung aus und real_mode an: Soll aus der SoC-Rampe, bevor die Register geschrieben werden.
+                # Planung an: Planungs-Soll, unter der SoC-Schwelle Not-Rampe (max aus beidem).
                 target_kw = soll_netzbezug_kw(settings, live, _planning_enabled())
                 plan = simulate(
                     live.get("grid_kw"),
