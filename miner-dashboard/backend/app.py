@@ -1847,6 +1847,35 @@ def statistik_konfigurieren():
     )
 
 
+@app.route('/steuerungsreset', methods=['POST'])
+def steuerungsreset():
+    """Nur nach selbst getipptem Passwort und eigener Bestätigung."""
+    from control_algorithm.config import BACKEND_DIR, load_state, save_state
+    from control_algorithm.steuerungsreset import (
+        MODE_ARCHIV,
+        MODE_LAST,
+        apply_manual_reset,
+        authorize_reset,
+    )
+
+    password = request.form.get("password") or ""
+    confirm = request.form.get("confirm") or ""
+    error = authorize_reset(password, confirm)
+    if error:
+        status = 403 if error == "Falsches Passwort." else 400
+        return jsonify({"ok": False, "error": error}), status
+    mode = (request.form.get("mode") or "").strip()
+    if mode not in (MODE_LAST, MODE_ARCHIV):
+        return jsonify({"ok": False, "error": "Bitte einen Modus wählen."}), 400
+    state = load_state()
+    try:
+        result = apply_manual_reset(str(BACKEND_DIR), mode, state)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": "Reset fehlgeschlagen: " + str(exc)}), 500
+    save_state(state)
+    return jsonify({"ok": True, "message": result["message"], "mode": mode})
+
+
 @app.route('/fehlerberichte', methods=['GET'])
 def fehlerberichte():
     if not session.get('logged_in'):

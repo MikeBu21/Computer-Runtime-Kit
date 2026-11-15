@@ -497,6 +497,64 @@
       border-color: rgba(239, 83, 80, 0.45);
       color: #ffcdd2;
     }
+
+    .sidebar-nav button.nav-link {
+      width: calc(100% - 0.3rem);
+      border: 0;
+      background: transparent;
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .sr-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 80;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1.2rem;
+      background: rgba(5, 8, 12, 0.72);
+    }
+
+    .sr-backdrop[hidden] { display: none !important; }
+
+    .sr-dialog {
+      width: min(34rem, 100%);
+      max-height: min(90vh, 44rem);
+      overflow: auto;
+      background: var(--surface);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 1.2rem 1.25rem 1.1rem;
+      box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+    }
+
+    .sr-dialog h2 {
+      margin: 0 0 0.45rem;
+      font-size: 1.25rem;
+    }
+
+    .sr-dialog p { color: var(--muted); margin: 0 0 0.75rem; }
+
+    .sr-dialog label { display: block; font-weight: 600; margin: 0.75rem 0 0.3rem; }
+
+    .sr-choice {
+      display: flex;
+      gap: 0.55rem;
+      align-items: flex-start;
+      margin: 0.45rem 0;
+      padding: 0.55rem 0.7rem;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      color: var(--text);
+      font-weight: 500;
+    }
+
+    .sr-actions { display: flex; gap: 0.6rem; margin-top: 1rem; }
+
+    .sr-error { color: #ffcdd2; min-height: 1.2rem; margin: 0.6rem 0 0; }
   </style>
   {% block extra_head %}{% endblock %}
 </head>
@@ -600,6 +658,7 @@
           <div id="nav_other_group" class="nav-group-body{% if other_open %} is-open{% endif %}" data-nav-group-body {% if not other_open %}hidden{% endif %}>
             <a class="nav-link nav-link-leaf{% if request.path == '/fehlerberichte' %} active{% endif %}" href="/fehlerberichte">📋 Fehlerbericht</a>
             <a class="nav-link nav-link-leaf{% if request.path == '/telegrambot' %} active{% endif %}" href="/telegrambot">💬 Bot-Token-Konfiguration</a>
+            <button type="button" class="nav-link nav-link-leaf" id="steuerungsreset_open">Zurücksetzen</button>
           </div>
         </div>
       </div>
@@ -608,6 +667,32 @@
     <main class="main-content">
       {% block content %}{% endblock %}
     </main>
+  </div>
+
+  <div id="steuerungsreset_backdrop" class="sr-backdrop" hidden>
+    <div class="sr-dialog" role="dialog" aria-modal="true" aria-labelledby="steuerungsreset_title">
+      <h2 id="steuerungsreset_title">Steuerungsreset</h2>
+      <p>Einmal öffnen, Passwort selbst eintippen, Modus wählen und bestätigen. Danach schließt sich das Fenster. Es gibt keinen automatischen Reset.</p>
+      <p>Das Neulernen beginnt mit dem nächsten Tag. Nach etwa 14 Tagen sollten Hausverbrauch, PV-Produktion und das Wochentagsprofil wieder halbwegs stimmen, mit zwei Tagen je Wochentag. Die PV-Ratio wird auf 1 gesetzt und passt sich abends an.</p>
+      <form id="steuerungsreset_form" method="post" action="/steuerungsreset" autocomplete="off">
+        <label for="steuerungsreset_password">Passwort</label>
+        <input class="form-control" id="steuerungsreset_password" name="password" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" value="">
+        <label>Modus</label>
+        <label class="sr-choice">
+          <input type="radio" name="mode" value="last">
+          <span>Nur Lastprofil und Wochentagsprofil löschen. Das 365-Tage-Archiv bleibt.</span>
+        </label>
+        <label class="sr-choice">
+          <input type="radio" name="mode" value="archiv">
+          <span>Zusätzlich das 365-Tage-Archiv löschen.</span>
+        </label>
+        <p class="sr-error" id="steuerungsreset_error" role="alert"></p>
+        <div class="sr-actions">
+          <button type="submit" class="btn btn-danger" id="steuerungsreset_confirm">Bestätigen</button>
+          <button type="button" class="btn btn-outline-light" id="steuerungsreset_cancel">Abbrechen</button>
+        </div>
+      </form>
+    </div>
   </div>
 
   <div id="app_toast" class="app-toast" role="status" aria-live="polite" hidden></div>
@@ -765,6 +850,74 @@
       });
 
       window.bindAjaxForms = bindAjaxForms;
+
+      const resetBackdrop = document.getElementById("steuerungsreset_backdrop");
+      const resetForm = document.getElementById("steuerungsreset_form");
+      const resetPassword = document.getElementById("steuerungsreset_password");
+      const resetError = document.getElementById("steuerungsreset_error");
+      const resetOpen = document.getElementById("steuerungsreset_open");
+
+      function closeSteuerungsreset() {
+        if (!resetBackdrop) return;
+        resetBackdrop.hidden = true;
+        if (resetPassword) resetPassword.value = "";
+        if (resetForm) {
+          resetForm.querySelectorAll('input[name="mode"]').forEach(function (el) { el.checked = false; });
+        }
+        if (resetError) resetError.textContent = "";
+      }
+
+      if (resetOpen && resetBackdrop && resetForm && resetPassword) {
+        resetOpen.addEventListener("click", function () {
+          closeSteuerungsreset();
+          resetBackdrop.hidden = false;
+          resetPassword.focus();
+        });
+        document.getElementById("steuerungsreset_cancel").addEventListener("click", closeSteuerungsreset);
+        resetBackdrop.addEventListener("click", function (event) {
+          if (event.target === resetBackdrop) closeSteuerungsreset();
+        });
+        resetForm.addEventListener("submit", async function (event) {
+          event.preventDefault();
+          const typed = resetPassword.value;
+          const modeEl = resetForm.querySelector('input[name="mode"]:checked');
+          if (!typed) {
+            resetError.textContent = "Bitte das Passwort eintippen.";
+            return;
+          }
+          if (!modeEl) {
+            resetError.textContent = "Bitte einen Modus wählen.";
+            return;
+          }
+          const body = new FormData();
+          body.set("password", typed);
+          body.set("mode", modeEl.value);
+          body.set("confirm", "1");
+          const confirmBtn = document.getElementById("steuerungsreset_confirm");
+          confirmBtn.disabled = true;
+          try {
+            const response = await fetch(resetForm.action, {
+              method: "POST",
+              body: body,
+              credentials: "same-origin",
+              headers: { "Accept": "application/json" },
+            });
+            const data = await response.json().catch(function () { return {}; });
+            if (!response.ok || data.ok === false) {
+              resetError.textContent = data.error || "Reset fehlgeschlagen.";
+              return;
+            }
+            closeSteuerungsreset();
+            if (typeof window.showAppToast === "function") {
+              window.showAppToast(data.message || "Reset ausgeführt.", "ok");
+            }
+          } catch (err) {
+            resetError.textContent = "Verbindungsfehler.";
+          } finally {
+            confirmBtn.disabled = false;
+          }
+        });
+      }
     })();
   </script>
 

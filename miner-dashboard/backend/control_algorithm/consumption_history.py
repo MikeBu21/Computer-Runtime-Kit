@@ -46,11 +46,23 @@ def _parse_day_date(day: Dict[str, Any]) -> Optional[date]:
         return None
 
 
+def profile_reset_not_before(history: Optional[Dict[str, Any]]) -> Optional[date]:
+    """Tage vor diesem Datum zählen nach einem manuellen Profil-Reset nicht mehr."""
+    raw = str((history or {}).get("profile_reset_from") or "")[:10]
+    if not raw:
+        return None
+    try:
+        return date.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
 def days_for_weekday_profiles(
     days: List[Dict[str, Any]],
     *,
     reference: Optional[date] = None,
     lookback_days: Optional[int] = None,
+    not_before: Optional[date] = None,
 ) -> List[Dict[str, Any]]:
     """Archiv-Tage für Wochentagsmittel: nur innerhalb des Lookback-Fensters."""
     lookback = resolve_profile_lookback_days(lookback_days)
@@ -59,8 +71,11 @@ def days_for_weekday_profiles(
     out: List[Dict[str, Any]] = []
     for d in days or []:
         dd = _parse_day_date(d)
-        if dd is not None and dd >= cutoff:
-            out.append(d)
+        if dd is None or dd < cutoff:
+            continue
+        if not_before is not None and dd < not_before:
+            continue
+        out.append(d)
     return out
 
 
@@ -245,6 +260,7 @@ def update_weekday_profiles(
         list(history.get("days") or []),
         reference=reference,
         lookback_days=lookback_days,
+        not_before=profile_reset_not_before(history),
     )
     profiles: Dict[str, Dict[str, Any]] = {}
     for w in range(7):
@@ -523,9 +539,14 @@ def get_weekday_profile(
     prof = dict(profiles.get(str(weekday)) or _empty_weekday_profile())
     if int(prof.get("sample_count") or 0) > 0:
         return prof
-    days = days_for_weekday_profiles(history.get("days") or [])
+    not_before = profile_reset_not_before(history)
+    days = days_for_weekday_profiles(
+        history.get("days") or [],
+        not_before=not_before,
+    )
     if not days:
-        if base_dir:
+        # Nach einem manuellen Reset die alte Tageskurve nicht als Lastprofil zurückholen.
+        if base_dir and not_before is None:
             live = _today_live_profile(base_dir)
             if live:
                 return live
@@ -677,7 +698,9 @@ def weekday_base_consumption_detail(base_dir: str, target_date: date) -> Dict[st
     weekday = target_date.weekday()
     prof = get_weekday_profile(history, weekday, base_dir)
     recent_days = days_for_weekday_profiles(
-        history.get("days") or [], reference=target_date
+        history.get("days") or [],
+        reference=target_date,
+        not_before=profile_reset_not_before(history),
     )
     matching = sorted(
         [d for d in recent_days if int(d.get("weekday", -1)) == weekday],

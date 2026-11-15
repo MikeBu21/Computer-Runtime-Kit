@@ -1,6 +1,6 @@
 {
   "channel": "standard",
-  "created": "2026-11-14T09:00:57+0100",
+  "created": "2026-11-15T10:59:34+0100",
   "files": {
     "AGENTS.md": "80cbbeae8bec122292d37f093e879ceae5d45f6625e7582e0b4e93288a4988ce",
     "Desktop/Alles starten.desktop": "85873226fbffe9a8d4f9d3ecee426a588e89740ad2da39dd5a47651e4c7a37ca",
@@ -17,7 +17,7 @@
     "homeassistant/ha_bridge_token.py": "52e6d842b198e0a91ad9f433a0c7e80216b1d21f150fa6eb9d3ecb125ec2200f",
     "homeassistant/ha_data_bridge.py": "4055e748bc9508df4eebe425f6445828322a0bfe42b17728a7a6123ecf7a2428",
     "homeassistant/setup-hacs.py": "65cce4f2f9485b2565710507517036cf8521da06b954d49a382dd5b7f6ad12d4",
-    "miner-dashboard/backend/app.py": "1c3a0c2ad233bc84de00085d0de66a3c251c6092f7dd4e5f95513b10a0a37dde",
+    "miner-dashboard/backend/app.py": "1a148eb71cc1219f1b9e7edf9b5b79f2c5dc359031cc9f2cbe9a410fa5fb28c5",
     "miner-dashboard/backend/apply_automatik_app_patch.py": "363b56106cb0bb3bda7de02a32858c877522ea0cdc73424ccf93bfaaa3441cc0",
     "miner-dashboard/backend/automation_rules.py": "c6959a240882b4d899262b75dc19df50a2c1182d67eb2068840e925a4ebf7f10",
     "miner-dashboard/backend/bms_seite.py": "69c8a80031ca5d4bd8dc7e6e9ff894b6936553d80b37d6cb856f951ef2af919e",
@@ -32,7 +32,7 @@
     "miner-dashboard/backend/control_algorithm/battery_protection.py": "7c13ace46a1b74096804231c43acfeba24eb4bb9ce3e284b8b11de3d7e064c46",
     "miner-dashboard/backend/control_algorithm/calibration.py": "cdf518061779e4857f5169027f3e40fa5173db8366feaceb89cc05b249316e04",
     "miner-dashboard/backend/control_algorithm/config.py": "bd60c7db28ad891d2693a3475804644ca3777dff529298680991309eacf1132e",
-    "miner-dashboard/backend/control_algorithm/consumption_history.py": "6a53ce5d31ad0e205edcd6b31ddb8c271b6fd2d080f6ac88914bc515ec96619c",
+    "miner-dashboard/backend/control_algorithm/consumption_history.py": "3a482554338d8427b22f49de5d204027243756eb2f320adfc46541e1b59e674e",
     "miner-dashboard/backend/control_algorithm/consumption_pattern_estimate.py": "67b345a02207871046ab93230492dccedba730f7dfbc6a3bb7976b0405522243",
     "miner-dashboard/backend/control_algorithm/control_priority.py": "b7e27f4407c3817ebd06c8e904d5c93583102e63a6e76a41e89241d17432e1e2",
     "miner-dashboard/backend/control_algorithm/curve_plan.py": "2e9d07de0fe56639b0913e92ae022cecc8ae6950b421ecd97c9032e255fe703c",
@@ -70,6 +70,7 @@
     "miner-dashboard/backend/control_algorithm/soc_priority_neuron.py": "8baabbaa37cb0db2dddf55bbd9e310bfe895546a78ab5ef73779c34d471b9f63",
     "miner-dashboard/backend/control_algorithm/steering_history.py": "2d3f9b650feea9cb2973a476eac30ae996be6f15b69a56a8f8f0506b117e088c",
     "miner-dashboard/backend/control_algorithm/steering_learning.py": "3bb65178558d37da24e30901f422850ccb324d9f13545e933622bb1e4f10c237",
+    "miner-dashboard/backend/control_algorithm/steuerungsreset.py": "c5b3329db6f18c9f9bc8d3f03a362a1195fce5a9ae628c8f739e4fa79c711947",
     "miner-dashboard/backend/control_algorithm/storage_band_learning.py": "3ce47564044245c404dee9873d34a567db75baab42e9654b80f7e0106777f0e2",
     "miner-dashboard/backend/control_algorithm/surplus_session.py": "0b14b4fcb74f16e0a4c000505792262556d4b49892277fee6bf0d2566cad1be2",
     "miner-dashboard/backend/control_algorithm/switch_commitment.py": "70d935f8438cc4378b42811cbe71c541ebc32c8923b0ffbbeaf5f05f067dc4e9",
@@ -154,7 +155,7 @@
     "miner-dashboard/backend/templates/add_device.html": "0b82b3f4c0e6f5c75694827cd44056b15118aea5e0da7377f333fea627f8205e",
     "miner-dashboard/backend/templates/add_miner.html": "f3e4e6451e8ae410d4d26cf92e6d5ec4f72daf251787c8907fca7f20fcc129ae",
     "miner-dashboard/backend/templates/automatik.html": "89fd87057ceb92b1c13c318462402a803007a57dc3e2b0c36bea4ffa47325ce0",
-    "miner-dashboard/backend/templates/base.html": "62185be02909f5301451b79a3cad8b5016b101742b5fc097fb82ab5cc56c2336",
+    "miner-dashboard/backend/templates/base.html": "c8df4cbad65c94c4c4b9b428027bb056c5fa7b53af85c14172421f861d4e7893",
     "miner-dashboard/backend/templates/bms_netzbezug.html": "e9c6027241ad49d0efe795da51e44e1524e0b9c08049a635391b4210d60d1e1a",
     "miner-dashboard/backend/templates/boersenhandel.html": "3235abce7ace131510950c2cb6b3fba577bf358477da855761649f8896636859",
     "miner-dashboard/backend/templates/dashboard.html": "2310006c4974a0b7b1b0b23d6bf32cfe43a11a37772c39f3c580c7c4d78e80f2",
@@ -196,7 +197,7 @@
     "miner-dashboard/backend/tests/test_consumption_low_anomaly_pattern.py": "d5e231e2edeb95910aa1d6774dac8c20a26f38b181518d63788b8f2fb0d459e9",
     "miner-dashboard/backend/tests/test_consumption_risk.py": "1b538bc4be96bed3f08b6ff09c07df58be9f3766fe90b1efcde7cbefdd6ab8dc",
     "miner-dashboard/backend/tests/test_control_algorithm.py": "9c0449d68d38005a40af51ca1fcfbab0d1173291aac7d06e9cb68d234ebaca8a",
-    "miner-dashboard/backend/tests/test_control_logger_read.py": "7e1215a5d636ed7c5d7f3435c004bc073bdbdee863d22985f2ebd508c680525d",
+    "miner-dashboard/backend/tests/test_control_logger_read.py": "8b365d1c99192c614502871a93ca4a34d2f9b2d105012611c1955a07d2acc2ca",
     "miner-dashboard/backend/tests/test_curve_plan.py": "9fffe0c6098780f32d1a9730b727383edd50267e33107c6fe153ec87d8231f35",
     "miner-dashboard/backend/tests/test_daemon_control.py": "0d38cbad53501bac0fd141c0a3e284e237210f6f25667a8c60c29bcad98484ac",
     "miner-dashboard/backend/tests/test_day_night_neuron.py": "92dc7166f1c6f8474cb04088c172d0ef0040ddb073f4252d58fb8767d16a7a94",
@@ -246,6 +247,7 @@
     "miner-dashboard/backend/tests/test_soc_priority_neuron.py": "4d29515efcf6fbd33f7c684d17a2c5502da576d1bd98b487842a8aa23b84776f",
     "miner-dashboard/backend/tests/test_status_payload_cache.py": "80030075b2517a901a6d351c08e0c00caa272d2c66c8bf256a6a6d48c7a519aa",
     "miner-dashboard/backend/tests/test_steering_history.py": "056a72be9be23230b8307a07a1c53079179c23db5e051ec8714cac32579afcb3",
+    "miner-dashboard/backend/tests/test_steuerungsreset.py": "0207a7df46693e02c9ae0b1f9e6afb9e48ab0334889b3c8f2785d29ff8b807a1",
     "miner-dashboard/backend/tests/test_storage_band_learning.py": "b407756a812f2923d3c767a20a35ce8117b3ecc9006c42589b83c25745cd69db",
     "miner-dashboard/backend/tests/test_storage_band_week_algo.py": "bf5c86fe227687460e683b0ce0a28aa858799bcee692609e82d3e1314095a687",
     "miner-dashboard/backend/tests/test_stufe1_halteband.py": "ff70c108947395759e5617e47ba3b5bc9c2ce7d8da4904dc5ae53934c56108b0",
@@ -316,5 +318,5 @@
   },
   "format": 2,
   "notes": "Download nutzt den Soft-Scan: nur Token im Programmcode, und der Scan wird nach jedem Update wiederhergestellt. Der Upload-Scan bleibt streng. Standardwerte ohne persönliche Daten.",
-  "version": 54
+  "version": 55
 }
