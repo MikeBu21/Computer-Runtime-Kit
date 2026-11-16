@@ -750,6 +750,74 @@ class InstallAutocaptureTests(unittest.TestCase):
         self.assertFalse(result["saved"])
         self.assertEqual(result["settings"]["program_soc"][0], 13)
 
+    def test_reread_fills_every_electrician_field(self):
+        blocked = self._missing()
+        blocked["real_mode"] = True
+        blocked["modbus_host"] = "192.168.1.176"
+        blocked["logger_serial"] = 123
+        words = {
+            0x0068: 20,
+            0x006C: 240,
+            0x006D: 240,
+            0x0073: 9,
+            0x0074: 10,
+            0x0075: 11,
+            0x0080: 40,
+            0x0081: 0,
+            0x0082: 1,
+            0x0083: 0,
+            0x0084: 0,
+            0x008D: 1,
+            0x008E: 2,
+            0x008F: 13180,
+            0x0090: 0,
+            0x0091: 1,
+            0x0092: 255,
+            0x00B2: 1 << bms_seite.GRID_PEAK_ENABLE_BIT,
+            0x00BF: 8000,
+            0x00E9: 800,
+        }
+        for index in range(6):
+            words[bms_seite.REG_PROGRAM_TIME + index] = 100 + index
+            words[bms_seite.REG_PROGRAM_POWER + index] = 5000 + index
+            words[bms_seite.REG_PROGRAM_SOC + index] = 20
+            words[bms_seite.REG_PROGRAM_CHARGE + index] = index
+
+        class _FakeLink:
+            def read_span(self, address, count):
+                return [words[address + offset] for offset in range(count)]
+
+            def close(self):
+                return None
+
+        with mock.patch.object(bms_seite, "load_settings", return_value=blocked), mock.patch.object(
+            bms_seite._LoggerRead, "connect", return_value=_FakeLink()
+        ), mock.patch.object(bms_seite, "save_settings") as save:
+            result = bms_seite.capture_install_from_inverter()
+        save.assert_not_called()
+        shown = result["settings"]
+        self.assertEqual(shown["idle_grid_w"], 20)
+        self.assertEqual(shown["idle_work_mode"], 2)
+        self.assertEqual(shown["idle_energy_pattern"], 1)
+        self.assertEqual(shown["idle_peak_w"], 8000)
+        self.assertEqual(shown["install_max_charge_a"], 240)
+        self.assertEqual(shown["install_max_discharge_a"], 240)
+        self.assertEqual(shown["install_max_sell_w"], 13180)
+        self.assertEqual(shown["install_max_import_w"], 8000)
+        self.assertEqual(shown["install_solar_sell"], 1)
+        self.assertEqual(shown["install_shutdown_soc"], 9)
+        self.assertEqual(shown["install_restart_soc"], 10)
+        self.assertEqual(shown["install_low_soc"], 11)
+        self.assertEqual(shown["install_time_of_use"], 255)
+        self.assertEqual(shown["install_grid_charge"], 1)
+        self.assertEqual(shown["install_grid_charge_a"], 40)
+        self.assertEqual(shown["install_microinverter"], 0)
+        self.assertEqual(shown["install_peak_shaving"], 1)
+        self.assertEqual(shown["install_export_cutoff"], 0)
+        self.assertEqual(shown["program_soc"], [20, 20, 20, 20, 20, 20])
+        self.assertEqual(shown["program_power"], [5000, 5001, 5002, 5003, 5004, 5005])
+        self.assertEqual(shown["program_charging"], [0, 1, 2, 3, 4, 5])
+
     def test_failed_read_retries_once_later_not_every_tick(self):
         missing = self._missing()
         clock = {"now": 1000.0}

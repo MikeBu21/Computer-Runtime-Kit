@@ -3492,17 +3492,18 @@ def _program_restore_rows(settings: Optional[Dict[str, Any]]) -> List[tuple]:
 
 # Ein Abruf je zusammenhängendem Block. Die Verbindung bleibt für das ganze Lesen offen.
 _CAPTURE_SPANS = (
+    (0x0068, 1),
     (0x006C, 2),
     (0x0073, 3),
+    (0x0080, 5),
+    (0x008D, 2),
     (0x008F, 3),
+    (0x0092, 1),
     (REG_PROGRAM_TIME, 12),
     (REG_PROGRAM_SOC, 12),
-    (REG_MAX_IMPORT, 1),
-)
-_CAPTURE_OPTIONAL_SPANS = (
-    (0x0080, 5),
-    (0x0092, 1),
     (0x00B2, 1),
+    (0x00BF, 1),
+    (REG_MAX_IMPORT, 1),
 )
 
 
@@ -3542,13 +3543,6 @@ def _capture_register_map(link: _LoggerRead) -> Dict[int, int]:
         words = link.read_span(address, count)
         for offset, word in enumerate(words):
             values[address + offset] = int(word)
-    for address, count in _CAPTURE_OPTIONAL_SPANS:
-        try:
-            words = link.read_span(address, count)
-        except OSError:
-            continue
-        for offset, word in enumerate(words):
-            values[address + offset] = int(word)
     return values
 
 
@@ -3580,18 +3574,20 @@ def capture_install_from_inverter() -> Dict[str, Any]:
         updates["program_power"] = [int(values[REG_PROGRAM_POWER + index]) for index in range(PROGRAM_SLOTS)]
         updates["program_soc"] = [int(values[REG_PROGRAM_SOC + index]) for index in range(PROGRAM_SLOTS)]
         updates["program_charging"] = [int(values[REG_PROGRAM_CHARGE + index]) for index in range(PROGRAM_SLOTS)]
-        if 0x0092 in values:
-            updates["install_time_of_use"] = int(values[0x0092])
-        if 0x0082 in values:
-            updates["install_grid_charge"] = int(values[0x0082])
-        if 0x0080 in values:
-            updates["install_grid_charge_a"] = int(values[0x0080])
-        if 0x0084 in values:
-            updates["install_microinverter"] = int(values[0x0084])
-        if 0x00B2 in values:
-            switch = int(values[0x00B2])
-            updates["install_peak_shaving"] = 1 if switch & (1 << GRID_PEAK_ENABLE_BIT) else 0
-            updates["install_export_cutoff"] = 1 if switch & (1 << MICRO_EXPORT_CUTOFF_BIT) else 0
+        zero_export = int(values[0x0068])
+        if zero_export >= 0x8000:
+            zero_export -= 0x10000
+        updates["idle_grid_w"] = _idle_grid_w({"idle_grid_w": zero_export})
+        updates["idle_energy_pattern"] = _idle_energy_pattern({"idle_energy_pattern": int(values[0x008D])})
+        updates["idle_work_mode"] = _idle_work_mode({"idle_work_mode": int(values[0x008E])})
+        updates["idle_peak_w"] = _idle_peak_w({"idle_peak_w": int(values[0x00BF])})
+        updates["install_time_of_use"] = int(values[0x0092])
+        updates["install_grid_charge"] = int(values[0x0082])
+        updates["install_grid_charge_a"] = int(values[0x0080])
+        updates["install_microinverter"] = int(values[0x0084])
+        switch = int(values[0x00B2])
+        updates["install_peak_shaving"] = 1 if switch & (1 << GRID_PEAK_ENABLE_BIT) else 0
+        updates["install_export_cutoff"] = 1 if switch & (1 << MICRO_EXPORT_CUTOFF_BIT) else 0
         updates["install_captured"] = True
         updates["install_captured_serial"] = serial
     except OSError as exc:
