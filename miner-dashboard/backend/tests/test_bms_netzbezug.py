@@ -234,6 +234,17 @@ class ProgramAndReleaseTests(unittest.TestCase):
         self.assertEqual(bms_seite._release_flag_row(_item(), 1 << bms_seite.GRID_PEAK_ENABLE_BIT), [])
         self.assertEqual(bms_seite._release_flag_row(_item(), None), [])
 
+    def test_solarman_wait_timeout_is_one_missing_reply(self):
+        sock = mock.Mock()
+        sock.recv.side_effect = TimeoutError("timed out")
+        modbus = bms_seite._modbus_read_request(1, 0x006C, 2)
+        with self.assertRaises(OSError) as caught:
+            bms_seite._solarman_exchange(
+                "127.0.0.1", 8899, 1, modbus, bms_seite._accept_read(1, 2), sock=sock
+            )
+        self.assertEqual(str(caught.exception), "keine passende Logger-Antwort")
+        sock.recv.assert_called_once()
+
     def test_readback_reports_a_mismatch(self):
         self.assertIsNone(bms_seite.readback_diff(0x0091, "Solar Sell", 0, 0))
         text = bms_seite.readback_diff(0x0091, "Solar Sell", 0, 1)
@@ -714,16 +725,26 @@ class InstallAutocaptureTests(unittest.TestCase):
         blocked["modbus_host"] = "192.168.1.176"
         blocked["logger_serial"] = 123
 
-        def raw_read(_settings, _serial, address):
-            if address == bms_seite.REG_PROGRAM_SOC:
-                return 13
-            return 1
+        class _FakeLink:
+            def __init__(self):
+                self.calls = 0
 
+            def read_span(self, address, count):
+                self.calls += 1
+                return [
+                    13 if address + offset == bms_seite.REG_PROGRAM_SOC else 1
+                    for offset in range(count)
+                ]
+
+            def close(self):
+                return None
+
+        fake = _FakeLink()
         with mock.patch.object(bms_seite, "load_settings", return_value=blocked), mock.patch.object(
-            bms_seite, "_read_holding_retry", side_effect=raw_read
-        ) as read, mock.patch.object(bms_seite, "save_settings") as save:
+            bms_seite._LoggerRead, "connect", return_value=fake
+        ), mock.patch.object(bms_seite, "save_settings") as save:
             result = bms_seite.capture_install_from_inverter()
-        self.assertTrue(read.called)
+        self.assertGreater(fake.calls, 1)
         save.assert_not_called()
         self.assertTrue(result["ok"])
         self.assertFalse(result["saved"])

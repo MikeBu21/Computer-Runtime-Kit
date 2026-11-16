@@ -2434,7 +2434,14 @@ def _solarman_checksum(frame: bytes) -> int:
 LOGGER_FRAME_SERIAL = 2965822000
 
 
-def _solarman_exchange(host: str, port: int, serial: int, modbus: bytes, accept) -> bytes:
+def _solarman_exchange(
+    host: str,
+    port: int,
+    serial: int,
+    modbus: bytes,
+    accept,
+    sock: Optional[socket.socket] = None,
+) -> bytes:
     """Ein Modbus-Rahmen über den Solarman-Logger (Port 8899).
 
     Der Logger schickt die Antworten an alle offenen Verbindungen, also auch die
@@ -2459,13 +2466,20 @@ def _solarman_exchange(host: str, port: int, serial: int, modbus: bytes, accept)
         + modbus
     )
     frame = header + struct.pack("<B", _solarman_checksum(header)) + b"\x15"
-    deadline = time.monotonic() + 4.0
-    with socket.create_connection((host, int(port)), timeout=4.0) as sock:
-        sock.sendall(frame)
+
+    def _wait(active: socket.socket) -> bytes:
+        deadline = time.monotonic() + 4.0
+        active.sendall(frame)
         data = b""
         while time.monotonic() < deadline:
-            sock.settimeout(max(0.1, deadline - time.monotonic()))
-            chunk = sock.recv(512)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            active.settimeout(remaining)
+            try:
+                chunk = active.recv(512)
+            except (TimeoutError, socket.timeout):
+                break
             if not chunk:
                 break
             data += chunk
@@ -2490,7 +2504,12 @@ def _solarman_exchange(host: str, port: int, serial: int, modbus: bytes, accept)
                     raise OSError(f"Modbus-Fehler {answer[2]}")
                 if accept(answer):
                     return answer
-    raise OSError("keine passende Logger-Antwort")
+        raise OSError("keine passende Logger-Antwort")
+
+    if sock is not None:
+        return _wait(sock)
+    with socket.create_connection((host, int(port)), timeout=4.0) as owned:
+        return _wait(owned)
 
 
 def write_solarman_register(host: str, port: int, unit: int, serial: int, address: int, value: int) -> None:
@@ -2515,15 +2534,50 @@ def readback_diff(address: int, name: str, wanted: int, actual: int) -> Optional
     return _phrase(address, name, wanted) + f", gelesen {_u16(actual)}"
 
 
+def _modbus_read_request(unit: int, address: int, count: int) -> bytes:
+    modbus = struct.pack(">BBHH", int(unit) & 0xFF, 3, int(address) & 0xFFFF, int(count))
+    return modbus + _modbus_crc(modbus)
+
+
+def _accept_read(unit: int, count: int):
+    need = 3 + int(count) * 2
+
+    def accept(reply: bytes) -> bool:
+        return (
+            len(reply) >= need
+            and reply[0] == (int(unit) & 0xFF)
+            and reply[1] == 3
+            and reply[2] == int(count) * 2
+        )
+
+    return accept
+
+
+def _words_from_read(answer: bytes, count: int) -> List[int]:
+    data = answer[3 : 3 + int(count) * 2]
+    return [(data[index] << 8) | data[index + 1] for index in range(0, int(count) * 2, 2)]
+
+
+def read_solarman_span(
+    host: str,
+    port: int,
+    unit: int,
+    serial: int,
+    address: int,
+    count: int,
+    sock: Optional[socket.socket] = None,
+) -> List[int]:
+    """Benachbarte Holding-Register in einem Modbus-Abruf lesen."""
+    modbus = _modbus_read_request(unit, address, count)
+    answer = _solarman_exchange(
+        host, port, serial, modbus, _accept_read(unit, count), sock=sock
+    )
+    return _words_from_read(answer, count)
+
+
 def read_solarman_holding(host: str, port: int, unit: int, serial: int, address: int) -> int:
     """Ein Holding-Register über den Solarman-Logger lesen (Funktionscode 3)."""
-    modbus = struct.pack(">BBHH", int(unit) & 0xFF, 3, int(address) & 0xFFFF, 1)
-    modbus += _modbus_crc(modbus)
-    answer = _solarman_exchange(
-        host, port, serial, modbus,
-        lambda reply: len(reply) >= 5 and reply[0] == modbus[0] and reply[1] == 3 and reply[2] == 2,
-    )
-    return (answer[3] << 8) | answer[4]
+    return read_solarman_span(host, port, unit, serial, address, 1)[0]
 
 
 def read_holding(host: str, port: int, unit: int, serial: int, address: int) -> int:
@@ -3406,6 +3460,9 @@ def _read_holding_retry(settings: Dict[str, Any], serial: int, address: int) -> 
             return read_holding(host, port, unit, serial, address)
         except OSError as exc:
             last = exc
+            # Ein abgelaufener Wartezyklus ist schon die Antwort. Nicht noch zweimal vier Sekunden.
+            if str(exc) == "keine passende Logger-Antwort":
+                break
             time.sleep(0.3)
     raise OSError(str(last or "Lesen fehlgeschlagen"))
 
@@ -3427,12 +3484,75 @@ def _program_restore_rows(settings: Optional[Dict[str, Any]]) -> List[tuple]:
     return rows
 
 
+# Ein Abruf je zusammenhängendem Block. Die Verbindung bleibt für das ganze Lesen offen.
+_CAPTURE_SPANS = (
+    (0x006C, 2),
+    (0x0073, 3),
+    (0x008F, 3),
+    (REG_PROGRAM_TIME, 12),
+    (REG_PROGRAM_SOC, 12),
+    (REG_MAX_IMPORT, 1),
+)
+_CAPTURE_OPTIONAL_SPANS = (
+    (0x0080, 5),
+    (0x0092, 1),
+    (0x00B2, 1),
+)
+
+
+class _LoggerRead:
+    """Eine TCP-Verbindung für mehrere Solarman-Leseabrufe."""
+
+    def __init__(self, sock: socket.socket, host: str, port: int, unit: int, serial: int) -> None:
+        self.sock = sock
+        self.host = host
+        self.port = port
+        self.unit = unit
+        self.serial = serial
+
+    @classmethod
+    def connect(cls, settings: Dict[str, Any], serial: int) -> "_LoggerRead":
+        host = str(settings.get("modbus_host") or "")
+        port = int(settings.get("modbus_port") or 0)
+        unit = int(settings.get("modbus_unit") or 1)
+        sock = socket.create_connection((host, port), timeout=4.0)
+        return cls(sock, host, port, unit, serial)
+
+    def close(self) -> None:
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+
+    def read_span(self, address: int, count: int) -> List[int]:
+        return read_solarman_span(
+            self.host, self.port, self.unit, self.serial, address, count, sock=self.sock
+        )
+
+
+def _capture_register_map(link: _LoggerRead) -> Dict[int, int]:
+    values: Dict[int, int] = {}
+    for address, count in _CAPTURE_SPANS:
+        words = link.read_span(address, count)
+        for offset, word in enumerate(words):
+            values[address + offset] = int(word)
+    for address, count in _CAPTURE_OPTIONAL_SPANS:
+        try:
+            words = link.read_span(address, count)
+        except OSError:
+            continue
+        for offset, word in enumerate(words):
+            values[address + offset] = int(word)
+    return values
+
+
 def capture_install_from_inverter() -> Dict[str, Any]:
     """Elektrikerwerte und die sechs Programme einmal vom Wechselrichter lesen.
 
     Lesen geht immer, auch bei einem anderen Modell und auch unter 20 Prozent.
     Gespeichert als Elektrikerstand wird nur, solange BMS nicht schreibt. Sonst blieben
     die Stellwerte der Schleife als Original stehen und kämen beim Abschalten zurück.
+    Eine Verbindung liest benachbarte Register zusammen.
     """
     settings = load_settings()
     writing = _bms_is_writing(settings)
@@ -3443,58 +3563,58 @@ def capture_install_from_inverter() -> Dict[str, Any]:
             "ok": False,
             "message": "Kein Steuer-Logger mit Seriennummer. Zuerst den Wechselrichter hinzufügen.",
         }
+    link: Optional[_LoggerRead] = None
     try:
+        link = _LoggerRead.connect(settings, serial)
+        values = _capture_register_map(link)
         updates: Dict[str, Any] = {}
         for key, (address, scale) in INSTALL_REGISTER_SCALE.items():
-            raw = _read_holding_retry(settings, serial, address)
-            updates[key] = int(raw) * int(scale)
-        socs: List[int] = []
-        powers: List[int] = []
-        charges: List[int] = []
-        times: List[int] = []
-        for index in range(PROGRAM_SLOTS):
-            socs.append(_read_holding_retry(settings, serial, REG_PROGRAM_SOC + index))
-            powers.append(_read_holding_retry(settings, serial, REG_PROGRAM_POWER + index))
-            charges.append(_read_holding_retry(settings, serial, REG_PROGRAM_CHARGE + index))
-            times.append(_read_holding_retry(settings, serial, REG_PROGRAM_TIME + index))
-        for key, address in (
-            ("install_time_of_use", 0x0092),
-            ("install_grid_charge", 0x0082),
-            ("install_grid_charge_a", 0x0080),
-            ("install_microinverter", 0x0084),
-        ):
-            try:
-                updates[key] = _read_holding_retry(settings, serial, address)
-            except OSError:
-                pass
-        try:
-            switch = _read_holding_retry(settings, serial, 0x00B2)
-            updates["install_peak_shaving"] = 1 if int(switch) & (1 << GRID_PEAK_ENABLE_BIT) else 0
-            updates["install_export_cutoff"] = 1 if int(switch) & (1 << MICRO_EXPORT_CUTOFF_BIT) else 0
-        except OSError:
-            pass
-        updates["program_soc"] = socs
-        updates["program_power"] = powers
-        updates["program_charging"] = charges
-        updates["program_time"] = times
+            updates[key] = int(values[address]) * int(scale)
+        updates["program_time"] = [int(values[REG_PROGRAM_TIME + index]) for index in range(PROGRAM_SLOTS)]
+        updates["program_power"] = [int(values[REG_PROGRAM_POWER + index]) for index in range(PROGRAM_SLOTS)]
+        updates["program_soc"] = [int(values[REG_PROGRAM_SOC + index]) for index in range(PROGRAM_SLOTS)]
+        updates["program_charging"] = [int(values[REG_PROGRAM_CHARGE + index]) for index in range(PROGRAM_SLOTS)]
+        if 0x0092 in values:
+            updates["install_time_of_use"] = int(values[0x0092])
+        if 0x0082 in values:
+            updates["install_grid_charge"] = int(values[0x0082])
+        if 0x0080 in values:
+            updates["install_grid_charge_a"] = int(values[0x0080])
+        if 0x0084 in values:
+            updates["install_microinverter"] = int(values[0x0084])
+        if 0x00B2 in values:
+            switch = int(values[0x00B2])
+            updates["install_peak_shaving"] = 1 if switch & (1 << GRID_PEAK_ENABLE_BIT) else 0
+            updates["install_export_cutoff"] = 1 if switch & (1 << MICRO_EXPORT_CUTOFF_BIT) else 0
         updates["install_captured"] = True
         updates["install_captured_serial"] = serial
     except OSError as exc:
-        return {"ok": False, "message": f"Elektrikerwerte konnten nicht gelesen werden: {exc}"}
-    if writing:
-        shown = dict(settings)
-        shown.update(updates)
-        return {
-            "ok": True,
-            "saved": False,
-            "message": (
-                "Vom Wechselrichter gelesen. Der gespeicherte Elektrikerstand bleibt, "
-                "solange BMS schreibt."
-            ),
-            "settings": shown,
-        }
-    saved = save_settings(updates)
-    return {"ok": True, "saved": True, "message": "Elektrikerwerte vom Wechselrichter gelesen.", "settings": saved}
+        outcome = {"ok": False, "message": f"Elektrikerwerte konnten nicht gelesen werden: {exc}"}
+    else:
+        if writing:
+            shown = dict(settings)
+            shown.update(updates)
+            outcome = {
+                "ok": True,
+                "saved": False,
+                "message": (
+                    "Vom Wechselrichter gelesen. Der gespeicherte Elektrikerstand bleibt, "
+                    "solange BMS schreibt."
+                ),
+                "settings": shown,
+            }
+        else:
+            saved = save_settings(updates)
+            outcome = {
+                "ok": True,
+                "saved": True,
+                "message": "Elektrikerwerte vom Wechselrichter gelesen.",
+                "settings": saved,
+            }
+    finally:
+        if link is not None:
+            link.close()
+    return outcome
 
 
 def _stopped_for_soc(
