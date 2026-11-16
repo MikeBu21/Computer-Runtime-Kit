@@ -1951,6 +1951,7 @@ def _persist_settings(data: Dict[str, Any]) -> None:
         "modbus_source": data.get("modbus_source") or "",
         "known_entry_ids": data.get("known_entry_ids") or [],
         "logger_ip": data.get("logger_ip") or "",
+        "logger_last_known_ip": data.get("logger_last_known_ip") or "",
         "logger_mac": data.get("logger_mac") or "",
         "logger_serial": int(data.get("logger_serial") or 0),
         "logger_tracked_at": data.get("logger_tracked_at") or "",
@@ -2075,6 +2076,11 @@ def load_settings() -> Dict[str, Any]:
         data["known_entry_ids"] = []
     data["modbus_source"] = str(data.get("modbus_source") or "")
     data["logger_ip"] = _host(data.get("logger_ip"))
+    data["logger_last_known_ip"] = _host(data.get("logger_last_known_ip"))
+    if not data["modbus_host"] and data["logger_last_known_ip"]:
+        data["modbus_host"] = data["logger_last_known_ip"]
+    if not data["logger_ip"] and data["logger_last_known_ip"]:
+        data["logger_ip"] = data["logger_last_known_ip"]
     data["logger_mac"] = _format_mac(data.get("logger_mac"))
     try:
         data["logger_serial"] = int(data.get("logger_serial") or 0)
@@ -4439,6 +4445,194 @@ def soll_netzbezug_kw(
 
 _mac_tracker_started = False
 _mac_tracker_last = 0.0
+_logger_resolver_started = False
+_logger_resolve_messages: List[str] = []
+LOGGER_RESOLVE_OK_SEC = 15 * 60
+LOGGER_RESOLVE_MIN_SEC = 30
+LOGGER_RESOLVE_MAX_SEC = 15 * 60
+
+
+def _updates_are_published_here() -> bool:
+    """Nur der Veröffentlichungs-Pi. Eine Slave-Steuerung hat diese Datei nicht."""
+    try:
+        from public_update import is_publisher
+        return bool(is_publisher())
+    except Exception:
+        return False
+
+
+def _logger_fallback_host(settings: Dict[str, Any]) -> str:
+    return (
+        _host(settings.get("logger_last_known_ip"))
+        or _host(settings.get("modbus_host"))
+        or _host(settings.get("logger_ip"))
+    )
+
+
+def _log_logger_resolve(message: str) -> None:
+    text = f"bms-logger: {message}"
+    print(text, flush=True)
+    _logger_resolve_messages.append(text)
+    del _logger_resolve_messages[:-20]
+
+
+def _pick_local_logger(settings: Dict[str, Any], items: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Ein Logger im Netz gilt. Bei mehreren nur die gespeicherte MAC."""
+    usable = [item for item in items if _host(item.get("ip")) and _format_mac(item.get("mac"))]
+    if len(usable) == 1:
+        return usable[0]
+    mac = _format_mac(settings.get("logger_mac"))
+    if not mac:
+        return None
+    for item in usable:
+        if _format_mac(item.get("mac")) == mac:
+            return item
+    return None
+
+
+def _remember_confirmed_logger(settings: Dict[str, Any], found: Dict[str, Any]) -> Dict[str, Any]:
+    host = _host(found.get("ip"))
+    mac = _format_mac(found.get("mac"))
+    fallback = _logger_fallback_host(settings)
+    try:
+        serial = int(found.get("serial") or settings.get("logger_serial") or 0)
+    except (TypeError, ValueError):
+        serial = 0
+    if not host or not mac:
+        message = f"Logger-Antwort ohne IP oder MAC. Adresse {fallback or 'keine'} bleibt."
+        _log_logger_resolve(message)
+        return {"ok": False, "ip": fallback, "message": message}
+    changed = (
+        _host(settings.get("modbus_host")) != host
+        or _host(settings.get("logger_ip")) != host
+        or _format_mac(settings.get("logger_mac")) != mac
+        or _host(settings.get("logger_last_known_ip")) != host
+        or (serial and int(settings.get("logger_serial") or 0) != serial)
+    )
+    if not changed:
+        return {
+            "ok": True,
+            "changed": False,
+            "ip": host,
+            "mac": mac,
+            "message": f"Logger {host} ist schon eingetragen.",
+        }
+    now = datetime.now(TZ).isoformat(timespec="seconds")
+    settings["logger_last_known_ip"] = host
+    if not any(item.get("control") for item in settings.get("tracked_inverters") or []):
+        settings["tracked_inverters"] = list(settings.get("tracked_inverters") or []) + [{
+            "id": "control",
+            "name": "Steuer-Logger",
+            "mac": mac,
+            "serial": serial,
+            "ip": host,
+            "port": 8899,
+            "unit": 1,
+            "role": "erzeugung",
+            "control": True,
+            "tracked_at": now,
+        }]
+    _sync_control_logger(settings, host, mac, serial, now)
+    if int(settings.get("modbus_port") or 0) in (0, 502):
+        settings["modbus_port"] = 8899
+    try:
+        _persist_settings(settings)
+    except Exception as exc:
+        message = f"Logger {host} gefunden, Speichern fehlgeschlagen ({exc}). Adresse {fallback or 'keine'} bleibt."
+        _log_logger_resolve(message)
+        return {"ok": False, "ip": fallback, "message": message}
+    ha_note = ""
+    try:
+        ha = sync_logger_to_ha(host, mac, serial)
+        if not ha.get("ok"):
+            ha_note = " " + str(ha.get("message") or "Home Assistant nicht nachgezogen.")
+    except Exception as exc:
+        ha_note = f" Home Assistant nicht nachgezogen ({exc})."
+    message = f"Logger {host} · MAC {mac} eingetragen.{ha_note}".strip()
+    _log_logger_resolve(message)
+    return {"ok": True, "changed": True, "ip": host, "mac": mac, "serial": serial, "message": message}
+
+
+def resolve_logger_address() -> Dict[str, Any]:
+    """Logger im lokalen Netz finden und die Adresse eintragen. Wirft nie.
+
+    Der Veröffentlichungs-Pi bleibt bei seiner eingetragenen Adresse.
+    Eine Slave-Steuerung prüft die aktuelle Adresse und sucht nur, wenn sie nicht antwortet.
+    Ein Fehlschlag lässt die letzte bekannte Adresse stehen.
+    """
+    try:
+        settings = load_settings()
+        fallback = _logger_fallback_host(settings)
+        if _updates_are_published_here():
+            return {
+                "ok": True,
+                "skipped": True,
+                "ip": fallback,
+                "message": "Veröffentlichungs-Pi sucht nicht selbst.",
+            }
+        current = _host(settings.get("modbus_host")) or _host(settings.get("logger_ip"))
+        if current:
+            try:
+                confirmed = _confirm_logger_at_ip(current)
+            except Exception as exc:
+                confirmed = None
+                _log_logger_resolve(f"Prüfung von {current} fehlgeschlagen ({exc}).")
+            if confirmed:
+                return _remember_confirmed_logger(settings, confirmed)
+        try:
+            items = discover_loggers(timeout=2.0) or []
+        except Exception as exc:
+            items = []
+            _log_logger_resolve(f"Netzsuche fehlgeschlagen ({exc}).")
+        chosen = _pick_local_logger(settings, items)
+        if not chosen:
+            if len(items) > 1:
+                message = (
+                    f"Mehrere Logger im Netz ({len(items)}), keine eindeutige MAC. "
+                    f"Adresse {fallback or 'keine'} bleibt."
+                )
+            else:
+                message = f"Kein Logger im lokalen Netz. Adresse {fallback or 'keine'} bleibt."
+            _log_logger_resolve(message)
+            return {"ok": False, "ip": fallback, "message": message}
+        return _remember_confirmed_logger(settings, chosen)
+    except Exception as exc:
+        fallback = ""
+        try:
+            fallback = _logger_fallback_host(load_settings())
+        except Exception:
+            fallback = ""
+        message = f"Suche fehlgeschlagen ({exc}). Adresse {fallback or 'keine'} bleibt."
+        _log_logger_resolve(message)
+        return {"ok": False, "ip": fallback, "message": message}
+
+
+def _ensure_logger_resolver() -> None:
+    """Hintergrundsuche. Ein Fehler hier stoppt den Lese- und Schreiblauf nicht."""
+    global _logger_resolver_started
+    if _logger_resolver_started:
+        return
+    _logger_resolver_started = True
+
+    def loop() -> None:
+        delay = 5.0
+        while True:
+            try:
+                time.sleep(delay)
+                result = resolve_logger_address()
+                if result.get("ok"):
+                    delay = float(LOGGER_RESOLVE_OK_SEC)
+                else:
+                    delay = min(float(LOGGER_RESOLVE_MAX_SEC), max(float(LOGGER_RESOLVE_MIN_SEC), delay * 2))
+                    _log_logger_resolve(f"Nächster Versuch in {int(delay)} Sekunden.")
+            except Exception as exc:
+                delay = min(float(LOGGER_RESOLVE_MAX_SEC), max(float(LOGGER_RESOLVE_MIN_SEC), delay * 2))
+                _log_logger_resolve(
+                    f"Hintergrundsuche abgebrochen ({exc}). Lesen läuft weiter. "
+                    f"Nächster Versuch in {int(delay)} Sekunden."
+                )
+
+    threading.Thread(target=loop, name="bms-logger-resolve", daemon=True).start()
 
 
 def _ensure_mac_tracker() -> None:
@@ -4469,6 +4663,7 @@ def _ensure_mac_tracker() -> None:
 def _ensure_writer() -> None:
     global _writer_started
     _ensure_mac_tracker()
+    _ensure_logger_resolver()
     if _writer_started:
         return
     _writer_started = True

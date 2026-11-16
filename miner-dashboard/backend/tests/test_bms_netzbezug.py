@@ -1317,5 +1317,96 @@ class ReleaseLoopAndTrackerTests(unittest.TestCase):
         self.assertEqual(settings["tracked_inverters"][0]["mac"], "74:e9:d8:3a:a0:fc")
 
 
+class LoggerResolveTests(unittest.TestCase):
+    def test_publisher_does_not_scan(self):
+        settings = bms_seite.default_settings()
+        settings["modbus_host"] = "192.168.1.176"
+        settings["logger_ip"] = "192.168.1.176"
+        with mock.patch.object(bms_seite, "load_settings", return_value=settings), mock.patch.object(
+            bms_seite, "_updates_are_published_here", return_value=True
+        ), mock.patch.object(bms_seite, "discover_loggers") as scan:
+            result = bms_seite.resolve_logger_address()
+        scan.assert_not_called()
+        self.assertTrue(result["skipped"])
+        self.assertEqual(result["ip"], "192.168.1.176")
+
+    def test_single_local_logger_is_written(self):
+        settings = bms_seite.default_settings()
+        settings["modbus_host"] = ""
+        settings["logger_ip"] = ""
+        settings["logger_mac"] = ""
+        settings["tracked_inverters"] = []
+        found = {"ip": "192.168.1.50", "mac": "aa:bb:cc:dd:ee:ff", "serial": 42}
+        with mock.patch.object(bms_seite, "load_settings", return_value=settings), mock.patch.object(
+            bms_seite, "_updates_are_published_here", return_value=False
+        ), mock.patch.object(bms_seite, "discover_loggers", return_value=[found]), mock.patch.object(
+            bms_seite, "sync_logger_to_ha", return_value={"ok": False, "message": "kein Eintrag"}
+        ), mock.patch.object(bms_seite, "_persist_settings") as persist:
+            result = bms_seite.resolve_logger_address()
+        self.assertTrue(result["ok"])
+        self.assertEqual(settings["modbus_host"], "192.168.1.50")
+        self.assertEqual(settings["logger_ip"], "192.168.1.50")
+        self.assertEqual(settings["logger_last_known_ip"], "192.168.1.50")
+        self.assertEqual(settings["logger_mac"], "aa:bb:cc:dd:ee:ff")
+        persist.assert_called_once()
+
+    def test_several_loggers_keep_the_last_address(self):
+        settings = bms_seite.default_settings()
+        settings["modbus_host"] = "192.168.1.20"
+        settings["logger_ip"] = "192.168.1.20"
+        settings["logger_last_known_ip"] = "192.168.1.20"
+        settings["logger_mac"] = ""
+        items = [
+            {"ip": "192.168.1.21", "mac": "aa:bb:cc:dd:ee:01", "serial": 1},
+            {"ip": "192.168.1.22", "mac": "aa:bb:cc:dd:ee:02", "serial": 2},
+        ]
+        with mock.patch.object(bms_seite, "load_settings", return_value=settings), mock.patch.object(
+            bms_seite, "_updates_are_published_here", return_value=False
+        ), mock.patch.object(bms_seite, "_confirm_logger_at_ip", return_value=None), mock.patch.object(
+            bms_seite, "discover_loggers", return_value=items
+        ), mock.patch.object(bms_seite, "_persist_settings") as persist:
+            result = bms_seite.resolve_logger_address()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["ip"], "192.168.1.20")
+        self.assertEqual(settings["modbus_host"], "192.168.1.20")
+        persist.assert_not_called()
+        self.assertTrue(any("Mehrere Logger" in line for line in bms_seite._logger_resolve_messages))
+
+    def test_search_error_keeps_the_last_address_and_does_not_raise(self):
+        settings = bms_seite.default_settings()
+        settings["modbus_host"] = "192.168.1.20"
+        settings["logger_ip"] = "192.168.1.20"
+        settings["logger_last_known_ip"] = "192.168.1.20"
+        with mock.patch.object(bms_seite, "load_settings", return_value=settings), mock.patch.object(
+            bms_seite, "_updates_are_published_here", return_value=False
+        ), mock.patch.object(bms_seite, "_confirm_logger_at_ip", side_effect=OSError("netz weg")), mock.patch.object(
+            bms_seite, "discover_loggers", side_effect=OSError("broadcast tot")
+        ), mock.patch.object(bms_seite, "_persist_settings") as persist:
+            result = bms_seite.resolve_logger_address()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["ip"], "192.168.1.20")
+        self.assertEqual(settings["modbus_host"], "192.168.1.20")
+        persist.assert_not_called()
+
+    def test_answering_host_is_not_replaced(self):
+        settings = bms_seite.default_settings()
+        settings["modbus_host"] = "192.168.1.20"
+        settings["logger_ip"] = "192.168.1.20"
+        settings["logger_mac"] = "aa:bb:cc:dd:ee:ff"
+        settings["logger_serial"] = 7
+        settings["logger_last_known_ip"] = "192.168.1.20"
+        confirmed = {"ip": "192.168.1.20", "mac": "aa:bb:cc:dd:ee:ff", "serial": 7}
+        with mock.patch.object(bms_seite, "load_settings", return_value=settings), mock.patch.object(
+            bms_seite, "_updates_are_published_here", return_value=False
+        ), mock.patch.object(bms_seite, "_confirm_logger_at_ip", return_value=confirmed), mock.patch.object(
+            bms_seite, "discover_loggers"
+        ) as scan:
+            result = bms_seite.resolve_logger_address()
+        scan.assert_not_called()
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["changed"])
+        self.assertEqual(settings["modbus_host"], "192.168.1.20")
+
+
 if __name__ == "__main__":
     unittest.main()
