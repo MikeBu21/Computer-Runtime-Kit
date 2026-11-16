@@ -113,6 +113,21 @@ def _clear_archive(base_dir: str) -> int:
     return 0
 
 
+def _clear_bms_manual_holds() -> None:
+    """Schreibmodus aus und Halte-Flags löschen, damit die Planung ihn nicht wieder einschaltet."""
+    from bms_seite import save_settings
+
+    save_settings(
+        {
+            "manual_off": True,
+            "real_mode": False,
+            "planning_hold": False,
+            "community_hold": False,
+            "exchange_hold": False,
+        }
+    )
+
+
 def apply_manual_reset(
     base_dir: str,
     mode: str,
@@ -138,6 +153,7 @@ def apply_manual_reset(
         cleared = _clear_energy_stats(base_dir)
         gvr_name = _reset_grundverbrauch(base_dir)
         cleared.append(gvr_name)
+        _clear_bms_manual_holds()
         archived_days = None
         message = (
             "Energiestatistik (24h, 30 Tage, Jahr) und der Grundverbrauchsrechner "

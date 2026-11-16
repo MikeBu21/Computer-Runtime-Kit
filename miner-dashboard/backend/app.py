@@ -648,7 +648,13 @@ def api_bms_netzbezug_settings():
     if "inverter" in form:
         updates["inverter"] = form.get("inverter")
     if "real_mode" in form:
-        updates["real_mode"] = form.get("real_mode") in ("1", "true", "on")
+        enabled = form.get("real_mode") in ("1", "true", "on")
+        updates["real_mode"] = enabled
+        updates["manual_off"] = not enabled
+        if not enabled:
+            updates["planning_hold"] = False
+            updates["community_hold"] = False
+            updates["exchange_hold"] = False
     if "target_grid_kw" in form:
         updates["target_grid_kw"] = form.get("target_grid_kw") or 0
     for key in (
@@ -667,9 +673,23 @@ def api_bms_netzbezug_settings():
         "install_restart_soc",
         "install_low_soc",
         "install_solar_sell",
+        "install_time_of_use",
+        "install_grid_charge",
+        "install_grid_charge_a",
+        "install_microinverter",
+        "install_peak_shaving",
+        "install_export_cutoff",
     ):
         if key in form:
             updates[key] = form.get(key)
+    for key, prefix in (
+        ("program_soc", "program_soc_"),
+        ("program_power", "program_power_"),
+        ("program_charging", "program_charging_"),
+    ):
+        slots = [form.get(f"{prefix}{index}") for index in range(1, 7)]
+        if any(item not in (None, "") for item in slots) and all(item not in (None, "") for item in slots):
+            updates[key] = slots
     if "modbus_host" in form:
         updates["modbus_host"] = form.get("modbus_host") or ""
     if "modbus_port" in form:
@@ -677,6 +697,15 @@ def api_bms_netzbezug_settings():
     if "modbus_unit" in form:
         updates["modbus_unit"] = form.get("modbus_unit") or 1
     saved = save_settings(updates)
+    wanted_host = str(form.get("modbus_host") or "").strip()
+    if "modbus_host" in form and wanted_host and str(saved.get("modbus_host") or "") != wanted_host:
+        return jsonify(
+            {
+                "ok": False,
+                "message": "IP nicht bestätigt. MAC und IP wurden nicht übernommen.",
+                **saved,
+            }
+        ), 400
     return jsonify({"ok": True, "message": "Gespeichert.", **saved})
 
 

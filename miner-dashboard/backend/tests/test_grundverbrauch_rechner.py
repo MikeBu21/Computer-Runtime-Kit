@@ -415,10 +415,12 @@ class LockTests(unittest.TestCase):
         )
         at_0518 = forward_purchase_kw(hours_until_sun=2.7, **common)
         at_0618 = forward_purchase_kw(hours_until_sun=1.0, **common)
+        # Mit starker Morgen-PV-Prognose sinkt der Nacht-Zukauf auf den Bandzuschlag.
         self.assertEqual(at_0518["kw"], at_0618["kw"])
         self.assertEqual(at_0618["band_factor"], 1.0)
-        self.assertEqual(at_0618["kw"], 1.2)
-        self.assertEqual(at_0618["pv_credit_kwh"], 0.0)
+        self.assertEqual(at_0618["kw"], 0.7)
+        self.assertEqual(at_0618["pv_credit_kwh"], at_0618["load_kwh"])
+        self.assertTrue(at_0618["pull_down"])
         self.assertLessEqual(at_0618["kw"], 1.2)
         self.assertNotEqual(at_0618["kw"], 2.0)
         huge = forward_purchase_kw(
@@ -447,13 +449,14 @@ class LockTests(unittest.TestCase):
             daylight=False,
             max_soc_percent=95,
         )
+        # Starke PV-Prognose deckt die Last: Nacht-Zukauf = nur noch Bandzuschlag.
         at_min = forward_purchase_kw(soc_percent=35, **common)
         halfway = forward_purchase_kw(soc_percent=40, **common)
         edge = forward_purchase_kw(soc_percent=45, **common)
         above = forward_purchase_kw(soc_percent=50, **common)
-        self.assertEqual(at_min["kw"], 0.85)
-        self.assertEqual(halfway["kw"], 0.65)
-        self.assertEqual(edge["kw"], 0.40)
+        self.assertEqual(at_min["kw"], 0.4)
+        self.assertEqual(halfway["kw"], 0.2)
+        self.assertEqual(edge["kw"], 0.0)
         self.assertEqual(above["kw"], edge["kw"])
         self.assertGreater(at_min["kw"], halfway["kw"])
         self.assertGreater(halfway["kw"], edge["kw"])
@@ -517,6 +520,7 @@ class LockTests(unittest.TestCase):
         surge = blend_forward_load_kwh(17, 17, 34)
         self.assertAlmostEqual(calm, 17.0)
         self.assertAlmostEqual(surge, 0.70 * 34 + 0.20 * 17 + 0.10 * 17)
+        # Ohne PV-Gutschrift: verdoppelte 48h-Last hebt den Soll bis an den Cap.
         out = forward_purchase_kw(
             soc_percent=35,
             storage_kwh=41,
@@ -525,8 +529,8 @@ class LockTests(unittest.TestCase):
             weekday_kwh=17,
             recent_48h_kwh=34,
             base_load_scale=1.0,
-            tomorrow_pv_kwh=30.0,
-            day_after_pv_kwh=30.0,
+            tomorrow_pv_kwh=0.0,
+            day_after_pv_kwh=0.0,
             forecast_trust=0.85,
             hours_until_sun=1.0,
             daylight=False,
@@ -591,7 +595,8 @@ class LockTests(unittest.TestCase):
         Ohne today_pv_kwh bleibt der Tag-Zukauf bei 1,05 kW, weil die Mischung
         nur morgen/übermorgen kennt und die hier 0 sind. Der Rest (nicht die
         schon erzeugten kWh) drückt ihn auf 0, oberhalb des Pufferbands.
-        Im Band bleibt nur der lineare Aufschlag. Nachts zählt heute nicht.
+        Im Band bleibt nur der lineare Aufschlag. Nachts zählt der heutige Rest
+        weiterhin nicht — wohl aber die Vorwärtsprognose morgen/übermorgen.
         Ältere Tag-Tests lassen today_pv_kwh weg und behalten deshalb die
         reine Vorwärts-Mischung 0,6/0,4.
         """
@@ -633,10 +638,47 @@ class LockTests(unittest.TestCase):
         night["hours_until_sun"] = 2
         night_sun = forward_purchase_kw(soc_percent=46, today_pv_kwh=40.0, **night)
         night_dark = forward_purchase_kw(soc_percent=46, today_pv_kwh=0.0, **night)
+        # Heutiger Rest zählt nachts nicht; morgen/übermorgen sind hier 0 → gleicher Soll.
         self.assertEqual(night_sun["kw"], night_dark["kw"])
         self.assertEqual(night_sun["pv_credit_kwh"], 0.0)
         self.assertFalse(night_sun["pull_down"])
         self.assertNotEqual(night_sun["kw"], 2.0)
+
+    def test_night_forward_pv_forecast_cuts_purchase(self):
+        """Nacht: starke Open-Meteo-Vorhersage senkt den Zukauf / zieht ihn auf 0."""
+        from grundverbrauch_rechner import forward_purchase_kw
+
+        weak = forward_purchase_kw(
+            soc_percent=77,
+            storage_kwh=41,
+            min_soc_percent=35,
+            daily_base_kwh=20.6,
+            base_load_scale=1.0,
+            tomorrow_pv_kwh=0.0,
+            day_after_pv_kwh=0.0,
+            forecast_trust=0.85,
+            hours_until_sun=13.5,
+            daylight=False,
+            max_soc_percent=95,
+        )
+        strong = forward_purchase_kw(
+            soc_percent=77,
+            storage_kwh=41,
+            min_soc_percent=35,
+            daily_base_kwh=20.6,
+            base_load_scale=1.0,
+            tomorrow_pv_kwh=34.33,
+            day_after_pv_kwh=20.0,
+            forecast_trust=0.85,
+            hours_until_sun=13.5,
+            daylight=False,
+            max_soc_percent=95,
+        )
+        self.assertGreater(weak["kw"], 0.0)
+        self.assertEqual(strong["kw"], 0.0)
+        self.assertEqual(strong["pv_credit_kwh"], strong["load_kwh"])
+        self.assertTrue(strong["pull_down"])
+        self.assertGreater(strong["pv_blend_kwh"], weak["pv_blend_kwh"])
 
     def test_remaining_today_does_not_count_produced_energy_twice(self):
         from datetime import datetime

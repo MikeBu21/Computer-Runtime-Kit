@@ -10,6 +10,7 @@ Register stammen aus den Solarman-Dateien (Deye) und der Fronius-SunSpec-Anleitu
 from __future__ import annotations
 
 import json
+import os
 import random
 import socket
 import struct
@@ -270,6 +271,11 @@ _needs_release = False
 _tou_hold_applied = False
 _tou_soc_applied: Optional[tuple] = None
 _release_sent = False
+_release_attempts = 0
+RELEASE_ATTEMPT_LIMIT = 3
+# Nach dem Abbruch nicht sofort wieder anstoßen. Sonst schreibt der Drift-Check endlos.
+_release_cooldown_until = 0.0
+RELEASE_COOLDOWN_SEC = 30 * 60.0
 # Einmaliger Elektriker-Leseversuch je Prozess. Erfolg steht in den Einstellungen.
 _autocapture_failures: Dict[int, int] = {}
 _autocapture_retry_at: Dict[int, float] = {}
@@ -343,6 +349,43 @@ INSTALL_REGISTER_SCALE = {
 }
 
 
+def _saved_int(settings: Optional[Dict[str, Any]], key: str, default: int, lowest: int, highest: int) -> int:
+    """Gespeicherter Elektrikerwert. Fehlt er, gilt der bisherige Freigabe-Standard."""
+    raw = default
+    if settings is not None and key in settings and settings.get(key) not in (None, ""):
+        raw = settings.get(key)
+    try:
+        value = int(round(float(str(raw).replace(",", ".").strip())))
+    except (TypeError, ValueError):
+        value = default
+    return max(lowest, min(highest, value))
+
+
+def _install_time_of_use(settings: Optional[Dict[str, Any]] = None) -> int:
+    return _saved_int(settings, "install_time_of_use", TOU_WEEK_ENABLED, 0, 65535)
+
+
+def _install_grid_charge(settings: Optional[Dict[str, Any]] = None) -> int:
+    return 1 if _saved_int(settings, "install_grid_charge", 0, 0, 1) else 0
+
+
+def _install_grid_charge_a(settings: Optional[Dict[str, Any]] = None) -> int:
+    return _saved_int(settings, "install_grid_charge_a", 0, 0, 350)
+
+
+def _install_microinverter(settings: Optional[Dict[str, Any]] = None) -> int:
+    return 1 if _saved_int(settings, "install_microinverter", 0, 0, 1) else 0
+
+
+def _flag_pref(settings: Optional[Dict[str, Any]], key: str, default: bool) -> bool:
+    if not settings or key not in settings or settings.get(key) in (None, ""):
+        return default
+    try:
+        return bool(int(str(settings.get(key)).strip()))
+    except (TypeError, ValueError):
+        return default
+
+
 def _ui_modbus_defaults(inverter_id: str) -> Dict[str, int]:
     """Vorschläge für Port/Unit im Formular. Deye läuft über Solarman (8899), sonst Modbus TCP 502."""
     family = _family(inverter_id)
@@ -386,6 +429,7 @@ def default_settings() -> Dict[str, Any]:
     return {
         "inverter": DEFAULT_INVERTER,
         "real_mode": False,
+        "manual_off": False,
         "target_grid_kw": 2.0,
         "peak_cap_kw": 2.0,
         "idle_grid_w": 20,
@@ -402,6 +446,12 @@ def default_settings() -> Dict[str, Any]:
         "install_shutdown_soc": INSTALL_DEFAULTS["install_shutdown_soc"],
         "install_restart_soc": INSTALL_DEFAULTS["install_restart_soc"],
         "install_low_soc": INSTALL_DEFAULTS["install_low_soc"],
+        "install_time_of_use": TOU_WEEK_ENABLED,
+        "install_grid_charge": 0,
+        "install_grid_charge_a": 0,
+        "install_microinverter": 0,
+        "install_peak_shaving": 1,
+        "install_export_cutoff": 0,
         "modbus_host": "",
         "modbus_port": 502,
         "modbus_unit": 1,
@@ -442,7 +492,7 @@ def _idle_grid_w(settings: Optional[Dict[str, Any]] = None) -> int:
         watts = int(round(float(str(raw).replace(",", ".").strip())))
     except (TypeError, ValueError):
         watts = ZERO_EXPORT_IDLE_W
-    return max(1, min(500, watts))
+    return max(0, min(65535, watts))
 
 
 def _idle_tou_soc(settings: Optional[Dict[str, Any]] = None) -> int:
@@ -453,7 +503,7 @@ def _idle_tou_soc(settings: Optional[Dict[str, Any]] = None) -> int:
         value = int(round(float(str(raw).replace(",", ".").strip())))
     except (TypeError, ValueError):
         value = TOU_HOLD_SOC
-    return max(TOU_HOLD_SOC, min(100, value))
+    return max(0, min(100, value))
 
 
 def _idle_tou_charging(settings: Optional[Dict[str, Any]] = None) -> int:
@@ -497,7 +547,7 @@ def _idle_peak_w(settings: Optional[Dict[str, Any]] = None) -> int:
         value = int(round(float(str(raw).replace(",", ".").strip())))
     except (TypeError, ValueError):
         value = 8000
-    return max(100, min(80000, value))
+    return max(0, min(65535, value))
 
 
 def _idle_tou_power_w(settings: Optional[Dict[str, Any]] = None) -> int:
@@ -508,7 +558,7 @@ def _idle_tou_power_w(settings: Optional[Dict[str, Any]] = None) -> int:
         value = int(round(float(str(raw).replace(",", ".").strip())))
     except (TypeError, ValueError):
         value = TOU_HOLD_POWER_W
-    return max(100, min(12000, value))
+    return max(0, min(65535, value))
 
 
 def _install_value(settings: Optional[Dict[str, Any]], key: str) -> int:
@@ -736,6 +786,55 @@ def _unicast_discover(host: str, timeout: float = 1.0) -> Optional[Dict[str, Any
     return None
 
 
+def _arp_mac_for_ip(ip: str) -> str:
+    """MAC aus der Nachbarschaftstabelle für genau diese IP. Unvollständig zählt nicht."""
+    want = _host(ip)
+    if not want:
+        return ""
+    try:
+        text = Path("/proc/net/arp").read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return ""
+    for line in text.splitlines()[1:]:
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        if _host(parts[0]) != want:
+            continue
+        mac = _format_mac(parts[3])
+        if not mac or mac == "00:00:00:00:00:00":
+            return ""
+        return mac
+    return ""
+
+
+def _confirm_logger_at_ip(ip: str) -> Optional[Dict[str, Any]]:
+    """MAC nur an der eingetragenen IP bestätigen: Solarman-Probe oder ARP, nie umgekehrt.
+
+    Liefern Probe und ARP verschiedene MAC-Adressen, gilt das als nicht bestätigt.
+    """
+    host = _host(ip)
+    if not host:
+        return None
+    probed = _unicast_discover(host, timeout=2.0)
+    arp_mac = _arp_mac_for_ip(host)
+    probe_mac = _format_mac((probed or {}).get("mac"))
+    if probe_mac == "00:00:00:00:00:00":
+        probe_mac = ""
+    if probe_mac and arp_mac and probe_mac != arp_mac:
+        return None
+    mac = probe_mac or arp_mac
+    if not mac:
+        return None
+    serial = 0
+    if probed:
+        try:
+            serial = int(probed.get("serial") or 0)
+        except (TypeError, ValueError):
+            serial = 0
+    return {"ip": host, "mac": mac, "serial": serial, "port": 8899}
+
+
 def _discover_logger_via_arp(mac: str, timeout: float = LOGGER_DISCOVERY_TIMEOUT) -> Optional[Dict[str, Any]]:
     """Fallback: Nachbarschaftstabelle nach MAC durchsuchen und per Unicast bestätigen."""
     want = _format_mac(mac)
@@ -821,6 +920,7 @@ def sync_logger_to_ha(ip: str, mac: str, serial: int = 0) -> Dict[str, Any]:
     device_path = _ha_device_registry_path()
     mac_entry_ids = set(_ha_entry_ids_for_mac(mac_text))
     touched_entries: List[str] = []
+    matched_entries = 0
 
     if config_path.is_file():
         try:
@@ -857,6 +957,7 @@ def sync_logger_to_ha(ip: str, mac: str, serial: int = 0) -> Dict[str, Any]:
                         match = True
                 if not match:
                     continue
+                matched_entries += 1
                 data = entry.setdefault("data", {})
                 options = entry.setdefault("options", {})
                 if not isinstance(data, dict):
@@ -885,6 +986,7 @@ def sync_logger_to_ha(ip: str, mac: str, serial: int = 0) -> Dict[str, Any]:
             if changed:
                 _atomic_json_write(config_path, raw)
                 result["config_updated"] = True
+            result["matched_entries"] = matched_entries
 
     if device_path.is_file():
         try:
@@ -958,10 +1060,15 @@ def sync_logger_to_ha(ip: str, mac: str, serial: int = 0) -> Dict[str, Any]:
     if result["config_updated"]:
         result["ha_restarted"] = _restart_home_assistant()
 
-    result["ok"] = True
     result["ip"] = host
     result["mac"] = mac_text
     result["serial"] = serial_num
+    result["matched_entries"] = matched_entries
+    if matched_entries < 1:
+        result["ok"] = False
+        result["message"] = "Home Assistant: kein passender Solarman-Eintrag für diese IP."
+        return result
+    result["ok"] = True
     parts = []
     if result["config_updated"]:
         parts.append("HA-Config")
@@ -1000,23 +1107,27 @@ def _restart_home_assistant() -> bool:
 
 
 def track_logger(host: Optional[str] = None, persist: bool = True) -> Dict[str, Any]:
-    """Logger per MAC/Broadcast finden, speichern und bei IP-Wechsel nach HA schreiben."""
-    # load_settings ohne frischen HA-Overwrite der getrackten IP: Rohdaten + Defaults
+    """Eingetragene IP bestätigen, dann MAC und IP ins Programm und nach Home Assistant schreiben."""
     settings = load_settings()
-    mac = _format_mac(settings.get("logger_mac")) or DEFAULT_LOGGER_MAC
     target = _host(host) or _host(settings.get("logger_ip")) or _host(settings.get("modbus_host"))
-    found = discover_logger(target, mac=mac)
-    if not found and target:
-        found = discover_logger(target, mac="")
+    if not target:
+        return {"ok": False, "message": "Keine IP eingetragen.", "mac": "", "ip": ""}
+    found = _confirm_logger_at_ip(target)
     if not found:
         return {
             "ok": False,
-            "message": (
-                f"Kein Logger mit MAC {mac} gefunden "
-                f"(Discovery Port {LOGGER_DISCOVERY_PORT}, stündliche Prüfung)."
-            ),
-            "mac": mac,
-            "ip": target or "",
+            "message": f"An {target} konnte keine MAC bestätigt werden. Es wurde nichts gespeichert.",
+            "mac": "",
+            "ip": target,
+        }
+    ha = sync_logger_to_ha(found["ip"], found["mac"], int(found.get("serial") or settings.get("logger_serial") or 0))
+    if not ha.get("ok"):
+        return {
+            "ok": False,
+            "message": ha.get("message") or "Home Assistant hat MAC und IP nicht übernommen.",
+            "mac": found["mac"],
+            "ip": found["ip"],
+            "ha": ha,
         }
     previous = {
         "ip": _host(settings.get("logger_ip") or settings.get("modbus_host")),
@@ -1028,18 +1139,16 @@ def track_logger(host: Optional[str] = None, persist: bool = True) -> Dict[str, 
         or previous["mac"] != found["mac"]
         or (int(found["serial"]) and previous["serial"] != int(found["serial"]))
     )
-    settings["logger_ip"] = found["ip"]
-    settings["logger_mac"] = found["mac"]
-    if int(found["serial"]):
-        settings["logger_serial"] = int(found["serial"])
     settings["logger_tracked_at"] = datetime.now(TZ).isoformat(timespec="seconds")
-    # Getrackte IP ist führend für Modbus
-    settings["modbus_host"] = found["ip"]
+    _sync_control_logger(
+        settings,
+        found["ip"],
+        found["mac"],
+        int(found["serial"] or 0),
+        settings["logger_tracked_at"],
+    )
     if int(settings.get("modbus_port") or 0) in (0, 502) and _family(str(settings.get("inverter") or "")) == "deye":
         settings["modbus_port"] = 8899
-    ha = {"ok": True, "message": "Unverändert — kein HA-Sync nötig."}
-    if changed or not previous["ip"]:
-        ha = sync_logger_to_ha(found["ip"], found["mac"], int(settings.get("logger_serial") or 0))
     if persist:
         _persist_settings(settings)
     read_note = ""
@@ -1231,26 +1340,100 @@ def scan_inverters() -> Dict[str, Any]:
     }
 
 
-def add_tracked_inverter(mac: str, name: str = "", serial: int = 0, host: str = "") -> Dict[str, Any]:
-    """Wechselrichter nur im Dashboard speichern. MAC bleibt, bis der Eintrag gelöscht wird.
+def _adopt_confirmed_logger(
+    settings: Dict[str, Any],
+    found: Dict[str, Any],
+    name: str = "",
+    serial_hint: int = 0,
+) -> Dict[str, Any]:
+    """Bestätigte MAC und IP ins Programm und nach Home Assistant. Vorher nichts schreiben."""
+    ip = _host(found.get("ip"))
+    mac_text = _format_mac(found.get("mac"))
+    if not ip or not mac_text:
+        return {"ok": False, "message": "MAC oder IP fehlt. Es wurde nichts gespeichert."}
+    try:
+        serial_num = int(serial_hint or found.get("serial") or 0)
+    except (TypeError, ValueError):
+        serial_num = 0
+    ha = sync_logger_to_ha(ip, mac_text, serial_num or int(settings.get("logger_serial") or 0))
+    if not ha.get("ok"):
+        return {
+            "ok": False,
+            "message": ha.get("message") or "Home Assistant hat MAC und IP nicht übernommen.",
+            "ha": ha,
+        }
+    now = datetime.now(TZ).isoformat(timespec="seconds")
+    items: List[Dict[str, Any]] = []
+    kept: Optional[Dict[str, Any]] = None
+    for item in settings.get("tracked_inverters") or []:
+        same = _format_mac(item.get("mac")) == mac_text
+        if item.get("control") or same:
+            if kept is None:
+                kept = item
+            continue
+        item["control"] = False
+        items.append(item)
+    if kept is None:
+        kept = {
+            "id": "control",
+            "name": "Steuer-Logger",
+            "port": 8899,
+            "unit": 1,
+            "role": "erzeugung",
+            "flow_field_id": "",
+            "pv_kw": None,
+        }
+    kept.update(
+        {
+            "id": "control",
+            "name": "Steuer-Logger" if not str(name or "").strip() else str(name).strip(),
+            "mac": mac_text,
+            "ip": ip,
+            "port": 8899,
+            "unit": 1,
+            "control": True,
+            "tracked_at": now,
+            "serial": serial_num or int(kept.get("serial") or settings.get("logger_serial") or 0),
+        }
+    )
+    items.insert(0, kept)
+    settings["tracked_inverters"] = items
+    settings["logger_mac"] = mac_text
+    settings["logger_ip"] = ip
+    settings["modbus_host"] = ip
+    settings["logger_tracked_at"] = now
+    settings["control_tracking_removed"] = False
+    if serial_num:
+        settings["logger_serial"] = serial_num
+    elif kept.get("serial"):
+        settings["logger_serial"] = int(kept["serial"])
+    _persist_settings(settings)
+    return {
+        "ok": True,
+        "inverter": kept,
+        "ha": ha,
+        "message": f"Logger {ip} · MAC {mac_text}. {ha.get('message') or ''}".strip(),
+    }
 
-    Ohne MAC reicht eine IP: dann wird nur dieser Logger gefragt, nicht das ganze Netz.
-    """
+
+def add_tracked_inverter(mac: str, name: str = "", serial: int = 0, host: str = "") -> Dict[str, Any]:
+    """Wechselrichter speichern. Eine eingetragene IP ist die Quelle, die MAC wird daran bestätigt."""
     settings = load_settings()
     previous_serial = int(settings.get("logger_serial") or 0)
     mac_text = _format_mac(mac)
     ip = _host(host)
     if not mac_text and ip:
-        found = _unicast_discover(ip, timeout=2.0)
+        found = _confirm_logger_at_ip(ip)
         if not found:
-            return {"ok": False, "message": "An dieser IP antwortet kein Solarman-Logger."}
-        mac_text = found["mac"]
-        ip = found["ip"] or ip
-        if not serial:
-            try:
-                serial = int(found.get("serial") or 0)
-            except (TypeError, ValueError):
-                serial = 0
+            return {
+                "ok": False,
+                "message": "An dieser IP konnte keine MAC bestätigt werden. Es wurde nichts gespeichert.",
+            }
+        try:
+            serial_hint = int(serial or found.get("serial") or 0)
+        except (TypeError, ValueError):
+            serial_hint = 0
+        return _adopt_confirmed_logger(settings, found, name, serial_hint)
     if not mac_text:
         return {"ok": False, "message": "MAC-Adresse fehlt."}
     for item in settings.get("tracked_inverters") or []:
@@ -1411,38 +1594,97 @@ def extra_inverter_flow_values() -> List[Dict[str, Any]]:
     return []
 
 
+def _sync_control_logger(
+    settings: Dict[str, Any],
+    ip: str,
+    mac: str,
+    serial: int,
+    tracked_at: str,
+) -> None:
+    """Gefundene Logger-Adresse in Einstellungen und Steuer-Eintrag schreiben.
+
+    Der stündliche Refresh liest den Steuer-Eintrag. Bleibt dort die alte IP,
+    überschreibt er die gerade gefundene Adresse wieder.
+    """
+    host = _host(ip)
+    mac_text = _format_mac(mac)
+    if host:
+        settings["logger_ip"] = host
+        settings["modbus_host"] = host
+    if mac_text:
+        settings["logger_mac"] = mac_text
+    if serial:
+        settings["logger_serial"] = int(serial)
+    if tracked_at:
+        settings["logger_tracked_at"] = tracked_at
+    for item in settings.get("tracked_inverters") or []:
+        if not item.get("control"):
+            continue
+        if host:
+            item["ip"] = host
+        if mac_text:
+            item["mac"] = mac_text
+        if serial:
+            item["serial"] = int(serial)
+        if tracked_at:
+            item["tracked_at"] = tracked_at
+        return
+
+
 def refresh_tracked_inverters() -> Dict[str, Any]:
     """Jede gespeicherte MAC neu suchen und die IP nachziehen. Keine neuen HA-Einträge."""
     settings = load_settings()
     found = {item["mac"]: item for item in discover_loggers(timeout=2.0)}
     changed_control = False
+    missing: List[str] = []
+    previous_control_ip = ""
     now = datetime.now(TZ).isoformat(timespec="seconds")
     for item in settings.get("tracked_inverters") or []:
         match = found.get(item["mac"])
         if not match:
             match = discover_logger(item.get("ip") or "", mac=item["mac"], timeout=1.0)
-        if match:
-            if match["ip"] and match["ip"] != item.get("ip"):
-                item["ip"] = match["ip"]
-                if item.get("control"):
-                    changed_control = True
-            if int(match.get("serial") or 0):
-                item["serial"] = int(match["serial"])
+        if not match:
+            # Nicht gefunden: alte IP behalten und nicht als frisch getrackt markieren.
+            missing.append(str(item.get("mac") or ""))
+            continue
+        if match["ip"] and match["ip"] != item.get("ip"):
+            if item.get("control"):
+                previous_control_ip = str(item.get("ip") or "")
+                changed_control = True
+            item["ip"] = match["ip"]
+        if int(match.get("serial") or 0):
+            item["serial"] = int(match["serial"])
         item["tracked_at"] = now
         if item.get("control"):
-            settings["logger_ip"] = item.get("ip") or settings.get("logger_ip")
-            settings["logger_mac"] = item["mac"]
-            settings["logger_serial"] = int(item.get("serial") or settings.get("logger_serial") or 0)
-            settings["logger_tracked_at"] = now
-            if item.get("ip"):
-                settings["modbus_host"] = item["ip"]
+            _sync_control_logger(
+                settings,
+                item.get("ip") or "",
+                item["mac"],
+                int(item.get("serial") or settings.get("logger_serial") or 0),
+                now,
+            )
     ha = {"ok": True, "message": "Kein neuer Home-Assistant-Eintrag."}
     if changed_control:
         control = next((item for item in settings["tracked_inverters"] if item.get("control")), None)
         if control:
             ha = sync_logger_to_ha(control["ip"], control["mac"], int(control.get("serial") or 0))
+            if not ha.get("ok") and previous_control_ip:
+                control["ip"] = previous_control_ip
+                settings["logger_ip"] = previous_control_ip
+                settings["modbus_host"] = previous_control_ip
+                changed_control = False
     _persist_settings(settings)
-    return {"ok": True, "changed_control": changed_control, "ha": ha, "count": len(settings.get("tracked_inverters") or [])}
+    control_missing = any(
+        item.get("control") and str(item.get("mac") or "") in missing
+        for item in (settings.get("tracked_inverters") or [])
+    )
+    return {
+        "ok": bool(ha.get("ok")) and not control_missing,
+        "changed_control": changed_control,
+        "missing": missing,
+        "ha": ha,
+        "count": len(settings.get("tracked_inverters") or []),
+    }
 
 
 _INVERTER_HINTS = (
@@ -1686,6 +1928,7 @@ def _persist_settings(data: Dict[str, Any]) -> None:
     stored = {
         "inverter": data["inverter"],
         "real_mode": bool(data["real_mode"]),
+        "manual_off": bool(data.get("manual_off")),
         "target_grid_kw": data["target_grid_kw"],
         "peak_cap_kw": data["peak_cap_kw"],
         "idle_grid_w": data["idle_grid_w"],
@@ -1696,6 +1939,12 @@ def _persist_settings(data: Dict[str, Any]) -> None:
         "idle_tou_charging": data["idle_tou_charging"],
         "idle_tou_power_w": data["idle_tou_power_w"],
         **{key: data[key] for key in INSTALL_DEFAULTS},
+        "install_time_of_use": data["install_time_of_use"],
+        "install_grid_charge": data["install_grid_charge"],
+        "install_grid_charge_a": data["install_grid_charge_a"],
+        "install_microinverter": data["install_microinverter"],
+        "install_peak_shaving": data["install_peak_shaving"],
+        "install_export_cutoff": data["install_export_cutoff"],
         "modbus_host": data["modbus_host"],
         "modbus_port": data["modbus_port"],
         "modbus_unit": data["modbus_unit"],
@@ -1719,7 +1968,44 @@ def _persist_settings(data: Dict[str, Any]) -> None:
         "program_time": list(data.get("program_time") or []),
         "soc_stop": bool(data.get("soc_stop")),
     }
-    SETTINGS_FILE.write_text(json.dumps(stored, indent=2) + "\n", encoding="utf-8")
+    _write_settings_file(stored)
+
+
+def _settings_backup_path() -> Path:
+    return SETTINGS_FILE.with_name(SETTINGS_FILE.name + ".bak")
+
+
+def _write_settings_file(stored: Dict[str, Any]) -> None:
+    """Atomar ersetzen. Die letzte gültige Datei bleibt als .bak, ein Abbruch löscht sie nicht."""
+    payload = json.dumps(stored, indent=2) + "\n"
+    folder = SETTINGS_FILE.parent
+    folder.mkdir(parents=True, exist_ok=True)
+    tmp = SETTINGS_FILE.with_name(SETTINGS_FILE.name + ".tmp")
+    tmp.write_text(payload, encoding="utf-8")
+    with tmp.open("rb+") as handle:
+        handle.flush()
+        os.fsync(handle.fileno())
+    if SETTINGS_FILE.is_file():
+        backup = _settings_backup_path()
+        backup.write_text(SETTINGS_FILE.read_text(encoding="utf-8"), encoding="utf-8")
+        with backup.open("rb+") as handle:
+            handle.flush()
+            os.fsync(handle.fileno())
+    os.replace(tmp, SETTINGS_FILE)
+
+
+def _load_settings_raw() -> Dict[str, Any]:
+    """Hauptstand, bei beschädigtem JSON die letzte Sicherung."""
+    for path in (SETTINGS_FILE, _settings_backup_path()):
+        if not path.is_file():
+            continue
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(raw, dict):
+            return raw
+    return {}
 
 
 def _apply_ha_link(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -1759,16 +2045,11 @@ def _auto_peak_kw(data: Dict[str, Any]) -> float:
 
 def load_settings() -> Dict[str, Any]:
     data = default_settings()
-    if SETTINGS_FILE.is_file():
-        try:
-            raw = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-            if isinstance(raw, dict):
-                data.update(raw)
-        except (OSError, json.JSONDecodeError):
-            pass
+    data.update(_load_settings_raw())
     if data.get("inverter") not in INVERTERS:
         data["inverter"] = DEFAULT_INVERTER
     data["real_mode"] = bool(data.get("real_mode"))
+    data["manual_off"] = bool(data.get("manual_off"))
     data["target_grid_kw"] = _kw(data.get("target_grid_kw"), 2.0, lowest=-100.0)
     data["peak_cap_kw"] = _kw(data.get("peak_cap_kw"), 2.0)
     data["idle_grid_w"] = _idle_grid_w({"idle_grid_w": data.get("idle_grid_w")})
@@ -1780,6 +2061,12 @@ def load_settings() -> Dict[str, Any]:
     data["idle_tou_power_w"] = _idle_tou_power_w({"idle_tou_power_w": data.get("idle_tou_power_w")})
     for key in INSTALL_DEFAULTS:
         data[key] = _install_value(data, key)
+    data["install_time_of_use"] = _install_time_of_use(data)
+    data["install_grid_charge"] = _install_grid_charge(data)
+    data["install_grid_charge_a"] = _install_grid_charge_a(data)
+    data["install_microinverter"] = _install_microinverter(data)
+    data["install_peak_shaving"] = 1 if _flag_pref(data, "install_peak_shaving", True) else 0
+    data["install_export_cutoff"] = 1 if _flag_pref(data, "install_export_cutoff", False) else 0
     data["peak_cap_kw"] = _auto_peak_kw(data)
     data["modbus_host"] = _host(data.get("modbus_host"))
     data["modbus_port"] = _port(data.get("modbus_port"))
@@ -1818,15 +2105,20 @@ def load_settings() -> Dict[str, Any]:
 
 
 def save_settings(updates: Dict[str, Any]) -> Dict[str, Any]:
-    global _release_sent
+    global _release_sent, _release_attempts, _release_cooldown_until
     data = load_settings()
     if "inverter" in updates and updates["inverter"] in INVERTERS:
         data["inverter"] = updates["inverter"]
+    if "manual_off" in updates:
+        data["manual_off"] = bool(updates["manual_off"])
     if "real_mode" in updates:
         wanted = bool(updates["real_mode"])
         if data["real_mode"] and not wanted:
             data["release_pending"] = True
             _release_sent = False
+            _release_attempts = 0
+            _release_cooldown_until = 0.0
+            _clear_release_block()
         if wanted and not data["real_mode"] and data.get("soc_stop"):
             # Über der geltenden Grenze, oder wenn noch keine Grenze da ist.
             # Eine fehlende Grenze darf das Häkchen nicht festhalten.
@@ -1852,7 +2144,8 @@ def save_settings(updates: Dict[str, Any]) -> Dict[str, Any]:
     ):
         if key in updates:
             coerced = _coerce_program_list(updates.get(key), highest=highest)
-            data[key] = coerced if coerced is not None else []
+            if coerced is not None:
+                data[key] = coerced
     if "target_grid_kw" in updates:
         data["target_grid_kw"] = _kw(updates["target_grid_kw"], data["target_grid_kw"], lowest=-100.0)
     if "planning_hold" in updates:
@@ -1861,6 +2154,12 @@ def save_settings(updates: Dict[str, Any]) -> Dict[str, Any]:
         data["community_hold"] = bool(updates["community_hold"])
     if "exchange_hold" in updates:
         data["exchange_hold"] = bool(updates["exchange_hold"])
+    if data.get("manual_off"):
+        # Manuell aus: die Planung darf den Schreibmodus nicht wieder einschalten.
+        data["real_mode"] = False
+        data["planning_hold"] = False
+        data["community_hold"] = False
+        data["exchange_hold"] = False
     if "idle_grid_w" in updates:
         data["idle_grid_w"] = _idle_grid_w({"idle_grid_w": updates["idle_grid_w"]})
     if "idle_work_mode" in updates:
@@ -1878,18 +2177,64 @@ def save_settings(updates: Dict[str, Any]) -> Dict[str, Any]:
     for key in INSTALL_DEFAULTS:
         if key in updates:
             data[key] = _install_value(updates, key)
+    if "install_time_of_use" in updates:
+        data["install_time_of_use"] = _install_time_of_use(updates)
+    if "install_grid_charge" in updates:
+        data["install_grid_charge"] = _install_grid_charge(updates)
+    if "install_grid_charge_a" in updates:
+        data["install_grid_charge_a"] = _install_grid_charge_a(updates)
+    if "install_microinverter" in updates:
+        data["install_microinverter"] = _install_microinverter(updates)
+    if "install_peak_shaving" in updates:
+        data["install_peak_shaving"] = 1 if _flag_pref(updates, "install_peak_shaving", True) else 0
+    if "install_export_cutoff" in updates:
+        data["install_export_cutoff"] = 1 if _flag_pref(updates, "install_export_cutoff", False) else 0
     data["peak_cap_kw"] = _auto_peak_kw(data)
-    if "modbus_host" in updates and not data.get("modbus_host"):
-        data["modbus_host"] = _host(updates["modbus_host"])
+    host_rejected = False
+    host_adopted = False
+    if "modbus_host" in updates:
+        host = _host(updates["modbus_host"])
+        current = _host(data.get("modbus_host"))
+        if host and host != current:
+            confirmed = _confirm_logger_at_ip(host)
+            ha = (
+                sync_logger_to_ha(
+                    confirmed["ip"],
+                    confirmed["mac"],
+                    int(confirmed.get("serial") or data.get("logger_serial") or 0),
+                )
+                if confirmed
+                else {"ok": False}
+            )
+            if not confirmed or not ha.get("ok"):
+                host_rejected = True
+            else:
+                host_adopted = True
+                data["modbus_host"] = confirmed["ip"]
+                data["logger_ip"] = confirmed["ip"]
+                data["logger_mac"] = confirmed["mac"]
+                if int(confirmed.get("serial") or 0):
+                    data["logger_serial"] = int(confirmed["serial"])
+                for item in data.get("tracked_inverters") or []:
+                    if item.get("control"):
+                        item["ip"] = confirmed["ip"]
+                        item["mac"] = confirmed["mac"]
+                        if int(confirmed.get("serial") or 0):
+                            item["serial"] = int(confirmed["serial"])
+                        break
     if "modbus_port" in updates and not data.get("modbus_port"):
         data["modbus_port"] = _port(updates["modbus_port"])
     if "modbus_unit" in updates and not data.get("modbus_unit"):
         data["modbus_unit"] = _unit(updates["modbus_unit"])
     data = _apply_ha_link(data)
     _persist_settings(data)
-    # Nach dem Verknüpfen Logger-MAC/IP erfassen und in Home Assistant nachziehen.
-    if data.get("modbus_host") and (
-        "inverter" in updates or "modbus_host" in updates or not data.get("logger_mac")
+    # Eine gerade bestätigte IP ist schon nach Home Assistant geschrieben.
+    # Ein abgelehnter Wechsel darf nicht über die alte MAC doch noch als Erfolg landen.
+    if (
+        not host_rejected
+        and not host_adopted
+        and data.get("modbus_host")
+        and ("inverter" in updates or "modbus_host" in updates or not data.get("logger_mac"))
     ):
         try:
             tracked = track_logger(str(data.get("modbus_host") or ""), persist=True)
@@ -2444,16 +2789,26 @@ def _peak_enable_row(item: Dict[str, Any], peak_flags: Optional[int], enabled: b
     return [(int(register), "Grid Peak shaving enable", value)]
 
 
-def _release_flag_row(item: Dict[str, Any], peak_flags: Optional[int]) -> List[tuple]:
-    """Lösen: Spitzenkappung an (Bit 4), Export-Abschaltung der Mikros aus (Bit 0).
+def _release_flag_row(
+    item: Dict[str, Any],
+    peak_flags: Optional[int],
+    settings: Optional[Dict[str, Any]] = None,
+) -> List[tuple]:
+    """Lösen: gespeicherte Bits für Spitzenkappung (Bit 4) und Export-Abschaltung (Bit 0).
 
-    Nur das gelesene Wort wird verändert. Ohne Rücklesen des Wortes wird nichts geschrieben.
+    Ohne gespeicherten Stand bleibt Kappung an und die Abschaltung aus.
+    Nur das gelesene Wort wird verändert. Ohne Rücklesen wird nichts geschrieben.
     """
     register = item.get("grid_peak_enable_register")
     if register is None or peak_flags is None:
         return []
-    value = int(peak_flags) | (1 << GRID_PEAK_ENABLE_BIT)
-    value &= ~(1 << MICRO_EXPORT_CUTOFF_BIT)
+    peak_on = _flag_pref(settings, "install_peak_shaving", True)
+    cutoff_on = _flag_pref(settings, "install_export_cutoff", False)
+    value = int(peak_flags) & 0xFFFF
+    peak_mask = 1 << GRID_PEAK_ENABLE_BIT
+    cutoff_mask = 1 << MICRO_EXPORT_CUTOFF_BIT
+    value = (value | peak_mask) if peak_on else (value & ~peak_mask)
+    value = (value | cutoff_mask) if cutoff_on else (value & ~cutoff_mask)
     value &= 0xFFFF
     if value == (int(peak_flags) & 0xFFFF):
         return []
@@ -2526,7 +2881,8 @@ def _import_writes(
         rows.append((int(item["max_discharge_register"]), "Battery Max Discharging Current", amps))
     rows.append((int(current), "Battery Grid Charging Current", 0))
     rows.append((int(enable), "Battery Grid Charging", 0))
-    return rows, TOU_HOLD_SOC, 1
+    # Bit 0 wäre Netzladen und sperrt die Entladung ins Haus. Entlade-Halt lässt das aus.
+    return rows, TOU_HOLD_SOC, 0
 
 
 def _needed_discharge_amps(export_w: int, live: Optional[Dict[str, Any]]) -> int:
@@ -2632,18 +2988,45 @@ def _send_holding(host: str, port: int, unit: int, serial: int, address: int, va
             time.sleep(0.5)
 
 
+def _persist_release_flag(pending: bool) -> None:
+    """Nur das Freigabe-Flag schreiben. Ein alter Tick darf real_mode nicht zurücksetzen."""
+    fresh = load_settings()
+    if bool(fresh.get("release_pending")) == bool(pending):
+        return
+    fresh["release_pending"] = bool(pending)
+    _persist_settings(fresh)
+
+
 def _mark_release_pending(settings: Dict[str, Any]) -> None:
     if settings.get("release_pending"):
         return
     settings["release_pending"] = True
-    _persist_settings(settings)
+    _persist_release_flag(True)
 
 
 def _clear_release_pending(settings: Dict[str, Any]) -> None:
     if not settings.get("release_pending"):
         return
     settings["release_pending"] = False
-    _persist_settings(settings)
+    _persist_release_flag(False)
+
+
+def _release_on_cooldown() -> bool:
+    return time.monotonic() < _release_cooldown_until
+
+
+def _start_release_cooldown() -> None:
+    global _release_cooldown_until, _release_attempts, _release_sent, _needs_release
+    _release_cooldown_until = time.monotonic() + RELEASE_COOLDOWN_SEC
+    _release_attempts = 0
+    _needs_release = False
+    _release_sent = True
+
+
+# Soll und gelesener Abstand beim Abbruch. Gleicher Stand startet keine neue Freigabe.
+# Ein Prozessneustart löscht beides, dann darf die Drift-Prüfung einmal nachziehen.
+_release_block_key: Optional[tuple] = None
+_release_block_gap: Optional[tuple] = None
 
 
 def _release_due(settings: Dict[str, Any]) -> bool:
@@ -2651,16 +3034,85 @@ def _release_due(settings: Dict[str, Any]) -> bool:
 
 
 _last_drift_release = 0.0
+_last_drift_check = 0.0
 DRIFT_RELEASE_GAP_SEC = 60.0
 
 
-def _normalbetrieb_drift(settings: Optional[Dict[str, Any]] = None) -> bool:
+def _registers_readable(regs: Optional[Dict[str, Any]]) -> bool:
+    """Unlesbare Sollwerte dürfen keine Freigabe-Schreibungen auslösen."""
+    if not regs:
+        return False
+    if regs.get("solar_sell") in (None, ""):
+        return False
+    if regs.get("peak_w") in (None, ""):
+        return False
+    return True
+
+
+def _release_settings_key(settings: Optional[Dict[str, Any]]) -> tuple:
+    """BMS, Spitze, Solar Sell und Modus. Das ist der Zustand, der eine neue Freigabe rechtfertigt."""
+    data = settings or {}
+    return (
+        bool(data.get("real_mode")),
+        int(_idle_peak_w(data)),
+        int(_install_solar_sell(data)),
+        int(_idle_work_mode(data)),
+        int(_idle_energy_pattern(data)),
+    )
+
+
+def _observed_gap(regs: Optional[Dict[str, Any]]) -> tuple:
+    if not _registers_readable(regs):
+        return ("unreadable",)
+    sell = str((regs or {}).get("solar_sell") or "").strip().lower()
+    peak = str((regs or {}).get("peak_w") or "").strip()
+    return (sell, peak)
+
+
+def _clear_release_block() -> None:
+    global _release_block_key, _release_block_gap
+    _release_block_key = None
+    _release_block_gap = None
+
+
+def _remember_release_block(settings: Dict[str, Any]) -> None:
+    global _release_block_key, _release_block_gap
+    _release_block_key = _release_settings_key(settings)
+    try:
+        regs = read_register_state()
+    except Exception:
+        regs = None
+    _release_block_gap = _observed_gap(regs)
+
+
+def _release_loop_locked(settings: Dict[str, Any], regs: Optional[Dict[str, Any]] = None) -> bool:
+    """True, solange seit dem Abbruch weder Soll noch Abstand neu sind.
+
+    Ohne Register zählt schon derselbe Soll: die Schleife gibt nicht mehr dauernd frei.
+    Mit Register nur, wenn auch der gelesene Abstand gleich geblieben ist.
+    """
+    if _release_block_key is None:
+        return False
+    if _release_settings_key(settings) != _release_block_key:
+        return False
+    if regs is None:
+        return True
+    return _observed_gap(regs) == _release_block_gap
+
+
+def _normalbetrieb_drift(
+    settings: Optional[Dict[str, Any]] = None,
+    regs: Optional[Dict[str, Any]] = None,
+) -> bool:
     """True, wenn bei ausgeschaltetem BMS noch Stellwerte vom Halt am Wechselrichter stehen.
 
     Typisch nach Prozessneustart: release_pending ist schon false, Solar Sell oder die
     Spitzenkappung weichen aber noch vom Elektriker-Normalbetrieb ab. Dann muss die Freigabe noch einmal.
     """
-    regs = read_register_state()
+    if regs is None:
+        regs = read_register_state()
+    if not _registers_readable(regs):
+        return False
     sell = str(regs.get("solar_sell") or "").strip().lower()
     sell_on = sell in ("on", "1", "true")
     if sell_on != bool(_install_solar_sell(settings)):
@@ -2677,14 +3129,24 @@ def _normalbetrieb_drift(settings: Optional[Dict[str, Any]] = None) -> bool:
 
 def _queue_release_if_drift(settings: Dict[str, Any]) -> bool:
     """Einmalig Freigabe anstoßen, wenn Solar Sell oder Spitze nicht zum Elektriker-Soll passen."""
-    global _last_drift_release, _release_sent
+    global _last_drift_release, _last_drift_check, _release_sent
     if settings.get("real_mode") or settings.get("release_pending"):
         return False
-    if not _normalbetrieb_drift(settings):
-        return False
     now = time.monotonic()
-    if now - _last_drift_release < DRIFT_RELEASE_GAP_SEC:
+    if now - _last_drift_check < DRIFT_RELEASE_GAP_SEC:
         return False
+    _last_drift_check = now
+    try:
+        regs = read_register_state()
+    except Exception:
+        regs = None
+    # Unveränderter Abstand nach dem Abbruch bleibt liegen. Neustart ohne Merker,
+    # neuer Soll oder ein anderer gelesener Abstand dürfen weiter anstoßen.
+    if _release_loop_locked(settings, regs):
+        return False
+    if not _normalbetrieb_drift(settings, regs):
+        return False
+    _clear_release_block()
     _last_drift_release = now
     _release_sent = False
     _mark_release_pending(settings)
@@ -2879,7 +3341,7 @@ def maybe_autocapture_install(settings: Optional[Dict[str, Any]] = None) -> Dict
         settings = load_settings()
     if _install_snapshot_valid(settings):
         return settings
-    if settings.get("real_mode") or settings.get("release_pending"):
+    if _bms_is_writing(settings):
         return settings
     try:
         serial = int(settings.get("logger_serial") or 0)
@@ -2896,7 +3358,7 @@ def maybe_autocapture_install(settings: Optional[Dict[str, Any]] = None) -> Dict
     if _install_snapshot_valid(fresh):
         _autocapture_done.add(serial)
         return fresh
-    if fresh.get("real_mode") or fresh.get("release_pending"):
+    if _bms_is_writing(fresh):
         return fresh
     try:
         fresh_serial = int(fresh.get("logger_serial") or 0)
@@ -2968,18 +3430,12 @@ def _program_restore_rows(settings: Optional[Dict[str, Any]]) -> List[tuple]:
 def capture_install_from_inverter() -> Dict[str, Any]:
     """Elektrikerwerte und die sechs Programme einmal vom Wechselrichter lesen.
 
-    Nur wenn BMS nicht schreibt. Sonst stünden in den Registern die Stellwerte der Schleife.
+    Lesen geht immer, auch bei einem anderen Modell und auch unter 20 Prozent.
+    Gespeichert als Elektrikerstand wird nur, solange BMS nicht schreibt. Sonst blieben
+    die Stellwerte der Schleife als Original stehen und kämen beim Abschalten zurück.
     """
     settings = load_settings()
-    if settings.get("real_mode") or settings.get("release_pending"):
-        return {
-            "ok": False,
-            "skipped": True,
-            "message": (
-                "BMS schreibt noch oder die Elektrikerwerte werden gerade zurückgeschrieben. "
-                "Bitte warten, bis das aus ist."
-            ),
-        }
+    writing = _bms_is_writing(settings)
     host = settings.get("modbus_host") or ""
     serial = _writer_serial(settings)
     if not host or not serial:
@@ -3001,6 +3457,22 @@ def capture_install_from_inverter() -> Dict[str, Any]:
             powers.append(_read_holding_retry(settings, serial, REG_PROGRAM_POWER + index))
             charges.append(_read_holding_retry(settings, serial, REG_PROGRAM_CHARGE + index))
             times.append(_read_holding_retry(settings, serial, REG_PROGRAM_TIME + index))
+        for key, address in (
+            ("install_time_of_use", 0x0092),
+            ("install_grid_charge", 0x0082),
+            ("install_grid_charge_a", 0x0080),
+            ("install_microinverter", 0x0084),
+        ):
+            try:
+                updates[key] = _read_holding_retry(settings, serial, address)
+            except OSError:
+                pass
+        try:
+            switch = _read_holding_retry(settings, serial, 0x00B2)
+            updates["install_peak_shaving"] = 1 if int(switch) & (1 << GRID_PEAK_ENABLE_BIT) else 0
+            updates["install_export_cutoff"] = 1 if int(switch) & (1 << MICRO_EXPORT_CUTOFF_BIT) else 0
+        except OSError:
+            pass
         updates["program_soc"] = socs
         updates["program_power"] = powers
         updates["program_charging"] = charges
@@ -3009,8 +3481,20 @@ def capture_install_from_inverter() -> Dict[str, Any]:
         updates["install_captured_serial"] = serial
     except OSError as exc:
         return {"ok": False, "message": f"Elektrikerwerte konnten nicht gelesen werden: {exc}"}
+    if writing:
+        shown = dict(settings)
+        shown.update(updates)
+        return {
+            "ok": True,
+            "saved": False,
+            "message": (
+                "Vom Wechselrichter gelesen. Der gespeicherte Elektrikerstand bleibt, "
+                "solange BMS schreibt."
+            ),
+            "settings": shown,
+        }
     saved = save_settings(updates)
-    return {"ok": True, "message": "Elektrikerwerte vom Wechselrichter gelesen.", "settings": saved}
+    return {"ok": True, "saved": True, "message": "Elektrikerwerte vom Wechselrichter gelesen.", "settings": saved}
 
 
 def _stopped_for_soc(
@@ -3075,9 +3559,9 @@ def _release_writes(item: Dict[str, Any], settings: Optional[Dict[str, Any]] = N
     current = item.get("grid_charge_current_register")
     enable = item.get("grid_charge_register")
     if current is not None:
-        rows.append((int(current), "Battery Grid Charging Current", 0))
+        rows.append((int(current), "Battery Grid Charging Current", _install_grid_charge_a(settings)))
     if enable is not None:
-        rows.append((int(enable), "Battery Grid Charging", 0))
+        rows.append((int(enable), "Battery Grid Charging", _install_grid_charge(settings)))
     if item.get("max_discharge_register") is not None:
         rows.append((REG_MAX_CHARGE, "Battery Max Charging Current", _install_value(settings, "install_max_charge_a")))
         rows.append(
@@ -3105,14 +3589,14 @@ def _release_writes(item: Dict[str, Any], settings: Optional[Dict[str, Any]] = N
             (int(item["solar_sell_register"]), "Solar Sell", _install_solar_sell(settings))
         )
     if item.get("microinverter_register") is not None:
-        rows.append((int(item["microinverter_register"]), "Microinverter", 0))
+        rows.append((int(item["microinverter_register"]), "Microinverter", _install_microinverter(settings)))
     if item.get("sell_power_register") is not None:
         rows.append(
             (int(item["sell_power_register"]), "Export Surplus Power", _install_value(settings, "install_max_sell_w"))
         )
     schedule = item.get("time_of_use_register")
     if schedule is not None:
-        rows.append((int(schedule), "Time of Use", TOU_WEEK_ENABLED))
+        rows.append((int(schedule), "Time of Use", _install_time_of_use(settings)))
         rows.extend(_program_restore_rows(settings))
     return rows
 
@@ -3210,7 +3694,7 @@ def apply_write(
     plan: Dict[str, Any],
     live: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    global _needs_release, _tou_hold_applied, _tou_soc_applied, _release_sent
+    global _needs_release, _tou_hold_applied, _tou_soc_applied, _release_sent, _release_attempts
     if settings.get("real_mode") and _soc_limit_blocks(settings, live):
         settings = save_settings({"real_mode": False, "soc_stop": True})
     elif (
@@ -3224,8 +3708,7 @@ def apply_write(
     item = _control_item(base, link)
     register_text = _register_text(item)
     if not settings.get("real_mode"):
-        if settings.get("release_pending"):
-            _release_sent = False
+        # release_pending nicht bei jedem Tick zurücksetzen: das hat die Freigabe endlos neu geschrieben.
         if not _release_due(settings):
             _queue_release_if_drift(settings)
         if not _release_due(settings):
@@ -3243,7 +3726,7 @@ def apply_write(
             return _write_result(False, "Aus. Es wird nichts geschrieben.")
         serial = int(link.get("serial") or 0) if link else 0
         peak_flags = _read_peak_flags(item, settings, serial)
-        writes = writes + _release_flag_row(item, peak_flags)
+        writes = writes + _release_flag_row(item, peak_flags, settings)
         flags_unread = item.get("grid_peak_enable_register") is not None and peak_flags is None
         with _lock:
             if _release_sent or not _release_due(settings):
@@ -3275,10 +3758,23 @@ def apply_write(
                     verified = False
             if verified:
                 _release_sent = True
+                _release_attempts = 0
                 _needs_release = False
+                _clear_release_block()
                 _clear_release_pending(settings)
             else:
+                _release_attempts += 1
                 _release_sent = False
+                if _release_attempts >= RELEASE_ATTEMPT_LIMIT:
+                    _remember_release_block(settings)
+                    _start_release_cooldown()
+                    _clear_release_pending(settings)
+                    result = _write_result(
+                        False,
+                        (result.get("write_text") or "")
+                        + " Freigabe abgebrochen, es wird nichts mehr geschrieben.",
+                        result.get("raw"),
+                    )
             return result
     if not item.get("writable") or item.get("register") is None:
         return _write_result(False, item.get("note") or "Für diesen Typ wird nichts geschrieben.")
@@ -3356,18 +3852,21 @@ def _sync_ha_release(settings: Optional[Dict[str, Any]] = None) -> List[str]:
     work_name = "Export First" if _idle_work_mode(settings) == WORK_MODE_EXPORT_FIRST else "Zero Export To CT"
     pattern_name = "Battery First" if _idle_energy_pattern(settings) == ENERGY_PATTERN_BATTERY_FIRST else "Load First"
     solar_service = "turn_on" if _install_solar_sell(settings) else "turn_off"
+    charge_service = "turn_on" if _install_grid_charge(settings) else "turn_off"
+    micro_service = "turn_on" if _install_microinverter(settings) else "turn_off"
+    cutoff_service = "turn_on" if _flag_pref(settings, "install_export_cutoff", False) else "turn_off"
     prefix = "number.192_168_1_176"
     select = "select.192_168_1_176"
     wanted = [
         ("number", "set_value", f"{prefix}_zero_export_power", {"value": idle_w}),
         ("number", "set_value", f"{prefix}_grid_peak_shaving", {"value": _idle_peak_w(settings)}),
-        ("number", "set_value", f"{prefix}_battery_grid_charging_current", {"value": 0}),
+        ("number", "set_value", f"{prefix}_battery_grid_charging_current", {"value": _install_grid_charge_a(settings)}),
         ("select", "select_option", f"{select}_work_mode", {"option": work_name}),
         ("select", "select_option", f"{select}_energy_pattern", {"option": pattern_name}),
-        ("switch", "turn_off", "switch.192_168_1_176_battery_grid_charging", {}),
+        ("switch", charge_service, "switch.192_168_1_176_battery_grid_charging", {}),
         ("switch", solar_service, "switch.192_168_1_176_export_surplus", {}),
-        ("switch", "turn_off", "switch.192_168_1_176_microinverter", {}),
-        ("switch", "turn_off", "switch.192_168_1_176_microinverter_export_cut_off", {}),
+        ("switch", micro_service, "switch.192_168_1_176_microinverter", {}),
+        ("switch", cutoff_service, "switch.192_168_1_176_microinverter_export_cut_off", {}),
     ]
     socs = _coerce_program_list((settings or {}).get("program_soc"), highest=100)
     powers = _coerce_program_list((settings or {}).get("program_power"))
@@ -3472,6 +3971,39 @@ def planning_write_kw(raw: Optional[float]) -> Optional[float]:
     return kw
 
 
+def _bms_is_writing(settings: Dict[str, Any]) -> bool:
+    """Schreiben oder eine laufende Freigabe.
+
+    Nach dem Abbruch bei unverändertem Soll hängt das Neulesen nicht mehr an release_pending.
+    """
+    if settings.get("real_mode"):
+        return True
+    if settings.get("release_pending") and _release_loop_locked(settings):
+        return False
+    return bool(settings.get("release_pending"))
+
+
+def _auto_hold_blocked(settings: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Manuell aus: Planung, Gemeinschaft und Börse schalten den Schreibmodus nicht wieder ein."""
+    if not settings.get("manual_off"):
+        return None
+    if (
+        settings.get("real_mode")
+        or settings.get("planning_hold")
+        or settings.get("community_hold")
+        or settings.get("exchange_hold")
+    ):
+        return save_settings(
+            {
+                "real_mode": False,
+                "planning_hold": False,
+                "community_hold": False,
+                "exchange_hold": False,
+            }
+        )
+    return settings
+
+
 def apply_planning_hold(
     settings: Optional[Dict[str, Any]] = None,
     live: Optional[Dict[str, Any]] = None,
@@ -3486,6 +4018,9 @@ def apply_planning_hold(
     """
     if settings is None:
         settings = load_settings()
+    blocked = _auto_hold_blocked(settings)
+    if blocked is not None:
+        return blocked
     if settings.get("community_hold") or settings.get("exchange_hold"):
         return settings
     try:
@@ -3497,6 +4032,7 @@ def apply_planning_hold(
     holding = bool(settings.get("planning_hold"))
     if not planning_on:
         if holding:
+            # Planung aus: Registerschreiben aus, Freigabe schreibt die gespeicherten Elektrikerwerte zurück.
             return save_settings({"real_mode": False, "planning_hold": False})
         return settings
     try:
@@ -3507,6 +4043,7 @@ def apply_planning_hold(
         kw = None
     if kw is None:
         if holding:
+            # Kein Netzspitzen-Zukauf mehr: Schreiben aus, Elektrikerwerte zurück.
             return save_settings({"real_mode": False, "planning_hold": False})
         return settings
     stopped = _stopped_for_soc(settings, live, now)
@@ -3529,6 +4066,9 @@ def apply_community_hold(settings: Optional[Dict[str, Any]] = None) -> Dict[str,
     """
     if settings is None:
         settings = load_settings()
+    blocked = _auto_hold_blocked(settings)
+    if blocked is not None:
+        return blocked
     try:
         from energie_steuerung import load_settings as energy_settings
 
@@ -3576,6 +4116,9 @@ def apply_exchange_hold(settings: Optional[Dict[str, Any]] = None) -> Dict[str, 
     """
     if settings is None:
         settings = load_settings()
+    blocked = _auto_hold_blocked(settings)
+    if blocked is not None:
+        return blocked
     if settings.get("community_hold"):
         return settings
     try:
@@ -3820,7 +4363,13 @@ def _ensure_writer() -> None:
                 settings = apply_community_hold(settings)
                 if not settings.get("community_hold"):
                     settings = apply_exchange_hold(settings)
-                if not settings.get("community_hold") and not settings.get("exchange_hold"):
+                # Planung führt einen laufenden Halt weiter. Ausgeschaltetes Schreiben
+                # (real_mode und planning_hold aus) schaltet sie nicht von selbst wieder ein.
+                if (
+                    not settings.get("community_hold")
+                    and not settings.get("exchange_hold")
+                    and (settings.get("planning_hold") or settings.get("real_mode"))
+                ):
                     settings = apply_planning_hold(settings, live)
                 if settings.get("real_mode"):
                     reapply_dauerzukauf_test()
@@ -3844,26 +4393,111 @@ def _ensure_writer() -> None:
     threading.Thread(target=loop, name="bms-modbus", daemon=True).start()
 
 
-def read_register_state() -> Dict[str, Any]:
-    """Aktuelle Soll-Register aus Home Assistant, für die Netzbezug-Seite."""
+def _on_off_label(value: int) -> str:
+    return "on" if int(value) else "off"
+
+
+def _work_mode_label(value: int) -> str:
+    return {
+        WORK_MODE_EXPORT_FIRST: "Export First",
+        WORK_MODE_ZERO_EXPORT_CT: "Zero Export To CT",
+    }.get(int(value), str(value))
+
+
+def _pattern_label(value: int) -> str:
+    return {
+        ENERGY_PATTERN_BATTERY_FIRST: "Battery First",
+        ENERGY_PATTERN_LOAD_FIRST: "Load First",
+    }.get(int(value), str(value))
+
+
+def _program_charge_label(value: int) -> str:
+    value = int(value)
+    if value & 1:
+        return "Grid"
+    if value & TOU_SELL_BIT:
+        return "Sell"
+    return "Battery"
+
+
+def _read_inverter_registers(settings: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Sollwerte direkt vom aktuellen Logger. Unabhängig von alten Home-Assistant-Entity-IDs."""
+    host = _host(settings.get("modbus_host") or settings.get("logger_ip"))
+    try:
+        serial = int(settings.get("logger_serial") or 0)
+        port = int(settings.get("modbus_port") or 8899)
+        unit = int(settings.get("modbus_unit") or 1)
+    except (TypeError, ValueError):
+        return None
+    if not host or not serial:
+        return None
+    wanted = {
+        "zero_export_w": 0x0068,
+        "work_mode": 0x008E,
+        "energy_pattern": 0x008D,
+        "peak_w": 0x00BF,
+        "grid_charge": 0x0082,
+        "grid_charge_a": 0x0080,
+        "max_discharge_a": 0x006D,
+        "program_soc": 0x00AA,
+        "program_charging": 0x00B0,
+        "program_power": 0x009E,
+        "max_export_w": 0x008F,
+        "solar_sell": 0x0091,
+    }
+    raw: Dict[str, int] = {}
+    for key, address in wanted.items():
+        try:
+            raw[key] = int(read_holding(host, port, unit, serial, address))
+        except OSError:
+            return None
+    return {
+        "zero_export_w": str(raw["zero_export_w"]),
+        "work_mode": _work_mode_label(raw["work_mode"]),
+        "energy_pattern": _pattern_label(raw["energy_pattern"]),
+        "peak_w": str(raw["peak_w"]),
+        "grid_charge": _on_off_label(raw["grid_charge"]),
+        "grid_charge_a": str(raw["grid_charge_a"]),
+        "max_discharge_a": str(raw["max_discharge_a"]),
+        "program_soc": str(raw["program_soc"]),
+        "program_charging": _program_charge_label(raw["program_charging"]),
+        "program_power": str(raw["program_power"]),
+        "max_export_w": str(raw["max_export_w"]),
+        "solar_sell": _on_off_label(raw["solar_sell"]),
+    }
+
+
+def _read_register_state_ha(settings: Dict[str, Any]) -> Dict[str, Any]:
+    """Fallback über Home Assistant. Entity-Präfix folgt der aktuellen Logger-IP."""
     try:
         from ha_device_control import read_ha_entity_state
     except Exception:
         return {}
+    host = _host(settings.get("modbus_host") or settings.get("logger_ip")) or "192.168.1.176"
+    prefix = host.replace(".", "_")
     return {
-        "zero_export_w": read_ha_entity_state("number.192_168_1_176_zero_export_power"),
-        "work_mode": read_ha_entity_state("select.192_168_1_176_work_mode"),
-        "energy_pattern": read_ha_entity_state("select.192_168_1_176_energy_pattern"),
-        "peak_w": read_ha_entity_state("number.192_168_1_176_grid_peak_shaving"),
-        "grid_charge": read_ha_entity_state("switch.192_168_1_176_battery_grid_charging"),
-        "grid_charge_a": read_ha_entity_state("number.192_168_1_176_battery_grid_charging_current"),
-        "max_discharge_a": read_ha_entity_state("number.192_168_1_176_battery_max_discharging_current"),
-        "program_soc": read_ha_entity_state("number.192_168_1_176_program_5_soc"),
-        "program_charging": read_ha_entity_state("select.192_168_1_176_program_5_charging"),
-        "program_power": read_ha_entity_state("number.192_168_1_176_program_5_power"),
-        "max_export_w": read_ha_entity_state("number.192_168_1_176_export_surplus_power"),
-        "solar_sell": read_ha_entity_state("switch.192_168_1_176_export_surplus"),
+        "zero_export_w": read_ha_entity_state(f"number.{prefix}_zero_export_power"),
+        "work_mode": read_ha_entity_state(f"select.{prefix}_work_mode"),
+        "energy_pattern": read_ha_entity_state(f"select.{prefix}_energy_pattern"),
+        "peak_w": read_ha_entity_state(f"number.{prefix}_grid_peak_shaving"),
+        "grid_charge": read_ha_entity_state(f"switch.{prefix}_battery_grid_charging"),
+        "grid_charge_a": read_ha_entity_state(f"number.{prefix}_battery_grid_charging_current"),
+        "max_discharge_a": read_ha_entity_state(f"number.{prefix}_battery_max_discharging_current"),
+        "program_soc": read_ha_entity_state(f"number.{prefix}_program_5_soc"),
+        "program_charging": read_ha_entity_state(f"select.{prefix}_program_5_charging"),
+        "program_power": read_ha_entity_state(f"number.{prefix}_program_5_power"),
+        "max_export_w": read_ha_entity_state(f"number.{prefix}_export_surplus_power"),
+        "solar_sell": read_ha_entity_state(f"switch.{prefix}_export_surplus"),
     }
+
+
+def read_register_state() -> Dict[str, Any]:
+    """Aktuelle Soll-Register, zuerst direkt vom Wechselrichter."""
+    settings = load_settings()
+    direct = _read_inverter_registers(settings)
+    if direct:
+        return direct
+    return _read_register_state_ha(settings)
 
 
 def status(record: bool = True) -> Dict[str, Any]:

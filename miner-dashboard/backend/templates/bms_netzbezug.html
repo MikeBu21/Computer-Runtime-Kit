@@ -127,19 +127,19 @@
     <form id="installer_form" class="field-grid">
       <div>
         <label class="form-label" for="install_max_charge_a">Max. Laden (A)<span class="ceiling">Obergrenze</span></label>
-        <input class="form-control" id="install_max_charge_a" name="install_max_charge_a" type="number" min="0" max="350" step="1" value="{{ settings.install_max_charge_a }}" required>
+        <input class="form-control" id="install_max_charge_a" name="install_max_charge_a" type="number" step="1" value="{{ settings.install_max_charge_a }}" required>
       </div>
       <div>
         <label class="form-label" for="install_max_discharge_a">Max. Entladen (A)<span class="ceiling">Obergrenze</span></label>
-        <input class="form-control" id="install_max_discharge_a" name="install_max_discharge_a" type="number" min="0" max="350" step="1" value="{{ settings.install_max_discharge_a }}" required>
+        <input class="form-control" id="install_max_discharge_a" name="install_max_discharge_a" type="number" step="1" value="{{ settings.install_max_discharge_a }}" required>
       </div>
       <div>
         <label class="form-label" for="install_max_sell_w">Max. Einspeisen (W)<span class="ceiling">Obergrenze</span></label>
-        <input class="form-control" id="install_max_sell_w" name="install_max_sell_w" type="number" min="0" max="24000" step="10" value="{{ settings.install_max_sell_w }}" required>
+        <input class="form-control" id="install_max_sell_w" name="install_max_sell_w" type="number" step="1" value="{{ settings.install_max_sell_w }}" required>
       </div>
       <div>
         <label class="form-label" for="install_max_import_w">Max. Netzbezug (W)<span class="ceiling">Obergrenze</span></label>
-        <input class="form-control" id="install_max_import_w" name="install_max_import_w" type="number" min="0" max="80000" step="10" value="{{ settings.install_max_import_w }}" required>
+        <input class="form-control" id="install_max_import_w" name="install_max_import_w" type="number" step="1" value="{{ settings.install_max_import_w }}" required>
       </div>
       <div>
         <label class="form-label" for="install_solar_sell">Solar Sell</label>
@@ -151,20 +151,19 @@
       </div>
       <div>
         <label class="form-label" for="idle_grid_w">Zero Export (W)</label>
-        <input class="form-control" id="idle_grid_w" name="idle_grid_w" type="number" min="1" max="500" step="1" value="{{ settings.idle_grid_w }}" required>
-        <div style="color: var(--muted); font-size: 0.78rem; margin-top: 0.3rem;">Nie 0.</div>
+        <input class="form-control" id="idle_grid_w" name="idle_grid_w" type="number" step="1" value="{{ settings.idle_grid_w }}" required>
       </div>
       <div>
         <label class="form-label" for="install_shutdown_soc">Entladen bis, Abschalt-SOC (%)</label>
-        <input class="form-control" id="install_shutdown_soc" name="install_shutdown_soc" type="number" min="0" max="100" step="1" value="{{ settings.install_shutdown_soc }}" required>
+        <input class="form-control" id="install_shutdown_soc" name="install_shutdown_soc" type="number" step="1" value="{{ settings.install_shutdown_soc }}" required>
       </div>
       <div>
         <label class="form-label" for="install_restart_soc">Wiederanlauf-SOC (%)</label>
-        <input class="form-control" id="install_restart_soc" name="install_restart_soc" type="number" min="0" max="100" step="1" value="{{ settings.install_restart_soc }}" required>
+        <input class="form-control" id="install_restart_soc" name="install_restart_soc" type="number" step="1" value="{{ settings.install_restart_soc }}" required>
       </div>
       <div>
         <label class="form-label" for="install_low_soc">Batterie-niedrig-SOC (%)</label>
-        <input class="form-control" id="install_low_soc" name="install_low_soc" type="number" min="0" max="100" step="1" value="{{ settings.install_low_soc }}" required>
+        <input class="form-control" id="install_low_soc" name="install_low_soc" type="number" step="1" value="{{ settings.install_low_soc }}" required>
       </div>
       <div>
         <label class="form-label" for="idle_work_mode">Arbeitsmodus</label>
@@ -182,25 +181,64 @@
       </div>
       <div>
         <label class="form-label" for="idle_peak_w">Spitzenkappung (W)</label>
-        <input class="form-control" id="idle_peak_w" name="idle_peak_w" type="number" min="100" max="80000" step="100" value="{{ settings.idle_peak_w }}" required>
+        <input class="form-control" id="idle_peak_w" name="idle_peak_w" type="number" step="1" value="{{ settings.idle_peak_w }}" required>
       </div>
       <div>
-        <label class="form-label" for="idle_tou_soc">ToU-Ziel-SOC (%)</label>
-        <input class="form-control" id="idle_tou_soc" name="idle_tou_soc" type="number" min="20" max="100" step="1" value="{{ settings.idle_tou_soc }}" required>
-      </div>
-      <div>
-        <label class="form-label" for="idle_tou_charging">ToU-Laden</label>
-        <select class="form-control" id="idle_tou_charging" name="idle_tou_charging">
-          <option value="0" {% if settings.idle_tou_charging == 0 %}selected{% endif %}>Aus</option>
-          <option value="1" {% if settings.idle_tou_charging == 1 %}selected{% endif %}>Netz</option>
-          <option value="2" {% if settings.idle_tou_charging == 2 %}selected{% endif %}>Generator</option>
-          <option value="3" {% if settings.idle_tou_charging == 3 %}selected{% endif %}>Beides</option>
+        <label class="form-label" for="install_time_of_use">Zeitschaltuhr</label>
+        <select class="form-control" id="install_time_of_use" name="install_time_of_use">
+          <option value="0" {% if settings.install_time_of_use == 0 %}selected{% endif %}>Aus</option>
+          <option value="255" {% if settings.install_time_of_use == 255 %}selected{% endif %}>An, alle Tage</option>
+          {% if settings.install_time_of_use not in (0, 255) %}
+          <option value="{{ settings.install_time_of_use }}" selected>Maske {{ settings.install_time_of_use }}</option>
+          {% endif %}
         </select>
       </div>
       <div>
-        <label class="form-label" for="idle_tou_power_w">ToU-Leistung (W)</label>
-        <input class="form-control" id="idle_tou_power_w" name="idle_tou_power_w" type="number" min="100" max="12000" step="100" value="{{ settings.idle_tou_power_w }}" required>
+        <label class="form-label" for="install_grid_charge">Netzladen</label>
+        <select class="form-control" id="install_grid_charge" name="install_grid_charge">
+          <option value="0" {% if settings.install_grid_charge == 0 %}selected{% endif %}>Aus</option>
+          <option value="1" {% if settings.install_grid_charge == 1 %}selected{% endif %}>An</option>
+        </select>
       </div>
+      <div>
+        <label class="form-label" for="install_grid_charge_a">Netzladestrom (A)</label>
+        <input class="form-control" id="install_grid_charge_a" name="install_grid_charge_a" type="number" step="1" value="{{ settings.install_grid_charge_a }}" required>
+      </div>
+      <div>
+        <label class="form-label" for="install_microinverter">Mikrowechselrichter</label>
+        <select class="form-control" id="install_microinverter" name="install_microinverter">
+          <option value="0" {% if settings.install_microinverter == 0 %}selected{% endif %}>Aus</option>
+          <option value="1" {% if settings.install_microinverter == 1 %}selected{% endif %}>An</option>
+        </select>
+      </div>
+      <div>
+        <label class="form-label" for="install_peak_shaving">Spitzenkappung (Schalter)</label>
+        <select class="form-control" id="install_peak_shaving" name="install_peak_shaving">
+          <option value="1" {% if settings.install_peak_shaving == 1 %}selected{% endif %}>An</option>
+          <option value="0" {% if settings.install_peak_shaving == 0 %}selected{% endif %}>Aus</option>
+        </select>
+      </div>
+      <div>
+        <label class="form-label" for="install_export_cutoff">Export-Abschaltung</label>
+        <select class="form-control" id="install_export_cutoff" name="install_export_cutoff">
+          <option value="0" {% if settings.install_export_cutoff == 0 %}selected{% endif %}>Aus</option>
+          <option value="1" {% if settings.install_export_cutoff == 1 %}selected{% endif %}>An</option>
+        </select>
+      </div>
+      {% for n in range(1, 7) %}
+      <div>
+        <label class="form-label" for="program_soc_{{ n }}">Programm {{ n }} SOC (%)</label>
+        <input class="form-control" id="program_soc_{{ n }}" name="program_soc_{{ n }}" type="number" step="1" value="{{ settings.program_soc[n - 1] if settings.program_soc|length >= n else '' }}">
+      </div>
+      <div>
+        <label class="form-label" for="program_power_{{ n }}">Programm {{ n }} Leistung (W)</label>
+        <input class="form-control" id="program_power_{{ n }}" name="program_power_{{ n }}" type="number" step="1" value="{{ settings.program_power[n - 1] if settings.program_power|length >= n else '' }}">
+      </div>
+      <div>
+        <label class="form-label" for="program_charging_{{ n }}">Programm {{ n }} Laden</label>
+        <input class="form-control" id="program_charging_{{ n }}" name="program_charging_{{ n }}" type="number" step="1" value="{{ settings.program_charging[n - 1] if settings.program_charging|length >= n else '' }}">
+      </div>
+      {% endfor %}
     </form>
     <div class="action-row">
       <button type="submit" form="installer_form" class="btn-primary-custom">Elektriker-Werte speichern</button>
@@ -336,10 +374,28 @@
       "install_shutdown_soc",
       "install_restart_soc",
       "install_low_soc",
-      "install_solar_sell"
+      "install_solar_sell",
+      "idle_grid_w",
+      "idle_work_mode",
+      "idle_energy_pattern",
+      "idle_peak_w",
+      "install_time_of_use",
+      "install_grid_charge",
+      "install_grid_charge_a",
+      "install_microinverter",
+      "install_peak_shaving",
+      "install_export_cutoff"
     ].forEach(function (key) {
       const input = document.getElementById(key);
       if (input && saved[key] != null) input.value = saved[key];
+    });
+    ["program_soc", "program_power", "program_charging"].forEach(function (key) {
+      const values = saved[key];
+      if (!Array.isArray(values)) return;
+      values.forEach(function (value, index) {
+        const input = document.getElementById(key + "_" + (index + 1));
+        if (input && value != null) input.value = value;
+      });
     });
   });
 

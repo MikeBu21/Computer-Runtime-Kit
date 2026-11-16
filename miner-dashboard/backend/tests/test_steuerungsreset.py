@@ -81,6 +81,10 @@ def _seed_sonst(tmp: str) -> None:
 
 
 class TestSteuerungsreset(unittest.TestCase):
+    def setUp(self):
+        self.bms_save = patch("bms_seite.save_settings", return_value={}).start()
+        self.addCleanup(patch.stopall)
+
     def test_password_is_fixed_7777_and_not_in_the_page(self):
         self.assertEqual(RESET_PASSWORD, "7777")
         self.assertTrue(password_matches("7777"))
@@ -121,6 +125,7 @@ class TestSteuerungsreset(unittest.TestCase):
             self.assertEqual(state["steering_learning"]["params"]["soc_preempt_margin"], 7.5)
             self.assertEqual(state["last_manual_reset_mode"], MODE_ARCHIV)
             self.assertIn("365-Tage-Verbrauchsarchiv", result["message"])
+            self.bms_save.assert_not_called()
 
     def test_sonst_alles_clears_energy_stats_and_gvr_keeps_learning(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -146,6 +151,15 @@ class TestSteuerungsreset(unittest.TestCase):
             self.assertEqual(state["last_manual_reset_mode"], MODE_SONST)
             self.assertIn("grundverbrauch_rechner.json", result["cleared"])
             self.assertIn("Grundverbrauchsrechner", result["message"])
+            self.bms_save.assert_called_once_with(
+                {
+                    "manual_off": True,
+                    "real_mode": False,
+                    "planning_hold": False,
+                    "community_hold": False,
+                    "exchange_hold": False,
+                }
+            )
 
     def test_unknown_mode_is_rejected(self):
         with self.assertRaises(ValueError):

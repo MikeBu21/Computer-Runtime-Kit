@@ -1771,17 +1771,16 @@ def forward_purchase_kw(
     daylight: Optional[bool] = None,
     max_soc_percent: float = 95.0,
 ) -> Dict[str, Any]:
-    """Dauer-Zukauf als Nacht- oder Tagplateau.
+    """Dauer-Zukauf mit PV-Wetterprognose (Open-Meteo über morgen/übermorgen).
 
     Last = Mischung aus 48 Stunden, Wochentag und 7-Tage-Mittel, mal base_load_scale.
-    Nacht = Last/24, ohne PV, auch ohne die heutige Prognose.
-    Tag = (Last − PV-Gutschrift − Speicher über dem Pufferband) / 24.
-    PV-Gutschrift am Tag = (Rest heute + 0,6×morgen + 0,4×übermorgen) × forecast_trust,
-    gedeckelt bei der Last. today_pv_kwh ist die Prognose ab jetzt, nicht das Ist
-    und nicht der Tagesertrag minus Ist. today_shortfall_kwh ist der Fehlbetrag
-    vergangener Stunden und erhöht nur den Tag-Zukauf, ohne als Gutschrift zu zählen.
-    Im Band über dem Min-SoC kommt extra = Basislast × (1 − Abstand / Bandbreite) dazu.
-    Erreicht Ladestand plus Prognose das Max-SoC, fällt der Tag-Grundwert auf 0. Der Bandzuschlag bleibt.
+    Zukauf = (Last − PV-Gutschrift − Speicher über dem Pufferband) / 24, Tag und Nacht.
+    PV-Gutschrift = (0,6×morgen + 0,4×übermorgen [+ Rest heute nur am Tag]) × forecast_trust,
+    gedeckelt bei der Last. Deckt die Prognose die Last (oder füllt bis Max-SoC), sinkt
+    der Soll Richtung 0. today_pv_kwh zählt nur bei Tageslicht; nachts nur die Vorwärtsprognose.
+    today_shortfall_kwh erhöht nur am Tag den Zukauf. Im Band über dem Min-SoC kommt
+    extra = Basislast × (1 − Abstand / Bandbreite) dazu. Einspeisung/Überschuss bleibt
+    Sache des Steuerungsalgorithmus — hier nur der Zukaufswert.
     """
     empty: Dict[str, Any] = {
         "kw": None,
@@ -1829,8 +1828,7 @@ def forward_purchase_kw(
     else:
         daylight = bool(daylight)
     today_kwh = 0.0 if today_pv_kwh is None else max(0.0, _f(today_pv_kwh))
-    # Nur am Tag. Die Nachtformel bleibt Last/24 ohne PV. Der Fehlbetrag ist
-    # keine zusätzliche Prognose: er kommt erst nach der PV-Rechnung dazu.
+    # Heutiger Rest nur am Tag. Nachts zählen nur morgen/übermorgen aus der Wetterprognose.
     shortfall_kwh = max(0.0, _f(today_shortfall_kwh)) if daylight else 0.0
     pv_blend = forward_blend + (FORWARD_PV_TODAY_W * today_kwh if daylight else 0.0)
     pv_credit = min(load_kwh, pv_blend * trust)
@@ -1841,6 +1839,7 @@ def forward_purchase_kw(
     usable = max(0.0, headroom - band_kwh)
     base_kw = load_kwh / HOURS
     extra_kw = buffer_band_extra_kw(base_kw, soc, min_soc)
+    # Referenz ohne PV (Anzeige). Der aktive Soll nutzt immer die Prognose-Gutschrift.
     p_night = base_kw + extra_kw
     p_day = max(0.0, load_kwh - pv_credit - usable) / HOURS + extra_kw
     try:
@@ -1865,17 +1864,22 @@ def forward_purchase_kw(
         if shortfall_kwh > 0.0:
             p_day = min(room_to_max, p_day + shortfall_kwh / HOURS)
     today_trusted = today_kwh * trust if daylight else 0.0
-    # Heute allein deckt die Last oder füllt bis zum Max-SoC: der Kauf ist überflüssig.
+    # Prognose deckt Last oder füllt bis Max-SoC — Kauf überflüssig (auch nachts).
     pull_down = bool(
-        daylight
-        and today_kwh > 0.0
-        and (today_trusted + 1e-9 >= load_kwh or stored_kwh + today_kwh >= max_kwh)
+        (pv_credit + 1e-9 >= load_kwh)
+        or (stored_kwh + pv_blend + 1e-9 >= max_kwh)
+        or (
+            daylight
+            and today_kwh > 0.0
+            and (today_trusted + 1e-9 >= load_kwh or stored_kwh + today_kwh >= max_kwh)
+        )
     )
-    active = p_day if daylight else p_night
+    # Immer Prognose-Pfad: bei genug PV sinkt der Zukauf Tag und Nacht.
+    active = p_day
     cap = _forward_cap_kw(recent_48h_kwh)
     held = _clamp_kw(active, 0.0, cap)
     shown = round(_round_step(held, PURCHASE_STEP_KW), 2)
-    applied_credit = pv_credit if daylight else 0.0
+    applied_credit = pv_credit
     horizon = max(1.0, float(hours_until_sun))
     return {
         "kw": shown,

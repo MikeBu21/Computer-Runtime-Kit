@@ -271,6 +271,37 @@ class ProgramAndReleaseTests(unittest.TestCase):
                 bms_seite._normalbetrieb_drift({"idle_peak_w": 12000, "install_solar_sell": 0})
             )
 
+    def test_saved_soc_below_20_is_kept_and_written_back(self):
+        self.assertEqual(bms_seite._idle_tou_soc({"idle_tou_soc": 13}), 13)
+        values = _by_addr(
+            _release_writes(
+                _item(),
+                {
+                    "program_soc": [13, 13, 13, 13, 13, 13],
+                    "program_power": [900] * 6,
+                    "program_charging": [0] * 6,
+                    "install_grid_charge": 1,
+                    "install_grid_charge_a": 15,
+                    "install_microinverter": 1,
+                    "install_time_of_use": 0,
+                },
+            )
+        )
+        self.assertEqual(values[0x00A6], 13)
+        self.assertEqual(values[0x0080], 15)
+        self.assertEqual(values[0x0082], 1)
+        self.assertEqual(values[0x0084], 1)
+        self.assertEqual(values[0x0092], 0)
+
+    def test_planning_stop_turns_register_writes_off(self):
+        settings = {"real_mode": True, "planning_hold": True, "community_hold": False, "exchange_hold": False}
+        with mock.patch("energie_steuerung.load_settings", return_value={"algorithmische_planung": False}), mock.patch.object(
+            bms_seite, "save_settings", side_effect=lambda updates: {**settings, **updates}
+        ) as save:
+            result = bms_seite.apply_planning_hold(settings)
+        save.assert_called_once_with({"real_mode": False, "planning_hold": False})
+        self.assertFalse(result["real_mode"])
+
     def test_release_restores_saved_solar_sell(self):
         values = _by_addr(_release_writes(_item(), {"install_solar_sell": 1}))
         self.assertEqual(values[0x0091], 1)
@@ -297,12 +328,17 @@ class ProgramAndReleaseTests(unittest.TestCase):
 
     def test_queue_release_if_drift_sets_pending_once(self):
         bms_seite._last_drift_release = 0.0
+        bms_seite._last_drift_check = 0.0
+        bms_seite._release_cooldown_until = 0.0
         bms_seite._release_sent = True
         settings = {"real_mode": False, "release_pending": False, "idle_peak_w": 12000}
+        fresh = dict(settings)
         with mock.patch(
             "bms_seite.read_register_state",
             return_value={"solar_sell": "on", "peak_w": "12880"},
-        ), mock.patch("bms_seite._persist_settings") as persist:
+        ), mock.patch.object(bms_seite, "load_settings", return_value=fresh), mock.patch(
+            "bms_seite._persist_settings"
+        ) as persist:
             self.assertTrue(bms_seite._queue_release_if_drift(settings))
             self.assertTrue(settings["release_pending"])
             self.assertFalse(bms_seite._release_sent)
@@ -643,7 +679,24 @@ class InstallAutocaptureTests(unittest.TestCase):
         self.assertFalse(bms_seite._install_snapshot_valid(incomplete))
         self.assertFalse(bms_seite._install_snapshot_valid(self._missing()))
 
+    def test_locked_release_does_not_block_reread(self):
+        bms_seite._reset_install_autocapture()
+        bms_seite._clear_release_block()
+        settings = self._missing()
+        settings["release_pending"] = True
+        settings["real_mode"] = False
+        bms_seite._release_block_key = bms_seite._release_settings_key(settings)
+        bms_seite._release_block_gap = ("on", "12880")
+        self.assertFalse(bms_seite._bms_is_writing(settings))
+        with mock.patch.object(
+            bms_seite, "capture_install_from_inverter", return_value={"ok": False, "message": "später"}
+        ) as capture, mock.patch.object(bms_seite, "load_settings", return_value=dict(settings)):
+            bms_seite.maybe_autocapture_install(dict(settings))
+        capture.assert_called_once()
+        bms_seite._clear_release_block()
+
     def test_no_read_while_real_mode_or_release_pending(self):
+        bms_seite._clear_release_block()
         for flag in ("real_mode", "release_pending"):
             bms_seite._reset_install_autocapture()
             settings = self._missing()
@@ -658,13 +711,23 @@ class InstallAutocaptureTests(unittest.TestCase):
 
         blocked = self._missing()
         blocked["real_mode"] = True
+        blocked["modbus_host"] = "192.168.1.176"
+        blocked["logger_serial"] = 123
+
+        def raw_read(_settings, _serial, address):
+            if address == bms_seite.REG_PROGRAM_SOC:
+                return 13
+            return 1
+
         with mock.patch.object(bms_seite, "load_settings", return_value=blocked), mock.patch.object(
-            bms_seite, "_read_holding_retry"
-        ) as read:
+            bms_seite, "_read_holding_retry", side_effect=raw_read
+        ) as read, mock.patch.object(bms_seite, "save_settings") as save:
             result = bms_seite.capture_install_from_inverter()
-        read.assert_not_called()
-        self.assertFalse(result["ok"])
-        self.assertTrue(result["skipped"])
+        self.assertTrue(read.called)
+        save.assert_not_called()
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["saved"])
+        self.assertEqual(result["settings"]["program_soc"][0], 13)
 
     def test_failed_read_retries_once_later_not_every_tick(self):
         missing = self._missing()
@@ -951,6 +1014,286 @@ class SocImportRampTests(unittest.TestCase):
             settings, {"soc_percent": 39}, planning_on=True, now=afternoon
         )
         self.assertEqual(kw, 1.52)
+
+
+class ReleaseLoopAndTrackerTests(unittest.TestCase):
+    def tearDown(self):
+        bms_seite._release_cooldown_until = 0.0
+        bms_seite._last_drift_check = 0.0
+        bms_seite._last_drift_release = 0.0
+        bms_seite._clear_release_block()
+
+    def test_drift_does_not_restart_a_failed_release(self):
+        settings = {"real_mode": False, "release_pending": False, "idle_peak_w": 12000, "install_solar_sell": 0}
+        regs = {"solar_sell": "on", "peak_w": "12880"}
+        bms_seite._release_block_key = bms_seite._release_settings_key(settings)
+        bms_seite._release_block_gap = bms_seite._observed_gap(regs)
+        bms_seite._last_drift_check = 0.0
+        bms_seite._release_cooldown_until = 0.0
+        with mock.patch("bms_seite.read_register_state", return_value=regs):
+            self.assertFalse(bms_seite._queue_release_if_drift(settings))
+        self.assertFalse(settings["release_pending"])
+
+    def test_three_failures_lock_an_unchanged_release(self):
+        bms_seite._clear_release_block()
+        bms_seite._release_attempts = 2
+        bms_seite._release_sent = False
+        bms_seite._needs_release = True
+        bms_seite._last_drift_check = 0.0
+        settings = {
+            "real_mode": False,
+            "release_pending": True,
+            "inverter": "deye_hybrid",
+            "modbus_host": "192.168.1.176",
+            "modbus_port": 8899,
+            "modbus_unit": 1,
+            "known_entry_ids": [],
+            "idle_peak_w": 12000,
+            "install_solar_sell": 0,
+            "idle_work_mode": 2,
+            "idle_energy_pattern": 1,
+        }
+        regs = {"solar_sell": "on", "peak_w": "12880"}
+        with mock.patch.object(bms_seite, "resolve_ha_link", return_value=None), mock.patch.object(
+            bms_seite, "_send_verified", return_value={"command_sent": False, "write_text": "fehlgeschlagen"}
+        ), mock.patch.object(bms_seite, "_read_peak_flags", return_value=1), mock.patch.object(
+            bms_seite, "read_register_state", return_value=regs
+        ), mock.patch.object(bms_seite, "_persist_release_flag"):
+            result = bms_seite.apply_write(settings, {"target_grid_kw": 0})
+        self.assertIn("Freigabe abgebrochen", result.get("write_text") or "")
+        self.assertFalse(settings["release_pending"])
+        self.assertTrue(bms_seite._release_loop_locked(settings, regs))
+        bms_seite._last_drift_check = 0.0
+        with mock.patch.object(bms_seite, "read_register_state", return_value=regs):
+            self.assertFalse(bms_seite._queue_release_if_drift(settings))
+        self.assertFalse(settings["release_pending"])
+
+    def test_changed_setpoint_lets_drift_queue_again(self):
+        bms_seite._clear_release_block()
+        bms_seite._last_drift_check = 0.0
+        bms_seite._release_sent = True
+        locked = {
+            "real_mode": False,
+            "release_pending": False,
+            "idle_peak_w": 12000,
+            "install_solar_sell": 0,
+        }
+        regs = {"solar_sell": "on", "peak_w": "12880"}
+        bms_seite._release_block_key = bms_seite._release_settings_key(locked)
+        bms_seite._release_block_gap = bms_seite._observed_gap(regs)
+        changed = dict(locked)
+        changed["idle_peak_w"] = 8000
+        fresh = dict(changed)
+        with mock.patch.object(bms_seite, "read_register_state", return_value=regs), mock.patch.object(
+            bms_seite, "load_settings", return_value=fresh
+        ), mock.patch.object(bms_seite, "_persist_settings"):
+            self.assertTrue(bms_seite._queue_release_if_drift(changed))
+        self.assertTrue(changed["release_pending"])
+
+    def test_manual_off_clears_hold_flags(self):
+        data = bms_seite.default_settings()
+        data["real_mode"] = True
+        data["manual_off"] = False
+        data["planning_hold"] = True
+        data["community_hold"] = True
+        data["exchange_hold"] = True
+        data["modbus_host"] = ""
+        with mock.patch.object(bms_seite, "load_settings", return_value=data), mock.patch.object(
+            bms_seite, "_persist_settings"
+        ), mock.patch.object(bms_seite, "_apply_ha_link", side_effect=lambda item: item):
+            saved = bms_seite.save_settings({"real_mode": False, "manual_off": True})
+        self.assertTrue(saved["manual_off"])
+        self.assertFalse(saved["real_mode"])
+        self.assertFalse(saved["planning_hold"])
+        self.assertFalse(saved["community_hold"])
+        self.assertFalse(saved["exchange_hold"])
+
+    def test_drift_does_not_read_registers_every_tick(self):
+        bms_seite._release_cooldown_until = 0.0
+        bms_seite._last_drift_check = bms_seite.time.monotonic()
+        settings = {"real_mode": False, "release_pending": False}
+        with mock.patch("bms_seite.read_register_state") as read:
+            self.assertFalse(bms_seite._queue_release_if_drift(settings))
+        read.assert_not_called()
+
+    def test_manual_off_keeps_writing_off(self):
+        settings = {
+            "manual_off": True,
+            "real_mode": False,
+            "planning_hold": True,
+            "community_hold": False,
+            "exchange_hold": False,
+        }
+
+        def remember(updates):
+            merged = dict(settings)
+            merged.update(updates)
+            return merged
+
+        with mock.patch.object(bms_seite, "save_settings", side_effect=remember) as save:
+            result = bms_seite.apply_planning_hold(settings)
+        save.assert_called_once_with(
+            {
+                "real_mode": False,
+                "planning_hold": False,
+                "community_hold": False,
+                "exchange_hold": False,
+            }
+        )
+        self.assertFalse(result["real_mode"])
+        self.assertFalse(result["planning_hold"])
+
+    def test_missing_logger_does_not_drop_the_new_ip(self):
+        settings = bms_seite.default_settings()
+        settings["logger_ip"] = "10.0.0.10"
+        settings["modbus_host"] = "10.0.0.10"
+        settings["logger_mac"] = "74:e9:d8:3a:a0:fc"
+        settings["tracked_inverters"] = [
+            {
+                "mac": "74:e9:d8:3a:a0:fc",
+                "ip": "10.0.0.10",
+                "serial": 1,
+                "control": True,
+                "tracked_at": "alt",
+            }
+        ]
+        with mock.patch.object(bms_seite, "load_settings", return_value=settings), mock.patch.object(
+            bms_seite, "discover_loggers", return_value=[]
+        ), mock.patch.object(bms_seite, "discover_logger", return_value=None), mock.patch.object(
+            bms_seite, "_persist_settings"
+        ):
+            result = bms_seite.refresh_tracked_inverters()
+        self.assertEqual(settings["logger_ip"], "10.0.0.10")
+        self.assertEqual(settings["modbus_host"], "10.0.0.10")
+        self.assertEqual(settings["tracked_inverters"][0]["tracked_at"], "alt")
+        self.assertEqual(result["missing"], ["74:e9:d8:3a:a0:fc"])
+        self.assertFalse(result["ok"])
+
+    def test_found_logger_ip_is_written_through(self):
+        settings = bms_seite.default_settings()
+        settings["logger_ip"] = "192.168.1.176"
+        settings["modbus_host"] = "192.168.1.176"
+        settings["logger_mac"] = "74:e9:d8:3a:a0:fc"
+        settings["logger_serial"] = 5
+        settings["tracked_inverters"] = [
+            {
+                "mac": "74:e9:d8:3a:a0:fc",
+                "ip": "192.168.1.176",
+                "serial": 5,
+                "control": True,
+                "tracked_at": "alt",
+            }
+        ]
+        found = {"ip": "10.0.0.10", "mac": "74:e9:d8:3a:a0:fc", "serial": 5}
+        with mock.patch.object(bms_seite, "load_settings", return_value=settings), mock.patch.object(
+            bms_seite, "discover_loggers", return_value=[found]
+        ), mock.patch.object(
+            bms_seite, "sync_logger_to_ha", return_value={"ok": True, "message": "ok"}
+        ), mock.patch.object(bms_seite, "_persist_settings"):
+            result = bms_seite.refresh_tracked_inverters()
+        self.assertTrue(result["changed_control"])
+        self.assertEqual(settings["logger_ip"], "10.0.0.10")
+        self.assertEqual(settings["modbus_host"], "10.0.0.10")
+        self.assertEqual(settings["tracked_inverters"][0]["ip"], "10.0.0.10")
+
+    def test_save_keeps_the_old_ip_when_the_mac_is_not_confirmed(self):
+        data = bms_seite.default_settings()
+        data["modbus_host"] = "192.168.1.176"
+        data["logger_ip"] = "192.168.1.176"
+        data["logger_mac"] = "d4:27:87:0a:d7:b4"
+        data["tracked_inverters"] = [
+            {"control": True, "mac": "d4:27:87:0a:d7:b4", "ip": "192.168.1.176", "serial": 1}
+        ]
+        with mock.patch.object(bms_seite, "load_settings", return_value=data), mock.patch.object(
+            bms_seite, "_apply_ha_link", side_effect=lambda item: item
+        ), mock.patch.object(bms_seite, "_persist_settings"), mock.patch.object(
+            bms_seite, "_confirm_logger_at_ip", return_value=None
+        ), mock.patch.object(bms_seite, "sync_logger_to_ha") as sync, mock.patch.object(
+            bms_seite, "track_logger", return_value={"ok": False}
+        ) as track:
+            saved = bms_seite.save_settings({"modbus_host": "10.0.0.10"})
+        self.assertEqual(saved["modbus_host"], "192.168.1.176")
+        self.assertEqual(saved["logger_mac"], "d4:27:87:0a:d7:b4")
+        self.assertEqual(data["tracked_inverters"][0]["ip"], "192.168.1.176")
+        sync.assert_not_called()
+        track.assert_not_called()
+
+    def test_confirm_uses_probe_or_arp_at_the_entered_ip(self):
+        probed = {"ip": "10.0.0.10", "mac": "74:e9:d8:3a:a0:fc", "serial": 5, "port": 8899}
+        with mock.patch.object(bms_seite, "_unicast_discover", return_value=probed), mock.patch.object(
+            bms_seite, "_arp_mac_for_ip", return_value="74:e9:d8:3a:a0:fc"
+        ):
+            found = bms_seite._confirm_logger_at_ip("10.0.0.10")
+        self.assertEqual(found["mac"], "74:e9:d8:3a:a0:fc")
+        self.assertEqual(found["ip"], "10.0.0.10")
+        with mock.patch.object(bms_seite, "_unicast_discover", return_value=None), mock.patch.object(
+            bms_seite, "_arp_mac_for_ip", return_value="74:e9:d8:3a:a0:fc"
+        ):
+            found = bms_seite._confirm_logger_at_ip("10.0.0.10")
+        self.assertEqual(found["mac"], "74:e9:d8:3a:a0:fc")
+        with mock.patch.object(bms_seite, "_unicast_discover", return_value=probed), mock.patch.object(
+            bms_seite, "_arp_mac_for_ip", return_value="d4:27:87:0a:d7:b4"
+        ):
+            self.assertIsNone(bms_seite._confirm_logger_at_ip("10.0.0.10"))
+        with mock.patch.object(bms_seite, "_unicast_discover", return_value=None), mock.patch.object(
+            bms_seite, "_arp_mac_for_ip", return_value=""
+        ):
+            self.assertIsNone(bms_seite._confirm_logger_at_ip("10.0.0.10"))
+
+    def test_arp_lookup_reads_the_mac_for_that_ip_only(self):
+        text = (
+            "IP address       HW type     Flags       HW address            Mask     Device\n"
+            "192.168.1.176    0x1         0x2         d4:27:87:0a:d7:b4     *        eth0\n"
+            "10.0.0.10        0x1         0x0         00:00:00:00:00:00     *        eth0\n"
+        )
+        with mock.patch.object(bms_seite.Path, "read_text", return_value=text):
+            self.assertEqual(bms_seite._arp_mac_for_ip("192.168.1.176"), "d4:27:87:0a:d7:b4")
+            self.assertEqual(bms_seite._arp_mac_for_ip("10.0.0.10"), "")
+            self.assertEqual(bms_seite._arp_mac_for_ip("10.0.0.11"), "")
+
+    def test_entered_ip_is_stored_only_after_mac_and_ha_agree(self):
+        settings = bms_seite.default_settings()
+        settings["modbus_host"] = "192.168.1.176"
+        settings["logger_ip"] = "192.168.1.176"
+        settings["logger_mac"] = "d4:27:87:0a:d7:b4"
+        settings["tracked_inverters"] = [
+            {"control": True, "mac": "d4:27:87:0a:d7:b4", "ip": "192.168.1.176", "serial": 1}
+        ]
+        found = {"ip": "10.0.0.10", "mac": "74:e9:d8:3a:a0:fc", "serial": 5, "port": 8899}
+        with mock.patch.object(bms_seite, "load_settings", return_value=settings), mock.patch.object(
+            bms_seite, "_confirm_logger_at_ip", return_value=None
+        ), mock.patch.object(bms_seite, "_persist_settings") as persist:
+            refused = bms_seite.add_tracked_inverter("", "Wechselrichter", 0, host="10.0.0.10")
+        self.assertFalse(refused["ok"])
+        persist.assert_not_called()
+        self.assertEqual(settings["logger_mac"], "d4:27:87:0a:d7:b4")
+        self.assertEqual(settings["modbus_host"], "192.168.1.176")
+
+        with mock.patch.object(bms_seite, "load_settings", return_value=settings), mock.patch.object(
+            bms_seite, "_confirm_logger_at_ip", return_value=found
+        ), mock.patch.object(
+            bms_seite, "sync_logger_to_ha", return_value={"ok": False, "message": "kein Eintrag"}
+        ) as sync, mock.patch.object(bms_seite, "_persist_settings") as persist:
+            blocked = bms_seite.add_tracked_inverter("", "Wechselrichter", 0, host="10.0.0.10")
+        self.assertFalse(blocked["ok"])
+        persist.assert_not_called()
+        sync.assert_called_once_with("10.0.0.10", "74:e9:d8:3a:a0:fc", 5)
+        self.assertEqual(settings["modbus_host"], "192.168.1.176")
+
+        with mock.patch.object(bms_seite, "load_settings", return_value=settings), mock.patch.object(
+            bms_seite, "_confirm_logger_at_ip", return_value=found
+        ), mock.patch.object(
+            bms_seite, "sync_logger_to_ha", return_value={"ok": True, "message": "aktualisiert"}
+        ) as sync, mock.patch.object(bms_seite, "_persist_settings") as persist:
+            saved = bms_seite.add_tracked_inverter("", "Wechselrichter", 0, host="10.0.0.10")
+        self.assertTrue(saved["ok"])
+        persist.assert_called_once()
+        sync.assert_called_once_with("10.0.0.10", "74:e9:d8:3a:a0:fc", 5)
+        self.assertEqual(settings["modbus_host"], "10.0.0.10")
+        self.assertEqual(settings["logger_ip"], "10.0.0.10")
+        self.assertEqual(settings["logger_mac"], "74:e9:d8:3a:a0:fc")
+        self.assertEqual(settings["tracked_inverters"][0]["ip"], "10.0.0.10")
+        self.assertEqual(settings["tracked_inverters"][0]["mac"], "74:e9:d8:3a:a0:fc")
 
 
 if __name__ == "__main__":
