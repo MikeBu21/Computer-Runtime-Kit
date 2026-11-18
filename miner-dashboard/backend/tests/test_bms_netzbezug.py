@@ -1154,6 +1154,10 @@ class SocImportRampTests(unittest.TestCase):
     def test_planning_off_blocks_grid_import(self):
         morning = bms_seite.datetime(2026, 11, 14, 10, 0, tzinfo=bms_seite.TZ)
         settings = self._settings_sockel(12000, sockel=20, target_kw=0.4)
+        settings["real_mode"] = False
+        settings["planning_hold"] = False
+        settings["community_hold"] = False
+        settings["exchange_hold"] = False
         with mock.patch.object(bms_seite, "save_settings") as save, mock.patch.object(
             bms_seite, "capture_install_from_inverter"
         ) as capture, mock.patch.object(bms_seite, "load_settings") as load:
@@ -1173,6 +1177,46 @@ class SocImportRampTests(unittest.TestCase):
         save.assert_not_called()
         capture.assert_not_called()
         load.assert_not_called()
+
+    def test_active_write_keeps_target_when_planning_switch_is_off(self):
+        morning = bms_seite.datetime(2026, 11, 14, 10, 0, tzinfo=bms_seite.TZ)
+        settings = self._settings_sockel(12000, sockel=20, target_kw=1.5)
+        settings["real_mode"] = True
+        settings["planning_hold"] = True
+        kw = bms_seite.soll_netzbezug_kw(
+            settings, {"soc_percent": 50}, planning_on=False, now=morning
+        )
+        self.assertEqual(kw, 1.5)
+
+    def test_planning_hold_starts_from_grundverbrauch_when_write_was_off(self):
+        settings = {
+            "real_mode": False,
+            "planning_hold": False,
+            "community_hold": False,
+            "exchange_hold": False,
+            "manual_off": False,
+            "soc_stop": False,
+            "target_grid_kw": 0.0,
+        }
+
+        def remember(updates):
+            merged = dict(settings)
+            merged.update(updates)
+            settings.update(merged)
+            return merged
+
+        with mock.patch(
+            "energie_steuerung.load_settings", return_value={"algorithmische_planung": True}
+        ), mock.patch(
+            "grundverbrauch_rechner.recommended_import_kw", return_value=1.5
+        ), mock.patch.object(bms_seite, "save_settings", side_effect=remember) as save:
+            started = bms_seite.apply_planning_hold(settings, {"soc_percent": 50})
+        save.assert_called_once_with(
+            {"real_mode": True, "target_grid_kw": 1.5, "planning_hold": True}
+        )
+        self.assertTrue(started["real_mode"])
+        self.assertTrue(started["planning_hold"])
+        self.assertEqual(started["target_grid_kw"], 1.5)
 
 
 class ReleaseLoopAndTrackerTests(unittest.TestCase):

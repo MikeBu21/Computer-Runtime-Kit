@@ -4488,19 +4488,27 @@ def soll_netzbezug_kw(
 ) -> float:
     """Soll-Netzbezug, bevor apply_write schreibt. Schreibt selbst nicht.
 
-    Ohne „Planung, keine Netzspitzen“: kein Zukauf (0).
-    Mit Planung: nur der Planungswert aus dem Grundverbrauchsrechner.
+    Ohne „Planung, keine Netzspitzen“ und ohne aktives Schreiben: kein Zukauf (0).
+    Mit Planung oder wenn real_mode / ein Halt schon läuft: der gespeicherte
+    target_grid_kw (Planung, Gemeinschaft, Börse oder manuell).
     Die SoC-Fall-Rampe bis zum maximalen Netzbezug ist entfernt.
     Das Modbus-Schreiben bleibt an real_mode („Ins Register schreiben“) gebunden.
     """
     del live, now
-    if not planning_on:
-        return 0.0
     data = settings or {}
     try:
-        return max(0.0, float(data.get("target_grid_kw") or 0))
+        base = max(0.0, float(data.get("target_grid_kw") or 0))
     except (TypeError, ValueError):
         return 0.0
+    active = bool(
+        data.get("real_mode")
+        or data.get("planning_hold")
+        or data.get("community_hold")
+        or data.get("exchange_hold")
+    )
+    if not planning_on and not active:
+        return 0.0
+    return base
 
 
 _mac_tracker_started = False
@@ -4738,13 +4746,10 @@ def _ensure_writer() -> None:
                 settings = apply_community_hold(settings)
                 if not settings.get("community_hold"):
                     settings = apply_exchange_hold(settings)
-                # Planung führt einen laufenden Halt weiter. Ausgeschaltetes Schreiben
-                # (real_mode und planning_hold aus) schaltet sie nicht von selbst wieder ein.
-                if (
-                    not settings.get("community_hold")
-                    and not settings.get("exchange_hold")
-                    and (settings.get("planning_hold") or settings.get("real_mode"))
-                ):
+                # Planung prüft den Grundverbrauchsrechner bei jedem Tick. Ab 0,2 kW
+                # setzt sie target_grid_kw und schaltet real_mode ein, auch wenn beides
+                # vorher aus war. Ausgeschalteter Schalter „keine Netzspitzen“ gibt frei.
+                if not settings.get("community_hold") and not settings.get("exchange_hold"):
                     settings = apply_planning_hold(settings, live)
                 if settings.get("real_mode"):
                     reapply_dauerzukauf_test()
