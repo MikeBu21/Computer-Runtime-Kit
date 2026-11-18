@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from datetime import date
 from io import BytesIO
 from pathlib import Path
@@ -29,8 +30,145 @@ _FONT_BOLD = (
 )
 
 
+# Hinweis plus optionale kW-Eingabe. Speichert nur den Merker, schreibt keine Register.
+MEHRBEDARF_INFO_TEXT = (
+    "Morgen scheint die Sonne, und genau dann zählt dein Mehrbedarf. "
+    "Wie viele Kilowatt brauchst du morgen tagsüber mehr als sonst?"
+)
+MEHRBEDARF_PROMPT_TEXT = (
+    MEHRBEDARF_INFO_TEXT
+    + "\n\nBitte antworte mit einer Zahl in kW, zum Beispiel 10 oder 2,5. "
+    "Zum Abbrechen /cancel."
+)
+MEHRBEDARF_FILE = "mehrbedarf_morgen.json"
+
+
+def format_mehrbedarf_info_message() -> str:
+    """Frage für den Info-Button Mehrbedarf morgen."""
+    return MEHRBEDARF_INFO_TEXT
+
+
+def format_mehrbedarf_prompt_message(current_kw: Optional[float] = None) -> str:
+    """Frage plus Eingabehinweis. Optional mit bisher gespeichertem Wert."""
+    text = MEHRBEDARF_PROMPT_TEXT
+    if current_kw is not None:
+        text += f"\nBisher gespeichert: {format_kw(current_kw)}."
+    return text
+
+
+def format_kw(value: Optional[float]) -> str:
+    if value is None:
+        return "nicht gesetzt"
+    text = f"{float(value):.2f}".rstrip("0").rstrip(".")
+    return text.replace(".", ",") + " kW"
+
+
+def format_mehrbedarf_saved_message(kw: float) -> str:
+    """Kurze Bestätigung, nachdem eine kW-Zahl übernommen wurde."""
+    return (
+        f"Danke für die Übernahme. {format_kw(kw)} sind notiert. "
+        "Wir werden uns drum kümmern, dass der Speicher morgen gefüllt bzw. bereitsteht."
+    )
+
+
+def _mehrbedarf_path(base_dir: str) -> Path:
+    return Path(base_dir) / "energy_monitor" / MEHRBEDARF_FILE
+
+
+def load_mehrbedarf_record(base_dir: str) -> Dict[str, Optional[float]]:
+    path = _mehrbedarf_path(base_dir)
+    empty: Dict[str, Optional[float]] = {"kw": None, "override_kw": None}
+    if not path.is_file():
+        return empty
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return empty
+    if not isinstance(raw, dict):
+        return empty
+    return {
+        "kw": parse_mehrbedarf_kw(raw.get("kw")),
+        "override_kw": parse_mehrbedarf_kw(raw.get("override_kw")),
+    }
+
+
+def load_mehrbedarf_kw(base_dir: str) -> Optional[float]:
+    return load_mehrbedarf_record(base_dir).get("kw")
+
+
+def save_mehrbedarf_kw(
+    base_dir: str,
+    kw: float,
+    override_kw: Any = None,
+    *,
+    set_override: bool = False,
+) -> float:
+    value = parse_mehrbedarf_kw(kw)
+    if value is None:
+        raise ValueError("Ungültiger Mehrbedarf.")
+    current = load_mehrbedarf_record(base_dir)
+    override = current.get("override_kw")
+    if set_override:
+        if override_kw in (None, "", "nein", "none"):
+            override = None
+        else:
+            override = parse_mehrbedarf_kw(override_kw)
+            if override is None:
+                raise ValueError("Ungültige Übersteuerung.")
+    path = _mehrbedarf_path(base_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "kw": value,
+        "override_kw": override,
+        "updated_at": date.today().isoformat(),
+    }
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    return value
+
+
+def _mehrbedarf_sentence(text: str) -> bool:
+    return any(token in text for token in ("kw", "kilowatt", "mehrbedarf", "brauche"))
+
+
+def parse_mehrbedarf_kw(raw: Any) -> Optional[float]:
+    """kW aus einer Zahl oder einem Satz. Die letzte Zahl im Satz gilt.
+
+    Komma oder Punkt, nicht negativ, höchstens 1000. Ein neuer Aufruf ersetzt
+    den vorherigen Wert, es bleibt kein älterer Mehrbedarf stehen.
+    """
+    if raw is None or raw is False:
+        return None
+    text = str(raw).strip().lower()
+    if not text:
+        return None
+    compact = text.replace("kilowatt", "").replace("kw", "").replace(" ", "").replace(",", ".")
+    try:
+        value = float(compact)
+    except (TypeError, ValueError):
+        if not _mehrbedarf_sentence(text):
+            return None
+        numbers = re.findall(r"\d+(?:[.,]\d+)?", text)
+        if not numbers:
+            return None
+        try:
+            value = float(numbers[-1].replace(",", "."))
+        except (TypeError, ValueError):
+            return None
+    if value < 0 or value > 1000:
+        return None
+    return round(value, 2)
+
+
+def record_latest_mehrbedarf(base_dir: str, text: Any) -> Optional[float]:
+    """Übernimmt nur die jüngste kW-Angabe und verwirft die davor gespeicherte."""
+    value = parse_mehrbedarf_kw(text)
+    if value is None:
+        return None
+    return save_mehrbedarf_kw(base_dir, value)
+
+
 def classify_energy_command(text: str) -> Optional[str]:
-    """today, tomorrow oder chart. Unbekannter Text ergibt None."""
+    """today, tomorrow, chart oder mehrbedarf. Unbekannter Text ergibt None."""
     raw = (text or "").strip().lower()
     if raw.startswith("/"):
         raw = raw[1:]
@@ -51,6 +189,9 @@ def classify_energy_command(text: str) -> Optional[str]:
         "statistik": "chart",
         "energiestatistik": "chart",
         "energie statistik": "chart",
+        "mehrbedarf morgen": "mehrbedarf",
+        "mehrbedarf": "mehrbedarf",
+        "info mehrbedarf": "mehrbedarf",
     }
     return aliases.get(raw)
 

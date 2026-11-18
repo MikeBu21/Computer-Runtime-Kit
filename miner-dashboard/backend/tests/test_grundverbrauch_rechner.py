@@ -998,5 +998,368 @@ class LockTests(unittest.TestCase):
         self.assertEqual(nxt["weekly_kw"], 2.0)
 
 
+class SafetyCorrectionTests(unittest.TestCase):
+    """Sicherheitszuschlag: Takt, Teiler, kumulative Korrektur."""
+
+    def test_normalize_interval_and_divisor(self):
+        from grundverbrauch_rechner import (
+            SAFETY_DIVISOR_DEFAULT,
+            SAFETY_INTERVAL_DEFAULT_MINUTES,
+            normalize_safety_divisor,
+            normalize_safety_interval_minutes,
+            safety_interval_minutes_from_input,
+        )
+
+        self.assertEqual(normalize_safety_interval_minutes(1), 1)
+        self.assertEqual(normalize_safety_interval_minutes(7), 7)
+        self.assertEqual(normalize_safety_interval_minutes(180), 180)
+        self.assertEqual(
+            normalize_safety_interval_minutes(0), SAFETY_INTERVAL_DEFAULT_MINUTES
+        )
+        self.assertEqual(safety_interval_minutes_from_input(2, "hours"), 120)
+        self.assertEqual(safety_interval_minutes_from_input(2, "Stunden"), 120)
+        self.assertEqual(safety_interval_minutes_from_input(90, "minutes"), 90)
+        self.assertEqual(normalize_safety_divisor(24), 24.0)
+        self.assertEqual(normalize_safety_divisor(8), 8.0)
+        self.assertEqual(normalize_safety_divisor(0), SAFETY_DIVISOR_DEFAULT)
+        self.assertEqual(normalize_safety_divisor(999), SAFETY_DIVISOR_DEFAULT)
+
+    def test_saved_safety_interval_survives_reload(self):
+        """Seitenwechsel lädt den Bericht neu und darf den Takt nicht auf 60 setzen."""
+        import json
+        import tempfile
+        from pathlib import Path
+
+        from grundverbrauch_rechner import _load_state, _save_state, _state_path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "energy_monitor"
+            folder.mkdir()
+            path = _state_path(tmp)
+            _save_state(
+                path,
+                {
+                    "assumptions": {},
+                    "recommendation": {"weekly_kw": 0.4},
+                    "targets": {
+                        "soc_hold_enabled": False,
+                        "soc_hold_percent": 5.0,
+                        "soc_hold_horizon_hours": 24,
+                        "weather_adjust_enabled": True,
+                        "safety_enabled": True,
+                        "safety_interval_minutes": 9,
+                        "safety_divisor": 12,
+                    },
+                },
+            )
+            loaded = _load_state(path)
+            self.assertEqual(loaded["targets"]["safety_interval_minutes"], 9)
+            self.assertEqual(loaded["targets"]["safety_divisor"], 12.0)
+            # Wie get_report beim erneuten Öffnen: Stand laden und wieder schreiben.
+            _save_state(path, loaded)
+            again = _load_state(path)
+            self.assertEqual(again["targets"]["safety_interval_minutes"], 9)
+            self.assertEqual(again["targets"]["safety_divisor"], 12.0)
+            # Ein Schreiber ohne die neuen Felder darf den gespeicherten Takt nicht löschen.
+            stale = {
+                "targets": {
+                    "soc_hold_enabled": False,
+                    "soc_hold_percent": 5.0,
+                    "soc_hold_horizon_hours": 24,
+                    "weather_adjust_enabled": True,
+                }
+            }
+            _save_state(path, stale)
+            kept = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(kept["targets"]["safety_interval_minutes"], 9)
+            self.assertEqual(kept["targets"]["safety_divisor"], 12.0)
+
+    def test_safety_base_uses_pv_trust_and_band_relief(self):
+        from grundverbrauch_rechner import FORWARD_BUFFER_BAND_PCT, HOURS, forward_purchase_kw
+
+        out = forward_purchase_kw(
+            soc_percent=80,
+            storage_kwh=41,
+            min_soc_percent=35,
+            daily_base_kwh=24.0,
+            base_load_scale=1.0,
+            tomorrow_pv_kwh=8.9,
+            day_after_pv_kwh=30.0,
+            forecast_trust=0.85,
+            hours_until_sun=6,
+            daylight=False,
+        )
+        blend = 0.6 * 8.9 + 0.4 * 30.0
+        headroom = (80 - 35) / 100.0 * 41
+        usable = headroom - (FORWARD_BUFFER_BAND_PCT / 100.0 * 41)
+        expected = round((blend * 0.85 + usable) / HOURS, 3)
+        self.assertAlmostEqual(out["safety_base_kw"], expected, places=3)
+        self.assertNotEqual(out["kw"], out["safety_base_kw"])
+        with_house = forward_purchase_kw(
+            soc_percent=80,
+            storage_kwh=41,
+            min_soc_percent=35,
+            daily_base_kwh=24.0,
+            base_load_scale=1.0,
+            tomorrow_pv_kwh=8.9,
+            day_after_pv_kwh=30.0,
+            forecast_trust=0.85,
+            hours_until_sun=6,
+            daylight=False,
+            house_kwh=blend * 0.85 + usable + 5.0,
+        )
+        self.assertEqual(with_house["safety_base_kw"], 0.0)
+        self.assertEqual(with_house["kw"], out["kw"])
+
+    def test_safety_house_is_rest_of_today_plus_all_of_tomorrow(self):
+        from datetime import datetime
+
+        from grundverbrauch_rechner import HOURS, safety_feed_kw, safety_horizon_house_kwh
+
+        now = datetime(2026, 11, 18, 20, 35, 0)
+        today = [0.0] * 24
+        today[20] = 1.2
+        today[21] = 1.0
+        today[22] = 0.8
+        today[23] = 0.6
+        tomorrow = [0.5] * 24
+        house = safety_horizon_house_kwh(today, tomorrow, now)
+        rest_tonight = 1.2 * (25.0 / 60.0) + 1.0 + 0.8 + 0.6
+        self.assertAlmostEqual(house, round(rest_tonight + 12.0, 4), places=4)
+        credited = 28.619
+        self.assertEqual(
+            safety_feed_kw(0.0, 0.85, credited, house),
+            round(max(0.0, credited - house) / HOURS, 3),
+        )
+        self.assertGreater(safety_feed_kw(0.0, 0.85, credited, house), 0.0)
+
+    def test_rest_display_uses_day_reliability_and_not_the_purchase(self):
+        from grundverbrauch_rechner import (
+            HOURS,
+            NEW_RISK_DAY_AFTER_RELIABILITY,
+            NEW_RISK_TOMORROW_RELIABILITY,
+            forward_purchase_kw,
+            new_risk_model_kw,
+        )
+
+        self.assertEqual(NEW_RISK_TOMORROW_RELIABILITY, 0.80)
+        self.assertEqual(NEW_RISK_DAY_AFTER_RELIABILITY, 0.60)
+        tomorrow, after, relief, load = 8.94, 30.97, 13.94, 18.14
+        covered = max(0.0, load - (0.80 * tomorrow + 0.60 * after) - relief) / HOURS
+        self.assertEqual(new_risk_model_kw(load, tomorrow, after, relief), round(covered, 3))
+        self.assertEqual(round(covered, 3), 0.0)
+        short = new_risk_model_kw(50.0, tomorrow, after, relief)
+        self.assertAlmostEqual(
+            short,
+            round(max(0.0, 50.0 - (0.80 * tomorrow + 0.60 * after) - relief) / HOURS, 3),
+            places=3,
+        )
+        self.assertGreater(short, 0.0)
+        out = forward_purchase_kw(
+            soc_percent=79,
+            storage_kwh=41,
+            min_soc_percent=35,
+            daily_base_kwh=18.11,
+            base_load_scale=1.0,
+            tomorrow_pv_kwh=tomorrow,
+            day_after_pv_kwh=after,
+            forecast_trust=0.85,
+            hours_until_sun=10,
+            daylight=False,
+        )
+        blend = 0.6 * tomorrow + 0.4 * after
+        headroom = (79 - 35) / 100.0 * 41
+        usable = headroom - 0.10 * 41
+        self.assertEqual(out["new_risk_kw"], 0.0)
+        self.assertAlmostEqual(out["safety_base_kw"], round((blend * 0.85 + usable) / HOURS, 3), places=3)
+        self.assertGreater(out["safety_base_kw"], 0.0)
+
+    def test_mehrbedarf_counts_only_in_daylight_and_only_on_safety_fields(self):
+        from datetime import datetime
+
+        from grundverbrauch_rechner import (
+            apply_mehrbedarf_to_safety_fields,
+            mehrbedarf_day_share_kw,
+            mehrbedarf_window_hours,
+        )
+
+        now = datetime(2026, 11, 18, 20, 54, 0)
+        end = datetime(2026, 11, 20, 0, 0, 0)
+        hours = (end - now).total_seconds() / 3600.0
+        self.assertAlmostEqual(mehrbedarf_window_hours(now), hours, places=6)
+        self.assertAlmostEqual(hours, 27.1, places=6)
+        self.assertEqual(mehrbedarf_day_share_kw(None, now), 0.0)
+        self.assertEqual(mehrbedarf_day_share_kw(0, now), 0.0)
+        share = 10.0 / hours
+        self.assertAlmostEqual(mehrbedarf_day_share_kw(10, now), share, places=6)
+        self.assertAlmostEqual(mehrbedarf_day_share_kw(100, now), 100.0 / hours, places=6)
+        base, deviation, shown = apply_mehrbedarf_to_safety_fields(1.5, 0.25, 10, now=now)
+        self.assertAlmostEqual(base, round(1.5 - share, 3), places=3)
+        self.assertAlmostEqual(deviation, round(0.25 + share, 3), places=3)
+        self.assertAlmostEqual(shown, round(share, 3), places=3)
+
+    def test_deficit_over_divisor_and_cumulative(self):
+        from datetime import datetime
+
+        from grundverbrauch_rechner import apply_safety_correction, safety_step_kw
+
+        self.assertAlmostEqual(safety_step_kw(1.0, 24), 1.0 / 24.0, places=6)
+        self.assertAlmostEqual(safety_step_kw(1.0, 8), 0.125, places=6)
+
+        now = datetime(2026, 11, 18, 14, 5, 0)
+        start = datetime(2026, 11, 18, 13, 0, 0)
+        end = datetime(2026, 11, 18, 14, 0, 0)
+        # Historie 10 kW, Ist 11 kW → Defizit 1 kW → 1/24 Zuschlag.
+        state, report = apply_safety_correction(
+            {},
+            enabled=True,
+            interval_minutes=60,
+            divisor=24,
+            now=now,
+            actual_kw=11.0,
+            history_kw=10.0,
+            window_start=start,
+            window_end=end,
+            recommended_kw=0.5,
+        )
+        self.assertTrue(report["applied"])
+        self.assertAlmostEqual(report["deficit_kw"], 1.0, places=4)
+        self.assertAlmostEqual(report["step_kw"], 1.0 / 24.0, places=6)
+        self.assertAlmostEqual(report["surcharge_kw"], 1.0 / 24.0, places=4)
+        self.assertAlmostEqual(report["safety_recommended_kw"], 0.5 + 1.0 / 24.0, places=3)
+
+        # Zweites Fenster mit erneutem 10%-Defizit summiert denselben Zuschlag.
+        state2, report2 = apply_safety_correction(
+            state,
+            enabled=True,
+            interval_minutes=60,
+            divisor=24,
+            now=datetime(2026, 11, 18, 15, 5, 0),
+            actual_kw=11.0,
+            history_kw=10.0,
+            window_start=datetime(2026, 11, 18, 14, 0, 0),
+            window_end=datetime(2026, 11, 18, 15, 0, 0),
+            recommended_kw=0.5,
+        )
+        self.assertTrue(report2["applied"])
+        self.assertAlmostEqual(report2["surcharge_kw"], 2.0 / 24.0, places=4)
+        self.assertAlmostEqual(
+            report2["safety_recommended_kw"], 0.5 + 2.0 / 24.0, places=3
+        )
+
+        # Unterverbrauch senkt den Zuschlag wieder (10% weniger → −1/24).
+        state3, report3 = apply_safety_correction(
+            state2,
+            enabled=True,
+            interval_minutes=60,
+            divisor=24,
+            now=datetime(2026, 11, 18, 16, 5, 0),
+            actual_kw=9.0,
+            history_kw=10.0,
+            window_start=datetime(2026, 11, 18, 15, 0, 0),
+            window_end=datetime(2026, 11, 18, 16, 0, 0),
+            recommended_kw=0.5,
+        )
+        self.assertAlmostEqual(report3["surcharge_kw"], 1.0 / 24.0, places=4)
+        self.assertLess(report3["safety_recommended_kw"], 0.5 + 2.0 / 24.0)
+
+    def test_same_window_is_not_applied_twice(self):
+        from datetime import datetime
+
+        from grundverbrauch_rechner import apply_safety_correction
+
+        now = datetime(2026, 11, 18, 14, 5, 0)
+        start = datetime(2026, 11, 18, 13, 0, 0)
+        end = datetime(2026, 11, 18, 14, 0, 0)
+        state, first = apply_safety_correction(
+            {},
+            enabled=True,
+            interval_minutes=60,
+            divisor=24,
+            now=now,
+            actual_kw=12.0,
+            history_kw=10.0,
+            window_start=start,
+            window_end=end,
+            recommended_kw=0.5,
+        )
+        _, second = apply_safety_correction(
+            state,
+            enabled=True,
+            interval_minutes=60,
+            divisor=24,
+            now=now,
+            actual_kw=12.0,
+            history_kw=10.0,
+            window_start=start,
+            window_end=end,
+            recommended_kw=0.5,
+        )
+        self.assertTrue(first["applied"])
+        self.assertFalse(second["applied"])
+        self.assertAlmostEqual(first["surcharge_kw"], second["surcharge_kw"], places=6)
+
+    def test_safety_can_fall_below_normal_and_has_no_upper_cap(self):
+        from datetime import datetime
+
+        from grundverbrauch_rechner import apply_safety_correction
+
+        now = datetime(2026, 11, 18, 14, 5, 0)
+        # Starker Unterverbrauch: Zuschlag negativ → unter dem normalen Soll.
+        _, low = apply_safety_correction(
+            {"cumulative_kw": 0.0},
+            enabled=True,
+            interval_minutes=60,
+            divisor=8,
+            now=now,
+            actual_kw=2.0,
+            history_kw=10.0,
+            window_start=datetime(2026, 11, 18, 13, 0, 0),
+            window_end=datetime(2026, 11, 18, 14, 0, 0),
+            recommended_kw=0.5,
+        )
+        self.assertLess(low["safety_recommended_kw"], 0.5)
+        self.assertAlmostEqual(low["step_kw"], -1.0, places=6)
+
+        # Starker Mehrverbrauch: kein Deckel bei 1,2/1,5.
+        _, high = apply_safety_correction(
+            {"cumulative_kw": 0.0},
+            enabled=True,
+            interval_minutes=60,
+            divisor=1,
+            now=now,
+            actual_kw=40.0,
+            history_kw=10.0,
+            window_start=datetime(2026, 11, 18, 13, 0, 0),
+            window_end=datetime(2026, 11, 18, 14, 0, 0),
+            recommended_kw=0.5,
+        )
+        self.assertGreater(high["safety_recommended_kw"], 1.5)
+        self.assertAlmostEqual(high["surcharge_kw"], 30.0, places=4)
+
+    def test_last_closed_window_and_hourly_mean(self):
+        from datetime import datetime
+
+        from grundverbrauch_rechner import (
+            last_closed_safety_window,
+            mean_kw_from_hourly,
+        )
+
+        now = datetime(2026, 11, 18, 14, 30, 0)
+        start, end = last_closed_safety_window(now, 60)
+        self.assertEqual(start, datetime(2026, 11, 18, 13, 0, 0))
+        self.assertEqual(end, datetime(2026, 11, 18, 14, 0, 0))
+
+        start3, end3 = last_closed_safety_window(now, 180)
+        self.assertEqual(start3, datetime(2026, 11, 18, 9, 0, 0))
+        self.assertEqual(end3, datetime(2026, 11, 18, 12, 0, 0))
+
+        hourly = [1.0] * 24
+        hourly[13] = 11.0
+        self.assertAlmostEqual(
+            mean_kw_from_hourly(hourly, start, end), 11.0, places=4
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

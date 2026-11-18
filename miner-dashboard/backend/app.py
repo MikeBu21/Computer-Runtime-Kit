@@ -1806,11 +1806,44 @@ def grundverbrauchsrechner():
 
 @app.route('/api/grundverbrauch', methods=['GET'])
 def api_grundverbrauch():
+    """Bericht für die Seite. new_risk_kw ist nur Anzeige und geht nicht ins BMS."""
     if not session.get('logged_in'):
         return jsonify({"ok": False, "error": "nicht angemeldet"}), 401
     from grundverbrauch_rechner import get_report
 
-    return jsonify(get_report(os.path.dirname(__file__)))
+    report = get_report(os.path.dirname(__file__))
+    report["new_risk_display_only"] = True
+    return jsonify(report)
+
+
+@app.route('/api/mehrbedarf-morgen', methods=['GET', 'POST'])
+def api_mehrbedarf_morgen():
+    """Gespeicherter Mehrbedarf morgen in kW. Nur Merker, kein Registerschreiben."""
+    if not session.get('logged_in'):
+        return jsonify({"ok": False, "message": "nicht angemeldet"}), 401
+    from telegram_energy import (
+        format_mehrbedarf_saved_message,
+        load_mehrbedarf_kw,
+        parse_mehrbedarf_kw,
+        save_mehrbedarf_kw,
+    )
+
+    base = os.path.dirname(__file__)
+    if request.method == 'GET':
+        kw = load_mehrbedarf_kw(base)
+        return jsonify({"ok": True, "kw": kw})
+    payload = request.get_json(silent=True) or {}
+    raw = request.form.get("kw")
+    if raw in (None, "") and isinstance(payload, dict):
+        raw = payload.get("kw")
+    value = parse_mehrbedarf_kw(raw)
+    if value is None:
+        return jsonify({"ok": False, "message": "Bitte eine gültige kW-Zahl eingeben, zum Beispiel 10."}), 400
+    try:
+        saved = save_mehrbedarf_kw(base, value)
+    except ValueError as exc:
+        return jsonify({"ok": False, "message": str(exc)}), 400
+    return jsonify({"ok": True, "kw": saved, "message": format_mehrbedarf_saved_message(saved)})
 
 
 @app.route('/api/grundverbrauch/annahmen', methods=['POST'])
@@ -1849,6 +1882,16 @@ def api_grundverbrauch_ziele():
         updates["soc_hold_percent"] = payload.get("soc_hold_percent")
     if "soc_hold_horizon_hours" in payload:
         updates["soc_hold_horizon_hours"] = payload.get("soc_hold_horizon_hours")
+    if "safety_enabled" in payload:
+        updates["safety_enabled"] = payload.get("safety_enabled") in (True, 1, "1", "true", "on")
+    if "safety_interval_minutes" in payload:
+        updates["safety_interval_minutes"] = payload.get("safety_interval_minutes")
+    if "safety_interval_value" in payload:
+        updates["safety_interval_value"] = payload.get("safety_interval_value")
+    if "safety_interval_unit" in payload:
+        updates["safety_interval_unit"] = payload.get("safety_interval_unit")
+    if "safety_divisor" in payload:
+        updates["safety_divisor"] = payload.get("safety_divisor")
     try:
         report = save_targets(os.path.dirname(__file__), updates)
     except ValueError as exc:

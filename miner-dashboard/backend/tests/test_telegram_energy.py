@@ -19,7 +19,69 @@ def test_classify_buttons_and_commands():
     assert classify_energy_command("Stromprofil") == "chart"
     assert classify_energy_command("/statistik") == "chart"
     assert classify_energy_command("Energiestatistik") == "chart"
+    assert classify_energy_command("Mehrbedarf morgen") == "mehrbedarf"
+    assert classify_energy_command("/mehrbedarf") == "mehrbedarf"
     assert classify_energy_command("/status") is None
+
+
+def test_mehrbedarf_info_is_only_a_question():
+    from telegram_energy import format_mehrbedarf_info_message
+
+    text = format_mehrbedarf_info_message()
+    assert "Kilowatt" in text
+    assert "morgen" in text
+    assert "tagsüber" in text
+
+
+def test_mehrbedarf_kw_roundtrip(tmp_path):
+    from telegram_energy import (
+        format_mehrbedarf_prompt_message,
+        format_mehrbedarf_saved_message,
+        load_mehrbedarf_kw,
+        parse_mehrbedarf_kw,
+        save_mehrbedarf_kw,
+    )
+
+    assert parse_mehrbedarf_kw("10") == 10.0
+    assert parse_mehrbedarf_kw("2,5 kW") == 2.5
+    assert parse_mehrbedarf_kw("-1") is None
+    assert parse_mehrbedarf_kw("abc") is None
+    saved = save_mehrbedarf_kw(str(tmp_path), "7,5")
+    assert saved == 7.5
+    assert load_mehrbedarf_kw(str(tmp_path)) == 7.5
+    prompt = format_mehrbedarf_prompt_message(7.5)
+    assert "Zahl in kW" in prompt
+    assert "7,5 kW" in prompt
+    saved_text = format_mehrbedarf_saved_message(7.5)
+    assert "Danke für die Übernahme" in saved_text
+    assert "7,5 kW" in saved_text
+    assert "Speicher morgen" in saved_text
+    assert parse_mehrbedarf_kw("ich brauche morgen 300 kW mehr") == 300.0
+    assert parse_mehrbedarf_kw("ich brauche morgen aber nur 20 kW mehr") == 20.0
+
+
+def test_latest_mehrbedarf_replaces_the_older_value(tmp_path):
+    from telegram_energy import load_mehrbedarf_kw, record_latest_mehrbedarf
+
+    first = record_latest_mehrbedarf(str(tmp_path), "ich brauche morgen 300 kW mehr")
+    assert first == 300.0
+    assert load_mehrbedarf_kw(str(tmp_path)) == 300.0
+    second = record_latest_mehrbedarf(
+        str(tmp_path), "ich brauche morgen aber nur 20 kW mehr"
+    )
+    assert second == 20.0
+    assert load_mehrbedarf_kw(str(tmp_path)) == 20.0
+
+
+def test_mehrbedarf_saved_confirms_300_kw():
+    from telegram_energy import format_mehrbedarf_saved_message, parse_mehrbedarf_kw
+
+    value = parse_mehrbedarf_kw("300")
+    assert value == 300.0
+    text = format_mehrbedarf_saved_message(value)
+    assert text.startswith("Danke für die Übernahme.")
+    assert "300 kW" in text
+    assert "gefüllt bzw. bereitsteht" in text
 
 
 def test_today_message_includes_expected_produced_and_weather():

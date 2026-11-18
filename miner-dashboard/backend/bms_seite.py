@@ -2129,12 +2129,15 @@ def save_settings(updates: Dict[str, Any]) -> Dict[str, Any]:
             _release_cooldown_until = 0.0
             _clear_release_block()
         if wanted and not data["real_mode"] and data.get("soc_stop"):
-            # Über der geltenden Grenze, oder wenn noch keine Grenze da ist.
-            # Eine fehlende Grenze darf das Häkchen nicht festhalten.
+            # Nur über dem einheitlichen Sock% freigeben. Fehlende oder
+            # widersprüchliche Sock%-Werte halten den Stopp und verhindern Schreiben.
+            sock = sock_soc_status(data)
             soc = _live_soc(None)
-            floor = _electrician_soc_limit(data)
-            if floor is None or (soc is not None and soc > float(floor)):
+            floor = sock.get("sock_soc") if sock.get("ok") else None
+            if floor is not None and soc is not None and soc > float(floor):
                 data["soc_stop"] = False
+            elif not sock.get("ok"):
+                wanted = False
         data["real_mode"] = wanted
     if "soc_stop" in updates:
         data["soc_stop"] = bool(updates["soc_stop"])
@@ -2980,7 +2983,7 @@ def _import_writes(
     enable = item.get("grid_charge_register")
     current = item.get("grid_charge_current_register")
     if enable is None or current is None:
-        return [], TOU_HOLD_SOC, 1
+        return [], _bms_hold_tou_soc(settings), 1
     if immediate:
         house = _house_load_kw(live)
         house_w = 0 if house is None else max(0, int(round(house * 1000)))
@@ -3029,7 +3032,7 @@ def _import_writes(
     rows.append((int(current), "Battery Grid Charging Current", 0))
     rows.append((int(enable), "Battery Grid Charging", 0))
     # Bit 0 wäre Netzladen und sperrt die Entladung ins Haus. Entlade-Halt lässt das aus.
-    return rows, TOU_HOLD_SOC, 0
+    return rows, _bms_hold_tou_soc(settings), 0
 
 
 def _needed_discharge_amps(export_w: int, live: Optional[Dict[str, Any]]) -> int:
@@ -3062,7 +3065,7 @@ def _feed_writes(
     current = item.get("grid_charge_current_register")
     enable = item.get("grid_charge_register")
     if item.get("sell_power_register") is None or item.get("work_mode_register") is None:
-        return rows, TOU_HOLD_SOC, 0
+        return rows, _bms_hold_tou_soc(settings), 0
     # Export Surplus Power hält am SG04LP3 auf ±30 W genau. Jede Absenkung des Registers
     # lässt den Export für 20 s bis an den Entladestrom hochlaufen (gemessen: 3045 -> 3030 W
     # ergab 5,5 kW Einspeisung). Darum fest auf den Soll, keine Nachführung.
@@ -3094,13 +3097,14 @@ def _feed_writes(
                 _needed_discharge_amps(export_w, live),
             )
         )
-    return rows, TOU_HOLD_SOC, TOU_SELL_BIT
+    return rows, _bms_hold_tou_soc(settings), TOU_SELL_BIT
 
 
 def _tou_program_writes(item: Dict[str, Any], tou_soc: int, charging: int, with_power: bool) -> List[tuple]:
     if item.get("time_of_use_register") is None:
         return []
-    value = max(TOU_HOLD_SOC, min(100, int(tou_soc)))
+    # Kein fester 20-%-Boden mehr: der Elektriker-Sock% darf darunter liegen.
+    value = max(0, min(100, int(tou_soc)))
     rows: List[tuple] = []
     for index in range(6):
         if with_power:
@@ -3309,12 +3313,47 @@ def _live_soc(live: Optional[Dict[str, Any]]) -> Optional[float]:
     return _parse_soc(live.get("soc_percent"))
 
 
+SOCK_SOC_MISSING = (
+    "Sock%-Werte fehlen. Bitte Programm 1–6 Sock% unter den Elektrikerwerten lesen oder speichern."
+)
+SOCK_SOC_CONFLICT = (
+    "Bitte legen Sie für alle SOC-Programme denselben Sock%-Wert fest."
+)
+
+
+def _program_sock_values(settings: Optional[Dict[str, Any]]) -> Optional[List[int]]:
+    """Die sechs gespeicherten Programm-Sock%-Werte, oder None wenn unvollständig."""
+    return _coerce_program_list((settings or {}).get("program_soc"), highest=100)
+
+
 def _program_soc_floor(settings: Optional[Dict[str, Any]]) -> Optional[int]:
-    """Minimum der sechs gespeicherten Programm-SOCs. Live-Register sind dafür unbrauchbar."""
-    socs = _coerce_program_list((settings or {}).get("program_soc"), highest=100)
+    """Niedrigster Sock%-Wert. Nur Hilfsanzeige; die BMS-Schwelle braucht einheitliche Werte."""
+    socs = _program_sock_values(settings)
     if not socs:
         return None
     return min(socs)
+
+
+def sock_soc_status(settings: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Einheitlicher Sock% für BMS-Stopp/Wiederanlauf aus Programm 1–6.
+
+    Unterschiedliche Werte sind ungültig: dann keine Schaltschwelle und eine Fehlermeldung.
+    """
+    socs = _program_sock_values(settings)
+    if not socs:
+        return {"ok": False, "sock_soc": None, "message": SOCK_SOC_MISSING}
+    unique = sorted(set(int(item) for item in socs))
+    if len(unique) > 1:
+        return {"ok": False, "sock_soc": None, "message": SOCK_SOC_CONFLICT}
+    return {"ok": True, "sock_soc": unique[0], "message": ""}
+
+
+def _bms_hold_tou_soc(settings: Optional[Dict[str, Any]] = None) -> int:
+    """TOU-SOC beim Halt/Entladen: Elektriker-Sock%, sonst die gespeicherte Vorgabe."""
+    status = sock_soc_status(settings)
+    if status.get("ok") and status.get("sock_soc") is not None:
+        return int(status["sock_soc"])
+    return _idle_tou_soc(settings)
 
 
 def _hhmm_minutes(raw: Any) -> Optional[int]:
@@ -3358,7 +3397,8 @@ def _active_program_index(settings: Optional[Dict[str, Any]], now: Optional[date
 
 
 def _active_program_soc(settings: Optional[Dict[str, Any]], now: Optional[datetime] = None) -> Optional[int]:
-    socs = _coerce_program_list((settings or {}).get("program_soc"), highest=100)
+    """Sock% des Zeitslots. Die BMS-Schaltschwelle nutzt sock_soc_status, nicht diesen Wert."""
+    socs = _program_sock_values(settings)
     index = _active_program_index(settings, now)
     if socs is None or index is None:
         return None
@@ -3369,8 +3409,16 @@ def _electrician_soc_limit(
     settings: Optional[Dict[str, Any]],
     now: Optional[datetime] = None,
 ) -> Optional[int]:
-    """SoC-Grenze des Elektriker-Fensters, das gerade gilt. Nicht das Minimum aller sechs."""
-    return _active_program_soc(settings, now)
+    """BMS-Schaltschwelle: einheitlicher Sock% aus Programm 1–6.
+
+    Aus bei oder unter diesem Wert, wieder Ein darüber. Fehlen Werte oder sind sie
+    unterschiedlich, gibt es keine Schwelle — dann darf BMS nicht schreiben.
+    """
+    del now
+    status = sock_soc_status(settings)
+    if not status.get("ok") or status.get("sock_soc") is None:
+        return None
+    return int(status["sock_soc"])
 
 
 def _soc_floor_hit(
@@ -3413,10 +3461,10 @@ def _resume_ready(
     live: Optional[Dict[str, Any]] = None,
     now: Optional[datetime] = None,
 ) -> bool:
-    """Wieder an, sobald der Ladestand über der geltenden Elektrikergrenze liegt und die Planung an ist.
+    """Wieder an, sobald der Ladestand über dem einheitlichen Sock% liegt und die Planung an ist.
 
-    Der Stopp bleibt, solange der SOC auf oder unter dem Fenster liegt, das der Elektriker
-    für diese Uhrzeit gesetzt hat, oder der Schalter „Planung, keine Netzspitzen“ aus ist.
+    Der Stopp bleibt bei oder unter dem Sock%-Wert, oder wenn der Schalter
+    „Planung, keine Netzspitzen“ aus ist. Darüber startet BMS wieder wie bisher.
     """
     if not settings or not settings.get("soc_stop"):
         return False
@@ -3774,12 +3822,15 @@ def apply_soc_gate(
 ) -> Dict[str, Any]:
     """Vor den Holds: Stopp merken oder den automatischen Wiederanlauf freigeben.
 
-    Fehlende Grenze und ein kurz fehlender Ladestand schalten das Häkchen nicht aus.
-    release_pending hält den Wiederanlauf nicht fest, sobald der Ladestand über der Grenze liegt.
+    Einheitlicher Sock% steuert Aus (<=) und Ein (>). Fehlen oder widersprechen sich
+    die Programm-Sock%-Werte, bleibt Schreiben aus. Ein kurz fehlender Ladestand
+    schaltet das Häkchen nicht aus. release_pending hält den Wiederanlauf nicht fest,
+    sobald der Ladestand über der Grenze liegt.
     """
-    if _electrician_soc_limit(settings, now) is None:
-        if settings.get("soc_stop"):
-            return save_settings({"soc_stop": False})
+    sock = sock_soc_status(settings)
+    if not sock.get("ok"):
+        if settings.get("real_mode") or not settings.get("soc_stop"):
+            return save_settings({"real_mode": False, "soc_stop": True})
         return settings
     if settings.get("soc_stop"):
         if _resume_ready(settings, live, now):
@@ -3945,6 +3996,10 @@ def apply_write(
     live: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     global _needs_release, _tou_hold_applied, _tou_soc_applied, _release_sent, _release_attempts
+    sock = sock_soc_status(settings)
+    if settings.get("real_mode") and not sock.get("ok"):
+        settings = save_settings({"real_mode": False, "soc_stop": True})
+        return _write_result(False, str(sock.get("message") or SOCK_SOC_MISSING))
     if settings.get("real_mode") and _soc_limit_blocks(settings, live):
         settings = save_settings({"real_mode": False, "soc_stop": True})
     elif (
@@ -3958,6 +4013,7 @@ def apply_write(
     item = _control_item(base, link)
     register_text = _register_text(item)
     if not settings.get("real_mode"):
+        # BMS aus: nichts halten, nur ggf. Elektrikerwerte freigeben. Kein Soll-Schreiben.
         # release_pending nicht bei jedem Tick zurücksetzen: das hat die Freigabe endlos neu geschrieben.
         if not _release_due(settings):
             _queue_release_if_drift(settings)
@@ -4968,6 +5024,7 @@ def status(record: bool = True) -> Dict[str, Any]:
         "discovered": _last_discovery,
         "live": live,
         "registers": read_register_state(),
+        "sock_soc": sock_soc_status(settings),
         "assessment": judgement,
         "plan": plan,
         "log": log[:LOG_LIMIT],

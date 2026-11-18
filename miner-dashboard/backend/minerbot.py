@@ -11,9 +11,24 @@ from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, Update
+from telegram import (
+    ForceReply,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+    Update,
+)
 from telegram.error import NetworkError, TimedOut, RetryAfter
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    ConversationHandler,
+    MessageHandler,
+    filters,
+)
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -27,6 +42,7 @@ CONFIG_PATH = BASE_DIR / 'telegram_config.json'
 
 DEFAULT_FEED_IN_ALARM_KW = -95.0
 DEFAULT_HIGH_USAGE_ALARM_KW = 50.0
+ASK_MEHRBEDARF_KW = 1
 LAST_ALARM_STATE = {
     "feed_in": False,
     "high_usage": False,
@@ -585,6 +601,7 @@ def generate_command_list():
     commands_msg += "/ertrag -> Ertrag heute (produziert und geschätzt)\n"
     commands_msg += "/morgen -> Ertrag morgen geschätzt\n"
     commands_msg += "/statistik -> Stromprofil\n"
+    commands_msg += "/mehrbedarf -> Mehrbedarf morgen (kW eingeben)\n"
     commands_msg += "/status -> Bericht Miner, Geräte und Gibbo-Pins"
     return commands_msg
 
@@ -597,6 +614,7 @@ def energy_reply_markup() -> ReplyKeyboardMarkup:
         ],
         [KeyboardButton("Stromprofil")],
         [KeyboardButton("Status")],
+        [KeyboardButton("Mehrbedarf morgen")],
     ]
     if _sorted_gpio_pins():
         rows.append(
@@ -672,6 +690,88 @@ async def energy_chart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _reply_energy(update, "chart")
 
 
+async def mehrbedarf_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Fragt nach dem zusätzlichen kW-Bedarf für morgen. Speichert nichts von allein."""
+    from telegram_energy import format_mehrbedarf_prompt_message, load_mehrbedarf_kw
+
+    save_chat_id(update.effective_chat.id)
+    message = update.effective_message
+    if message is None:
+        return ConversationHandler.END
+    current = load_mehrbedarf_kw(str(BASE_DIR))
+    await message.reply_text(
+        format_mehrbedarf_prompt_message(current),
+        reply_markup=ForceReply(selective=True, input_field_placeholder="z. B. 10"),
+    )
+    return ASK_MEHRBEDARF_KW
+
+
+async def mehrbedarf_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    from telegram_energy import (
+        format_mehrbedarf_prompt_message,
+        format_mehrbedarf_saved_message,
+        parse_mehrbedarf_kw,
+        save_mehrbedarf_kw,
+    )
+
+    message = update.effective_message
+    if message is None:
+        return ConversationHandler.END
+    value = parse_mehrbedarf_kw(message.text or "")
+    if value is None:
+        await message.reply_text(
+            "Das war keine gültige kW-Zahl.\n\n" + format_mehrbedarf_prompt_message(),
+            reply_markup=ForceReply(selective=True, input_field_placeholder="z. B. 10"),
+        )
+        return ASK_MEHRBEDARF_KW
+    try:
+        saved = save_mehrbedarf_kw(str(BASE_DIR), value)
+    except Exception as exc:
+        await message.reply_text(
+            f"Speichern fehlgeschlagen ({exc}).",
+            reply_markup=energy_reply_markup(),
+        )
+        return ConversationHandler.END
+    await message.reply_text(
+        format_mehrbedarf_saved_message(saved),
+        reply_markup=energy_reply_markup(),
+    )
+    return ConversationHandler.END
+
+
+async def mehrbedarf_latest(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Spätere freie Angabe ersetzt den gespeicherten Mehrbedarf."""
+    from telegram_energy import format_mehrbedarf_saved_message, record_latest_mehrbedarf
+
+    message = update.effective_message
+    if message is None:
+        return
+    try:
+        saved = record_latest_mehrbedarf(str(BASE_DIR), message.text or "")
+    except Exception as exc:
+        await message.reply_text(
+            f"Speichern fehlgeschlagen ({exc}).",
+            reply_markup=energy_reply_markup(),
+        )
+        return
+    if saved is None:
+        return
+    await message.reply_text(
+        format_mehrbedarf_saved_message(saved),
+        reply_markup=energy_reply_markup(),
+    )
+
+
+async def mehrbedarf_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.effective_message
+    if message is not None:
+        await message.reply_text(
+            "Mehrbedarf abgebrochen. Es wurde nichts geändert.",
+            reply_markup=energy_reply_markup(),
+        )
+    return ConversationHandler.END
+
+
 async def energy_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from telegram_energy import classify_energy_command
 
@@ -687,7 +787,7 @@ async def energy_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await gibbo_resume(update, context)
         return
     kind = classify_energy_command(text)
-    if not kind:
+    if not kind or kind == "mehrbedarf":
         return
     await _reply_energy(update, kind)
 
@@ -1176,6 +1276,32 @@ def _build_application(token: str) -> Application:
     app.add_handler(CommandHandler(["ertrag", "ertrag_heute", "ertragheute"], energy_today))
     app.add_handler(CommandHandler(["morgen", "ertrag_morgen", "ertragmorgen"], energy_tomorrow))
     app.add_handler(CommandHandler(["statistik", "energiestatistik"], energy_chart))
+    mehrbedarf_conv = ConversationHandler(
+        entry_points=[
+            CommandHandler(["mehrbedarf", "mehrbedarf_morgen"], mehrbedarf_start),
+            MessageHandler(
+                filters.Regex(r"(?i)^(mehrbedarf morgen|mehrbedarf|info mehrbedarf)$"),
+                mehrbedarf_start,
+            ),
+        ],
+        states={
+            ASK_MEHRBEDARF_KW: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, mehrbedarf_save),
+            ],
+        },
+        fallbacks=[
+            CommandHandler("cancel", mehrbedarf_cancel),
+            MessageHandler(filters.Regex(r"(?i)^(abbrechen|cancel)$"), mehrbedarf_cancel),
+        ],
+        allow_reentry=True,
+    )
+    app.add_handler(mehrbedarf_conv)
+    app.add_handler(
+        MessageHandler(
+            filters.Regex(r"(?i)(kW|kilowatt|mehrbedarf|brauche)") & ~filters.COMMAND,
+            mehrbedarf_latest,
+        )
+    )
     app.add_handler(MessageHandler(filters.Regex(r"^/pause\d+$"), pause))
     app.add_handler(MessageHandler(filters.Regex(r"^/resume\d+$"), resume))
     app.add_handler(MessageHandler(filters.Regex(r"^/ein\d+$"), ha_on))

@@ -227,7 +227,7 @@
       </div>
       {% for n in range(1, 7) %}
       <div>
-        <label class="form-label" for="program_soc_{{ n }}">Programm {{ n }} SOC (%)</label>
+        <label class="form-label" for="program_soc_{{ n }}">Programm {{ n }} Sock%</label>
         <input class="form-control" id="program_soc_{{ n }}" name="program_soc_{{ n }}" type="number" step="1" value="{{ settings.program_soc[n - 1] if settings.program_soc|length >= n else '' }}">
       </div>
       <div>
@@ -286,8 +286,10 @@
     document.getElementById("live_load").textContent = kw(live.load_kw, 1);
     document.getElementById("live_source").textContent = live.source || "";
     const box = document.getElementById("live_warnings");
-    const warnings = (data.assessment && data.assessment.warnings) || [];
-    const blocked = data.assessment && (!data.assessment.can_buy || !data.assessment.can_shave);
+    const warnings = ((data.assessment && data.assessment.warnings) || []).slice();
+    const sock = data.sock_soc || {};
+    if (sock.message) warnings.unshift(sock.message);
+    const blocked = (data.assessment && (!data.assessment.can_buy || !data.assessment.can_shave)) || sock.ok === false;
     box.innerHTML = warnings.map(function (text) {
       return '<p style="margin:0.35rem 0; color:' + (blocked ? "#ffb300" : "var(--muted)") + ';">' + text + "</p>";
     }).join("");

@@ -70,6 +70,9 @@ FORWARD_LOOKBACK_DAYS = 7
 FORWARD_PV_TODAY_W = 1.0
 FORWARD_PV_TOMORROW_W = 0.6
 FORWARD_PV_DAY_AFTER_W = 0.4
+# Zweites Anzeigefeld. Zuverlässigkeit je Tag, ohne 60/40-Mischung und ohne flaches Vertrauen.
+NEW_RISK_TOMORROW_RELIABILITY = 0.80
+NEW_RISK_DAY_AFTER_RELIABILITY = 0.60
 FORWARD_RELIEF_DAYS = 2.0
 # Lineares Pufferband über dem Min-SoC, in Prozentpunkten.
 # Am Min-SoC ist der Zuschlag die volle Basislast, bei +5 % die Hälfte, ab +10 % null.
@@ -100,6 +103,17 @@ FORWARD_REFRESH = timedelta(minutes=1)
 FORWARD_REFRESH_SEC = int(FORWARD_REFRESH.total_seconds())
 MIN_SOC_HARD_LOW = 30.0
 MIN_SOC_HARD_HIGH = 35.0
+# Sicherheitszuschlag: Ist-Fenster gegen Historie, Defizit / Teiler, kumulativ.
+# Takt ist frei in Minuten (Stunden werden auf Minuten umgerechnet).
+# Teiler verteilt den Zuschlag (Standard 24 = über einen Tag).
+# Getrennt vom normalen Dauer-Zukauf.
+SAFETY_INTERVAL_DEFAULT_MINUTES = 60
+SAFETY_INTERVAL_MIN_MINUTES = 1
+SAFETY_INTERVAL_MAX_MINUTES = 7 * 24 * 60
+SAFETY_DIVISOR_DEFAULT = 24.0
+SAFETY_DIVISOR_MIN = 1.0
+SAFETY_DIVISOR_MAX = 168.0
+SAFETY_HISTORY_DAYS = 7
 
 
 def _f(value: Any, default: float = 0.0) -> float:
@@ -123,6 +137,59 @@ def default_targets() -> Dict[str, Any]:
         "soc_hold_percent": 5.0,
         "soc_hold_horizon_hours": 24,
         "weather_adjust_enabled": True,
+        # Sicherheitsalgorithmus: Takt und Teiler sind hier einstellbar.
+        "safety_enabled": True,
+        "safety_interval_minutes": SAFETY_INTERVAL_DEFAULT_MINUTES,
+        "safety_divisor": SAFETY_DIVISOR_DEFAULT,
+    }
+
+
+def normalize_safety_interval_minutes(raw: Any) -> int:
+    """Freier Takt in Minuten. Stunden-Eingaben vorher mit 60 multiplizieren."""
+    try:
+        value = int(round(float(raw)))
+    except (TypeError, ValueError):
+        return SAFETY_INTERVAL_DEFAULT_MINUTES
+    if value < SAFETY_INTERVAL_MIN_MINUTES or value > SAFETY_INTERVAL_MAX_MINUTES:
+        return SAFETY_INTERVAL_DEFAULT_MINUTES
+    return value
+
+
+def safety_interval_minutes_from_input(
+    value: Any,
+    unit: Any = "minutes",
+) -> int:
+    """Zahlfeld plus Einheit → Minuten. unit: minutes|hours bzw. Minute(n)|Stunde(n)."""
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        return SAFETY_INTERVAL_DEFAULT_MINUTES
+    unit_s = str(unit or "minutes").strip().lower()
+    if unit_s in ("h", "hour", "hours", "stunde", "stunden"):
+        amount = amount * 60.0
+    return normalize_safety_interval_minutes(amount)
+
+
+def normalize_safety_divisor(raw: Any) -> float:
+    """Teiler für das Defizit. Standard 24 (über einen Tag verteilt)."""
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return SAFETY_DIVISOR_DEFAULT
+    if value < SAFETY_DIVISOR_MIN or value > SAFETY_DIVISOR_MAX:
+        return SAFETY_DIVISOR_DEFAULT
+    return value
+
+
+def _empty_safety_state() -> Dict[str, Any]:
+    return {
+        "cumulative_kw": 0.0,
+        "last_window_end": None,
+        "last_actual_kw": None,
+        "last_history_kw": None,
+        "last_deficit_kw": None,
+        "last_step_kw": None,
+        "updated_at": None,
     }
 
 
@@ -133,6 +200,7 @@ def _empty_state() -> Dict[str, Any]:
         "base_archive": [],
         "targets": default_targets(),
         "weather_cache": {},
+        "safety": _empty_safety_state(),
     }
 
 
@@ -155,6 +223,7 @@ def _load_state(path) -> Dict[str, Any]:
     targets.update({k: raw_targets[k] for k in targets if k in raw_targets})
     targets["soc_hold_enabled"] = bool(targets.get("soc_hold_enabled"))
     targets["weather_adjust_enabled"] = bool(targets.get("weather_adjust_enabled", True))
+    targets["safety_enabled"] = bool(targets.get("safety_enabled", True))
     try:
         targets["soc_hold_percent"] = max(1.0, min(95.0, float(targets.get("soc_hold_percent", 5.0))))
     except (TypeError, ValueError):
@@ -164,11 +233,31 @@ def _load_state(path) -> Dict[str, Any]:
     except (TypeError, ValueError):
         horizon = 24
     targets["soc_hold_horizon_hours"] = 48 if horizon >= 48 else 24
+    targets["safety_interval_minutes"] = normalize_safety_interval_minutes(
+        targets.get("safety_interval_minutes")
+    )
+    targets["safety_divisor"] = normalize_safety_divisor(targets.get("safety_divisor"))
     data["targets"] = targets
+    if not isinstance(data.get("safety"), dict):
+        data["safety"] = _empty_safety_state()
     return data
 
 
 def _save_state(path, state: Dict[str, Any]) -> None:
+    """Schreibt den Stand. Ein schon gespeicherter Takt bleibt, auch wenn der
+    laufende Bericht ihn nicht angefasst hat.
+    """
+    incoming = state.get("targets") if isinstance(state.get("targets"), dict) else {}
+    if path.is_file() and incoming:
+        try:
+            previous = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            previous = {}
+        old_targets = previous.get("targets") if isinstance(previous, dict) else None
+        if isinstance(old_targets, dict):
+            merged = dict(old_targets)
+            merged.update(incoming)
+            state["targets"] = merged
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
@@ -185,6 +274,112 @@ def _next_week_date(d: date) -> str:
     if days == 0:
         days = 7
     return (d + timedelta(days=days)).isoformat()
+
+
+def daylight_hours_for_extra() -> int:
+    """Sonnenstunden derselben Kurve wie spread_daily_kwh: 6 bis 18 Uhr."""
+    return sum(1 for hour in range(HOURS) if 6 <= hour <= 18)
+
+
+def mehrbedarf_window_hours(now: Optional[datetime] = None) -> float:
+    """Stunden von jetzt bis morgen Mitternacht, also Ende des morgigen Tages.
+
+    Der Mehrbedarf gilt für den ganzen morgigen Tag. Die Sicherheitsanzeige
+    verteilt ihn auf das Fenster, das jetzt schon angefangen hat und morgen
+    um 24 Uhr endet.
+    """
+    moment = now if isinstance(now, datetime) else datetime.now()
+    end = datetime.combine(moment.date() + timedelta(days=2), datetime.min.time())
+    return max(0.0, (end - moment).total_seconds() / 3600.0)
+
+
+def mehrbedarf_day_share_kw(mehrbedarf_kw: Optional[float], now: Optional[datetime] = None) -> float:
+    """Mehrbedarf in kW geteilt durch die Stunden bis morgen Mitternacht.
+
+    100 kW um 20:54 sind etwa 100 / 27,1. Nur die Sicherheitsfelder sehen das.
+    """
+    try:
+        kw = float(mehrbedarf_kw) if mehrbedarf_kw is not None else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+    if kw <= 0:
+        return 0.0
+    hours = mehrbedarf_window_hours(now)
+    if hours <= 0:
+        return 0.0
+    return kw / hours
+
+
+def mehrbedarf_for_deviation_kw(
+    request_kw: Optional[float],
+    override_kw: Optional[float],
+    coverage_kwh: Optional[float],
+) -> float:
+    """kW, die der Mehrbedarf zur Abweichung beiträgt.
+
+    Deckt die Tagesenergie aus PV-Vertrauen und Speicherentlastung den Wunsch,
+    setzt die Rechnung 0. Eine Übersteuerung gilt exakt in kW, ohne Verteilung
+    auf 24 Stunden.
+    """
+    if override_kw is not None and override_kw != "":
+        try:
+            forced = float(override_kw)
+        except (TypeError, ValueError):
+            forced = None
+        if forced is not None and forced >= 0:
+            return round(forced, 3)
+    try:
+        requested = float(request_kw) if request_kw is not None else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+    if requested <= 0:
+        return 0.0
+    hours = daylight_hours_for_extra()
+    if hours <= 0:
+        return 0.0
+    try:
+        cover = float(coverage_kwh) if coverage_kwh is not None else 0.0
+    except (TypeError, ValueError):
+        cover = 0.0
+    cover = max(0.0, cover)
+    need_kwh = requested * hours
+    if cover >= need_kwh:
+        return 0.0
+    return round((need_kwh - cover) / hours, 3)
+
+
+def apply_mehrbedarf_to_safety_fields(
+    base_kw: Optional[float],
+    deviation_kw: Optional[float],
+    mehrbedarf_kw: Optional[float],
+    *,
+    override_kw: Optional[float] = None,
+    coverage_kwh: Optional[float] = None,
+    early_purchase_kw: float = 0.0,
+    now: Optional[datetime] = None,
+) -> Tuple[Optional[float], float, float]:
+    """Mehrbedarf senkt nur den Sicherheits-Basiswert und hebt die Abweichung.
+
+    Geteilt durch die Stunden von jetzt bis morgen Mitternacht.
+    Eine Übersteuerung gilt exakt in kW.
+    Empfohlener Zukauf, BMS und Rest der letzten Tage bleiben außen vor.
+    """
+    forced = None
+    if override_kw is not None and override_kw != "":
+        try:
+            forced = float(override_kw)
+        except (TypeError, ValueError):
+            forced = None
+        if forced is not None and forced < 0:
+            forced = None
+    share = round(forced, 3) if forced is not None else round(mehrbedarf_day_share_kw(mehrbedarf_kw, now), 3)
+    try:
+        early = max(0.0, float(early_purchase_kw or 0.0))
+    except (TypeError, ValueError):
+        early = 0.0
+    dev = 0.0 if deviation_kw is None else float(deviation_kw)
+    new_base = None if base_kw is None else round(float(base_kw) - share, 3)
+    return new_base, round(dev + share + early, 3), share
 
 
 def spread_daily_kwh(total: float) -> List[float]:
@@ -1837,6 +2032,57 @@ def forecast_rest_today_kwh(
     return future
 
 
+def safety_horizon_house_kwh(
+    today_hourly: Sequence[float],
+    tomorrow_hourly: Sequence[float],
+    now: datetime,
+) -> float:
+    """Rest des heutigen Stundenprofils bis Mitternacht plus der ganze nächste Tag."""
+    start_m = now.hour * 60.0 + now.minute + now.second / 60.0
+    total = 0.0
+    for hour, raw in enumerate(list(today_hourly)[:HOURS]):
+        begin = hour * 60.0
+        end = begin + 60.0
+        overlap = min(end, 24.0 * 60.0) - max(begin, start_m)
+        if overlap > 0:
+            total += max(0.0, _f(raw)) * (overlap / 60.0)
+    for raw in list(tomorrow_hourly)[:HOURS]:
+        total += max(0.0, _f(raw))
+    return round(total, 4)
+
+
+def safety_feed_kw(
+    pv_blend_kwh: float,
+    trust: float,
+    relief_kwh: float,
+    house_kwh: float,
+) -> float:
+    """(PV-Mischung mal Vertrauen plus Entlastung minus Hausverbrauch) / 24, mindestens 0."""
+    credited = max(0.0, _f(pv_blend_kwh)) * max(0.0, _f(trust)) + max(0.0, _f(relief_kwh))
+    gap = credited - max(0.0, _f(house_kwh))
+    return round(max(0.0, gap) / HOURS, 3)
+
+
+def new_risk_model_kw(
+    load_kwh: Optional[float],
+    tomorrow_kwh: Optional[float],
+    day_after_kwh: Optional[float],
+    relief_kwh: Optional[float],
+) -> float:
+    """Anzeige: (Last − PV morgen×0,8 − PV übermorgen×0,6 − Entlastung) / 24, mindestens 0.
+
+    Speicherentlastung senkt den Zukauf. Wird nicht zum empfohlenen Zukauf und
+    nicht ins BMS geschrieben. Die Wetterprognose kommt stündlich.
+    """
+    credited = (
+        NEW_RISK_TOMORROW_RELIABILITY * max(0.0, _f(tomorrow_kwh))
+        + NEW_RISK_DAY_AFTER_RELIABILITY * max(0.0, _f(day_after_kwh))
+    )
+    relief = max(0.0, _f(relief_kwh))
+    gap = max(0.0, _f(load_kwh)) - credited - relief
+    return round(max(0.0, gap) / HOURS, 3)
+
+
 def forward_purchase_kw(
     *,
     soc_percent: Optional[float],
@@ -1856,6 +2102,7 @@ def forward_purchase_kw(
     max_soc_percent: float = 95.0,
     plan_soc_percent: Optional[float] = None,
     hours_until_plan: Optional[float] = None,
+    house_kwh: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Dauer-Zukauf mit PV-Wetterprognose (Open-Meteo über morgen/übermorgen).
 
@@ -2002,6 +2249,14 @@ def forward_purchase_kw(
         "base_load_scale": round(scale, 4),
         "forecast_trust": round(trust, 3),
         "pv_blend_kwh": round(pv_blend, 2),
+        "safety_base_kw": safety_feed_kw(
+            pv_blend,
+            trust,
+            usable,
+            0.0 if house_kwh is None else house_kwh,
+        ),
+        "safety_house_kwh": None if house_kwh is None else round(max(0.0, _f(house_kwh)), 2),
+        "new_risk_kw": new_risk_model_kw(load_kwh, pv_tom, pv_after, usable),
         "today_pv_kwh": None if today_pv_kwh is None else round(today_kwh, 2),
         "today_shortfall_kwh": round(shortfall_kwh, 2),
         "pull_down": pull_down,
@@ -2236,6 +2491,25 @@ def _forward_for_report(
         weekday = weekday_load_kwh(days, today, base_dir)
         recent = recent_48h_daily_kwh(days, today, now)
         daylight = in_pv_daylight(now, today_hours)
+        house_kwh = 0.0
+        if base_dir:
+            try:
+                from control_algorithm.consumption_history import (
+                    get_weekday_profile,
+                    load_history,
+                )
+
+                history = load_history(base_dir)
+                today_prof = get_weekday_profile(history, now.weekday(), base_dir)
+                tomorrow = now.date() + timedelta(days=1)
+                tomorrow_prof = get_weekday_profile(history, tomorrow.weekday(), base_dir)
+                house_kwh = safety_horizon_house_kwh(
+                    today_prof.get("hourly_base_kwh_avg") or [],
+                    tomorrow_prof.get("hourly_base_kwh_avg") or [],
+                    now,
+                )
+            except Exception:
+                house_kwh = 0.0
     except Exception:
         return {"kw": None, "short": False, "parts": {}, "lock": {}, "days_used": 0}
     parts = forward_purchase_kw(
@@ -2256,6 +2530,7 @@ def _forward_for_report(
         max_soc_percent=max_soc,
         plan_soc_percent=plan_soc_percent,
         hours_until_plan=hours_until_plan,
+        house_kwh=house_kwh,
     )
     emergency = current_soc is not None and float(current_soc) < float(min_soc)
     lock = apply_forward_smooth(
@@ -2449,6 +2724,272 @@ def month_open_for_report(
     }
 
 
+def last_closed_safety_window(
+    now: datetime,
+    interval_minutes: int,
+) -> Tuple[datetime, datetime]:
+    """Letztes vollständig abgeschlossenes Taktfenster, mitternacht-ausgerichtet."""
+    minutes = normalize_safety_interval_minutes(interval_minutes)
+    midnight = datetime.combine(now.date(), datetime.min.time())
+    elapsed = max(0.0, (now - midnight).total_seconds())
+    interval_sec = max(60, minutes * 60)
+    idx = int(elapsed // interval_sec)
+    end = midnight + timedelta(seconds=idx * interval_sec)
+    start = end - timedelta(seconds=interval_sec)
+    return start, end
+
+
+def history_profile_hourly(
+    days: Sequence[Dict[str, Any]],
+    today: date,
+    lookback: int = SAFETY_HISTORY_DAYS,
+) -> List[Optional[float]]:
+    """Mittlerer Stunden-Grundverbrauch der letzten vollen Tage (kWh/h = kW)."""
+    totals = [0.0] * HOURS
+    counts = [0] * HOURS
+    used = 0
+    for day in reversed(list(days)):
+        try:
+            day_date = date.fromisoformat(str(day.get("date") or "")[:10])
+        except ValueError:
+            continue
+        if day_date >= today:
+            continue
+        hourly = _hourly_or_zero(day.get("base_hourly"))
+        if _measured_hours(hourly) < MIN_HOURS:
+            continue
+        for hour, value in enumerate(hourly[:HOURS]):
+            totals[hour] += max(0.0, float(value))
+            counts[hour] += 1
+        used += 1
+        if used >= max(1, int(lookback)):
+            break
+    out: List[Optional[float]] = [None] * HOURS
+    for hour in range(HOURS):
+        if counts[hour] <= 0:
+            continue
+        out[hour] = round(totals[hour] / counts[hour], 4)
+    return out
+
+
+def _hours_covering(start: datetime, end: datetime) -> List[int]:
+    hours: List[int] = []
+    cursor = start.replace(minute=0, second=0, microsecond=0)
+    while cursor < end:
+        hours.append(cursor.hour)
+        cursor += timedelta(hours=1)
+    return hours
+
+
+def mean_kw_from_hourly(
+    hourly: Sequence[Optional[float]],
+    start: datetime,
+    end: datetime,
+) -> Optional[float]:
+    """Mittlere Leistung über das Fenster aus Stundenwerten (kWh/h = kW)."""
+    if end <= start:
+        return None
+    hours = _hours_covering(start, end)
+    if not hours:
+        return None
+    vals: List[float] = []
+    for hour in hours:
+        if hour < 0 or hour >= len(hourly):
+            return None
+        raw = hourly[hour]
+        if raw is None:
+            return None
+        try:
+            vals.append(max(0.0, float(raw)))
+        except (TypeError, ValueError):
+            return None
+    if not vals:
+        return None
+    return sum(vals) / len(vals)
+
+
+def actual_kw_from_timeseries(
+    samples: Sequence[Dict[str, Any]],
+    start: datetime,
+    end: datetime,
+) -> Optional[float]:
+    """Mittlere Grundlast (Betrieb minus Miner) im Minutenfenster."""
+    if end <= start:
+        return None
+    start_m = start.hour * 60 + start.minute
+    end_m = end.hour * 60 + end.minute
+    if end.date() != start.date():
+        # Nur Fenster innerhalb eines Kalendertags.
+        return None
+    vals: List[float] = []
+    for sample in samples:
+        try:
+            minute = int(float(sample.get("m")))
+        except (TypeError, ValueError):
+            continue
+        if minute < start_m or minute >= end_m:
+            continue
+        try:
+            betrieb = float(sample.get("betrieb") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        try:
+            miner = float(sample.get("miner_kw") or 0.0)
+        except (TypeError, ValueError):
+            miner = 0.0
+        vals.append(max(0.0, betrieb - miner))
+    if not vals:
+        return None
+    return sum(vals) / len(vals)
+
+
+def safety_step_kw(deficit_kw: float, divisor: float) -> float:
+    """Defizit / Teiler. Positiv = mehr Zukauf, negativ = weniger."""
+    div = normalize_safety_divisor(divisor)
+    return float(deficit_kw) / div
+
+
+def apply_safety_correction(
+    prev: Optional[Dict[str, Any]],
+    *,
+    enabled: bool,
+    interval_minutes: int,
+    divisor: float,
+    now: datetime,
+    actual_kw: Optional[float],
+    history_kw: Optional[float],
+    window_start: datetime,
+    window_end: datetime,
+    recommended_kw: Optional[float],
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Kumulative Korrektur aus dem letzten abgeschlossenen Takt.
+
+    Der normale Dauer-Zukauf bleibt unverändert. Rückgabe:
+    state-Dict und Report-Feld mit Zuschlag und empfohlenem Zukauf inkl. Sicherheit.
+    Kein oberer Deckel. Der Gesamt-Soll darf unter den normalen Wert fallen.
+    """
+    state = dict(_empty_safety_state())
+    if isinstance(prev, dict):
+        for key in state:
+            if key in prev:
+                state[key] = prev[key]
+    try:
+        cumulative = float(state.get("cumulative_kw") or 0.0)
+    except (TypeError, ValueError):
+        cumulative = 0.0
+    interval = normalize_safety_interval_minutes(interval_minutes)
+    div = normalize_safety_divisor(divisor)
+    applied = False
+    deficit: Optional[float] = None
+    step: Optional[float] = None
+    if enabled and actual_kw is not None and history_kw is not None:
+        end_stamp = window_end.isoformat(timespec="seconds")
+        if state.get("last_window_end") != end_stamp:
+            deficit = float(actual_kw) - float(history_kw)
+            step = safety_step_kw(deficit, div)
+            cumulative = cumulative + step
+            state["cumulative_kw"] = round(cumulative, 6)
+            state["last_window_end"] = end_stamp
+            state["last_actual_kw"] = round(float(actual_kw), 4)
+            state["last_history_kw"] = round(float(history_kw), 4)
+            state["last_deficit_kw"] = round(deficit, 4)
+            state["last_step_kw"] = round(step, 6)
+            state["updated_at"] = now.isoformat(timespec="seconds")
+            applied = True
+    surcharge = round(float(state.get("cumulative_kw") or 0.0), 4)
+    safety_kw: Optional[float] = None
+    if recommended_kw is not None:
+        if enabled:
+            # Keine Untergrenze am normalen Soll, kein oberer Deckel.
+            safety_kw = round(float(recommended_kw) + surcharge, 3)
+        else:
+            safety_kw = round(float(recommended_kw), 3)
+    report = {
+        "enabled": bool(enabled),
+        "interval_minutes": interval,
+        "divisor": div,
+        "window_start": window_start.isoformat(timespec="seconds"),
+        "window_end": window_end.isoformat(timespec="seconds"),
+        "actual_kw": None if actual_kw is None else round(float(actual_kw), 4),
+        "history_kw": None if history_kw is None else round(float(history_kw), 4),
+        "deficit_kw": None if deficit is None else round(deficit, 4),
+        "step_kw": None if step is None else round(step, 6),
+        "applied": applied,
+        "surcharge_kw": surcharge,
+        "recommended_kw": None if recommended_kw is None else round(float(recommended_kw), 3),
+        "safety_recommended_kw": safety_kw,
+        "doc": (
+            "Sicherheitszuschlag: Am Ende jedes frei einstellbaren Takts (Minuten oder Stunden) "
+            "wird der Ist-Verbrauch des Fensters mit der Historie verglichen. "
+            "Defizit = Ist − Historie (kW). Zuschlag je Takt = Defizit / Teiler "
+            f"(Standard Teiler {SAFETY_DIVISOR_DEFAULT:.0f}). Die Zuschläge summieren sich; "
+            "Unterverbrauch senkt den Zuschlag wieder. Getrennt vom normalen Dauer-Zukauf, "
+            "ohne oberen Deckel und ohne Untergrenze am normalen Soll."
+        ),
+    }
+    return state, report
+
+
+def _today_hourly_from_days(
+    days: Sequence[Dict[str, Any]],
+    today: date,
+) -> List[Optional[float]]:
+    out: List[Optional[float]] = [None] * HOURS
+    for day in days:
+        if str(day.get("date") or "")[:10] != today.isoformat():
+            continue
+        raw = day.get("today_hourly_actual")
+        if not isinstance(raw, list):
+            break
+        for hour, value in enumerate(raw[:HOURS]):
+            if value is None:
+                out[hour] = None
+            else:
+                try:
+                    out[hour] = round(float(value), 4)
+                except (TypeError, ValueError):
+                    out[hour] = None
+        break
+    return out
+
+
+def _safety_actual_and_history(
+    *,
+    base_dir: str,
+    days: Sequence[Dict[str, Any]],
+    today: date,
+    interval_minutes: int,
+    window_start: datetime,
+    window_end: datetime,
+) -> Tuple[Optional[float], Optional[float]]:
+    """Ist und Historie für das abgeschlossene Fenster."""
+    history = history_profile_hourly(days, today)
+    if window_start.date() != today or window_end.date() != today:
+        # Tagesübergreifende Fenster brauchen Archiv-Ist; vorerst auslassen.
+        return None, mean_kw_from_hourly(history, window_start, window_end)
+    if interval_minutes <= 1:
+        try:
+            from energy_timeseries_24h import load_timeseries_state
+
+            ts = load_timeseries_state(base_dir)
+            samples = list(ts.get("samples") or [])
+            if str(ts.get("date") or "")[:10] != today.isoformat():
+                samples = []
+        except Exception:
+            samples = []
+        actual = actual_kw_from_timeseries(samples, window_start, window_end)
+        # Historie für die Minute: Stundenmittel der Historie dieser Uhrzeit.
+        hist_hour_start = window_start.replace(minute=0, second=0, microsecond=0)
+        hist_hour_end = hist_hour_start + timedelta(hours=1)
+        history_kw = mean_kw_from_hourly(history, hist_hour_start, hist_hour_end)
+        return actual, history_kw
+    today_hourly = _today_hourly_from_days(days, today)
+    return (
+        mean_kw_from_hourly(today_hourly, window_start, window_end),
+        mean_kw_from_hourly(history, window_start, window_end),
+    )
+
+
 def get_report(base_dir: str) -> Dict[str, Any]:
     path = _state_path(base_dir)
     today = date.today()
@@ -2591,8 +3132,75 @@ def get_report(base_dir: str) -> Dict[str, Any]:
                 "Deckt der heutige Rest die Last, fällt der "
                 "Soll auf 0 plus den Band-Aufschlag, ohne auf dem alten hohen Wert stehen zu bleiben. "
                 "Normal bis 1,2 kW, bei hoher 48-Stunden-Last bis 1,5 kW. "
-                "Nur bei eingeschaltetem Schalter Planung, keine Netzspitzen geht dieser Wert ins BMS."
+                "Nur bei eingeschaltetem Schalter Planung, keine Netzspitzen geht dieser Wert ins BMS. "
+                "Zusätzlich: Sicherheitszuschlag mit frei einstellbarem Takt (Minuten oder Stunden, "
+                "intern in Minuten) und Teiler (Standard 24). Ist minus Historie ergibt das Defizit; Defizit/Teiler "
+                "wird kumuliert. Das Feld Empfohlener Zukauf mit Sicherheitsalgorithmus ist "
+                "getrennt vom normalen Dauer-Zukauf, ohne oberen Deckel und ohne Untergrenze "
+                "am normalen Soll."
             )
+        # Sicherheitsalgorithmus obendrauf: ändert recommended_kw / Glättung nicht.
+        safety_now = datetime.now()
+        safety_interval = normalize_safety_interval_minutes(
+            targets.get("safety_interval_minutes")
+        )
+        safety_divisor = normalize_safety_divisor(targets.get("safety_divisor"))
+        win_start, win_end = last_closed_safety_window(safety_now, safety_interval)
+        actual_kw, history_kw = _safety_actual_and_history(
+            base_dir=base_dir,
+            days=days,
+            today=today,
+            interval_minutes=safety_interval,
+            window_start=win_start,
+            window_end=win_end,
+        )
+        safety_state, safety_report = apply_safety_correction(
+            state.get("safety") if isinstance(state.get("safety"), dict) else {},
+            enabled=bool(targets.get("safety_enabled", True)),
+            interval_minutes=safety_interval,
+            divisor=safety_divisor,
+            now=safety_now,
+            actual_kw=actual_kw,
+            history_kw=history_kw,
+            window_start=win_start,
+            window_end=win_end,
+            recommended_kw=report.get("recommended_kw"),
+        )
+        state["safety"] = safety_state
+        report["safety"] = safety_report
+        report["safety_recommended_kw"] = safety_report.get("safety_recommended_kw")
+        report["safety_surcharge_kw"] = safety_report.get("surcharge_kw")
+        # Nur Anzeige. recommended_kw und der BMS-Pfad bleiben unverändert.
+        parts_now = report.get("recommended_parts") if isinstance(report.get("recommended_parts"), dict) else {}
+        mehrbedarf_kw = None
+        override_kw = None
+        try:
+            from telegram_energy import load_mehrbedarf_record
+
+            record = load_mehrbedarf_record(base_dir)
+            mehrbedarf_kw = record.get("kw")
+            override_kw = record.get("override_kw")
+        except Exception:
+            mehrbedarf_kw = None
+            override_kw = None
+        base_raw = parts_now.get("safety_base_kw")
+        coverage_kwh = None if base_raw is None else float(base_raw) * HOURS
+        base_kw, deviation_kw, day_share = apply_mehrbedarf_to_safety_fields(
+            base_raw,
+            safety_report.get("surcharge_kw"),
+            mehrbedarf_kw,
+            override_kw=override_kw,
+            coverage_kwh=coverage_kwh,
+            early_purchase_kw=parts_now.get("plan_recovery_kw") or 0.0,
+            now=safety_now,
+        )
+        report["safety_base_kw"] = base_kw
+        report["safety_deviation_kw"] = deviation_kw
+        # Nur Anzeige. recommended_kw und recommended_import_kw bleiben der Dauerzukauf.
+        report["new_risk_kw"] = parts_now.get("new_risk_kw")
+        report["mehrbedarf_morgen_kw"] = mehrbedarf_kw
+        report["mehrbedarf_override_kw"] = override_kw
+        report["mehrbedarf_day_kw"] = day_share
         _save_state(path, state)
         return report
 
@@ -2631,6 +3239,8 @@ def save_targets(base_dir: str, updates: Dict[str, Any]) -> Dict[str, Any]:
             targets["soc_hold_enabled"] = bool(updates["soc_hold_enabled"])
         if "weather_adjust_enabled" in updates:
             targets["weather_adjust_enabled"] = bool(updates["weather_adjust_enabled"])
+        if "safety_enabled" in updates:
+            targets["safety_enabled"] = bool(updates["safety_enabled"])
         if "soc_hold_percent" in updates:
             try:
                 targets["soc_hold_percent"] = max(1.0, min(95.0, float(updates["soc_hold_percent"])))
@@ -2644,6 +3254,37 @@ def save_targets(base_dir: str, updates: Dict[str, Any]) -> Dict[str, Any]:
             if horizon not in SOC_HOLD_HORIZONS:
                 raise ValueError("Zeitfenster muss 24 oder 48 Stunden sein")
             targets["soc_hold_horizon_hours"] = horizon
+        if "safety_interval_minutes" in updates or "safety_interval_value" in updates:
+            if "safety_interval_value" in updates:
+                interval = safety_interval_minutes_from_input(
+                    updates.get("safety_interval_value"),
+                    updates.get("safety_interval_unit", "minutes"),
+                )
+            else:
+                try:
+                    interval = int(round(float(updates["safety_interval_minutes"])))
+                except (TypeError, ValueError):
+                    raise ValueError("Ungültiger Sicherheitstakt")
+                if (
+                    interval < SAFETY_INTERVAL_MIN_MINUTES
+                    or interval > SAFETY_INTERVAL_MAX_MINUTES
+                ):
+                    raise ValueError(
+                        f"Sicherheitstakt muss zwischen {SAFETY_INTERVAL_MIN_MINUTES} "
+                        f"und {SAFETY_INTERVAL_MAX_MINUTES} Minuten liegen"
+                    )
+            targets["safety_interval_minutes"] = interval
+        if "safety_divisor" in updates:
+            try:
+                divisor = float(updates["safety_divisor"])
+            except (TypeError, ValueError):
+                raise ValueError("Ungültiger Sicherheitsteiler")
+            if divisor < SAFETY_DIVISOR_MIN or divisor > SAFETY_DIVISOR_MAX:
+                raise ValueError(
+                    f"Sicherheitsteiler muss zwischen {SAFETY_DIVISOR_MIN:g} und "
+                    f"{SAFETY_DIVISOR_MAX:g} liegen"
+                )
+            targets["safety_divisor"] = divisor
         state["targets"] = targets
         _save_state(path, state)
     return get_report(base_dir)

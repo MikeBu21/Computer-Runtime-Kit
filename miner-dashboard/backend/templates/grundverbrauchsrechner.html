@@ -6,11 +6,36 @@
 <style>
   .gvr-hero {
     display: grid;
-    grid-template-columns: minmax(280px, 1.45fr) minmax(220px, 1fr);
+    grid-template-columns: minmax(260px, 1.2fr) minmax(220px, 1fr) minmax(220px, 1fr);
     justify-content: start;
     gap: 1rem;
     margin-bottom: 1.25rem;
   }
+  .gvr-safety-stack { display: flex; flex-direction: column; gap: 0.85rem; }
+  .gvr-hero-safety, .gvr-hero-deviation {
+    position: relative;
+    background:
+      radial-gradient(ellipse at 15% 0%, rgba(255, 234, 0, 0.14), transparent 42%),
+      var(--surface);
+    border: 1px solid rgba(255, 234, 0, 0.35);
+    border-radius: 18px;
+    padding: 1.25rem 1.35rem;
+  }
+  .gvr-hero-deviation { border-color: rgba(255,255,255,0.16); }
+  .gvr-hero-deviation.gvr-dev-plus { border-color: rgba(0, 230, 118, 0.55); }
+  .gvr-hero-deviation.gvr-dev-minus { border-color: rgba(255, 138, 128, 0.65); }
+  .gvr-dev-chip {
+    position: absolute;
+    top: 0.85rem;
+    right: 0.85rem;
+    border-radius: 999px;
+    padding: 0.25rem 0.7rem;
+    font-weight: 700;
+    font-size: 0.95rem;
+    background: rgba(255,255,255,0.08);
+  }
+  .gvr-dev-chip.gvr-dev-plus, .gvr-hero-deviation.gvr-dev-plus .gvr-value { color: #00e676; }
+  .gvr-dev-chip.gvr-dev-minus, .gvr-hero-deviation.gvr-dev-minus .gvr-value { color: #ff8a80; }
   .gvr-hero-main, .gvr-hero-side, .gvr-card, .gvr-panel {
     background:
       radial-gradient(ellipse at 15% 0%, rgba(0, 230, 118, 0.12), transparent 42%),
@@ -105,6 +130,43 @@
     color: var(--muted);
     font-size: 0.82rem;
   }
+  .gvr-safety-controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem 1.25rem;
+    align-items: end;
+    margin-top: 0.85rem;
+  }
+  .gvr-safety-controls label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+  .gvr-safety-controls select,
+  .gvr-safety-controls input[type="number"] {
+    background: rgba(255,255,255,0.05);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    color: #fff;
+    padding: 0.45rem 0.65rem;
+    min-width: 9rem;
+  }
+  .gvr-safety-controls button {
+    border: none;
+    border-radius: 999px;
+    padding: 0.5rem 1rem;
+    background: linear-gradient(180deg, #ffea00, #f5c400);
+    color: #1a1400;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .gvr-safety-toggle {
+    flex-direction: row !important;
+    align-items: center;
+    gap: 0.45rem !important;
+  }
   @media (max-width: 900px) {
     .gvr-hero, .gvr-cards, .gvr-miner { grid-template-columns: 1fr; }
     .gvr-value { font-size: 3rem; }
@@ -130,9 +192,54 @@
   <div class="gvr-hero-side">
     <p class="gvr-kicker">Rest der letzten Tage</p>
     <p class="gvr-value gvr-value-side" id="gvr_rest">— <span>kW</span></p>
-    <p class="gvr-sub">Der bisherige Wert. Nur zum Ablesen.</p>
+    <p class="gvr-sub">Last minus PV morgen mal 80 Prozent minus PV übermorgen mal 60 Prozent minus Speicherentlastung, geteilt durch 24, mindestens 0. Nur Anzeige, nicht ins BMS.</p>
     <div class="gvr-meta" id="gvr_meta"></div>
   </div>
+  <div class="gvr-safety-stack">
+    <div class="gvr-hero-deviation" id="gvr_deviation_card">
+      <p class="gvr-kicker">Abweichung im Takt</p>
+      <p class="gvr-value gvr-value-side" id="gvr_deviation">— <span>kW</span></p>
+      <p class="gvr-sub" id="gvr_deviation_sub">Nur Anzeige. Wird nicht ins BMS geschrieben.</p>
+    </div>
+    <div class="gvr-hero-safety" id="gvr_safety_card">
+      <p class="gvr-dev-chip" id="gvr_safety_chip">± —</p>
+      <p class="gvr-kicker">Empfohlener Zukauf mit Sicherheitsalgorithmus</p>
+      <p class="gvr-value gvr-value-side" id="gvr_safety">— <span>kW</span></p>
+      <p class="gvr-sub" id="gvr_safety_hint"></p>
+      <p class="gvr-sub" id="gvr_safety_sub">PV-Mischung mal Vertrauen plus Speicherentlastung, minus Rest von heute und den ganzen morgigen Hausverbrauch, geteilt durch 24, mindestens 0.</p>
+    </div>
+  </div>
+</div>
+
+<div class="gvr-panel">
+  <h3 class="panel-title">Sicherheitsalgorithmus</h3>
+  <p class="gvr-note">
+    Der Basiswert ist PV-Mischung mal Vertrauen plus Speicherentlastung, minus den restlichen heutigen Abend und den ganzen morgigen Hausverbrauch, geteilt durch 24, mindestens 0.
+    Die Speicherentlastung ist der Abstand vom Ist-SoC zum Mindest-SoC abzüglich des 10-Prozent-Bandes.
+    Darüber liegt die Abweichung aus dem Takt: Ist minus Historie, geteilt durch den Teiler, kumuliert.
+    Die Abweichung wird nur angezeigt und nicht ins BMS geschrieben. Der empfohlene Zukauf bleibt unverändert.
+  </p>
+  <div class="gvr-safety-controls">
+    <label class="gvr-safety-toggle">
+      <input type="checkbox" id="gvr_safety_enabled"> Aktiv
+    </label>
+    <label>
+      Takt
+      <span style="display:flex; gap:0.4rem; align-items:center;">
+        <input type="number" id="gvr_safety_interval_value" min="1" max="10080" step="1">
+        <select id="gvr_safety_interval_unit">
+          <option value="minutes">Minuten</option>
+          <option value="hours">Stunden</option>
+        </select>
+      </span>
+    </label>
+    <label>
+      Teiler
+      <input type="number" id="gvr_safety_divisor" min="1" max="168" step="1">
+    </label>
+    <button type="button" id="gvr_safety_save">Speichern</button>
+  </div>
+  <p class="gvr-note" id="gvr_safety_save_state"></p>
 </div>
 
 <div class="gvr-cards" id="gvr_cards"></div>
@@ -184,6 +291,30 @@
     el.innerHTML = kw(value) + ' <span>kW</span>';
   }
 
+  function setSafetyFeed(value) {
+    const el = document.getElementById("gvr_safety");
+    const hint = document.getElementById("gvr_safety_hint");
+    const missing = value == null || Number.isNaN(Number(value));
+    if (missing) {
+      el.innerHTML = "— <span>kW</span>";
+      if (hint) hint.textContent = "";
+      return;
+    }
+    const displayed = -Number(value);
+    const shown = nf.format(Math.abs(displayed));
+    const sign = displayed > 0 ? "+" : displayed < 0 ? "−" : "";
+    el.innerHTML = sign + shown + " <span>kW</span>";
+    if (hint) {
+      if (displayed > 0) {
+        hint.textContent = "Sie müssten durchgehend " + shown + " kW vom Netz beziehen.";
+      } else if (displayed < 0) {
+        hint.textContent = "Sie könnten durchgehend " + shown + " kW ins Netz einspeisen.";
+      } else {
+        hint.textContent = "Aktuell weder Bezug noch Einspeisung.";
+      }
+    }
+  }
+
   function esc(text) {
     return String(text == null ? "" : text)
       .replace(/&/g, "&amp;")
@@ -218,8 +349,28 @@
 
   function render(data) {
     report = data;
-    setBig("gvr_rest", data.weekly_kw);
+    setBig("gvr_rest", data.new_risk_kw);
     setBig("gvr_weekly", data.recommended_kw);
+    setSafetyFeed(data.safety_base_kw);
+    const deviation = data.safety_deviation_kw;
+    const deviationEl = document.getElementById("gvr_deviation");
+    const deviationCard = document.getElementById("gvr_deviation_card");
+    const chip = document.getElementById("gvr_safety_chip");
+    const signed = deviation == null || Number.isNaN(Number(deviation))
+      ? null
+      : (Number(deviation) > 0 ? "+" : Number(deviation) < 0 ? "−" : "") + nf.format(Math.abs(Number(deviation)));
+    if (deviationEl) {
+      deviationEl.innerHTML = signed == null ? "— <span>kW</span>" : signed + " <span>kW</span>";
+    }
+    if (deviationCard) {
+      deviationCard.classList.toggle("gvr-dev-plus", deviation != null && Number(deviation) > 0);
+      deviationCard.classList.toggle("gvr-dev-minus", deviation != null && Number(deviation) < 0);
+    }
+    if (chip) {
+      chip.textContent = signed == null ? "± —" : signed + " kW";
+      chip.classList.toggle("gvr-dev-plus", deviation != null && Number(deviation) > 0);
+      chip.classList.toggle("gvr-dev-minus", deviation != null && Number(deviation) < 0);
+    }
     const purchaseCard = document.getElementById("gvr_purchase_card");
     const lamp = document.getElementById("gvr_lamp");
     const short = !!data.recommended_short && data.recommended_kw != null;
@@ -241,6 +392,64 @@
       if (data.next_week_change) bits.push("nächste automatische Wochenänderung " + data.next_week_change);
       if (data.trend_label) bits.push("Grundverbrauch " + data.trend_label);
       sub.textContent = bits.join(" · ") || "Noch zu wenig Last-, PV- oder Speicherdaten für den Dauerzukauf.";
+    }
+    const safety = data.safety || {};
+    const targets = data.targets || {};
+    const safetySub = document.getElementById("gvr_safety_sub");
+    const deviationSub = document.getElementById("gvr_deviation_sub");
+    const safetyBits = [];
+    safetyBits.push("Basis aus PV-Mischung × Vertrauen + Speicherentlastung, / 24");
+    if (deviationSub) {
+      if (deviation == null || Number.isNaN(Number(deviation))) {
+        deviationSub.textContent = "Noch kein Vergleich mit der Historie.";
+      } else {
+        const amount = nf.format(Math.abs(Number(deviation)));
+        const direction = Number(deviation) > 0 ? "mehr" : Number(deviation) < 0 ? "weniger" : "genauso viel";
+        const verb = Number(deviation) === 0 ? "verbraucht wie" : "verbraucht als";
+        deviationSub.textContent = "Sie haben bis jetzt " + amount + " " + direction + " " + verb + " laut Historie.";
+      }
+    }
+    if (safety.actual_kw != null && safety.history_kw != null) {
+      safetyBits.push("letztes Fenster Ist " + kw(safety.actual_kw) + " / Historie " + kw(safety.history_kw) + " kW");
+    }
+    if (safety.interval_minutes != null) {
+      const mins = Number(safety.interval_minutes);
+      if (mins % 60 === 0 && mins >= 60) {
+        safetyBits.push("Takt " + (mins / 60) + " h");
+      } else {
+        safetyBits.push("Takt " + mins + " min");
+      }
+    }
+    if (safety.divisor != null) safetyBits.push("Teiler " + nf1.format(safety.divisor));
+    if (data.mehrbedarf_morgen_kw != null) {
+      safetyBits.push(
+        "Mehrbedarf morgen " + kw(data.mehrbedarf_morgen_kw) + " kW bis morgen Mitternacht, im Schnitt "
+        + kw(data.mehrbedarf_day_kw) + " kW"
+      );
+    }
+    if (safety.enabled === false) safetyBits.push("ausgeschaltet");
+    safetySub.textContent = safetyBits.join(" · ") || "Noch kein abgeschlossenes Taktfenster.";
+    const enabledEl = document.getElementById("gvr_safety_enabled");
+    const intervalValueEl = document.getElementById("gvr_safety_interval_value");
+    const intervalUnitEl = document.getElementById("gvr_safety_interval_unit");
+    const divisorEl = document.getElementById("gvr_safety_divisor");
+    if (enabledEl) enabledEl.checked = targets.safety_enabled !== false && safety.enabled !== false;
+    const storedMinutes = targets.safety_interval_minutes != null
+      ? Number(targets.safety_interval_minutes)
+      : (safety.interval_minutes != null ? Number(safety.interval_minutes) : null);
+    if (intervalValueEl && intervalUnitEl && storedMinutes != null && !Number.isNaN(storedMinutes)) {
+      if (storedMinutes % 60 === 0 && storedMinutes >= 60) {
+        intervalValueEl.value = String(storedMinutes / 60);
+        intervalUnitEl.value = "hours";
+      } else {
+        intervalValueEl.value = String(storedMinutes);
+        intervalUnitEl.value = "minutes";
+      }
+    }
+    if (divisorEl && targets.safety_divisor != null) {
+      divisorEl.value = String(targets.safety_divisor);
+    } else if (divisorEl && safety.divisor != null) {
+      divisorEl.value = String(safety.divisor);
     }
     const meta = document.getElementById("gvr_meta");
     const w = data.window || {};
@@ -483,9 +692,47 @@
     document.getElementById("gvr_save_state").textContent = "Annahme gespeichert. Nur die Rechnung hat sich geändert.";
   }
 
-  load().catch(function (err) {
-    document.getElementById("gvr_alerts").innerHTML = '<div class="gvr-alert">Daten konnten nicht geladen werden.</div>';
+  async function saveSafety() {
+    const status = document.getElementById("gvr_safety_save_state");
+    status.textContent = "Speichere …";
+    const response = await fetch("/api/grundverbrauch/ziele", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify({
+        safety_enabled: document.getElementById("gvr_safety_enabled").checked,
+        safety_interval_value: Number(document.getElementById("gvr_safety_interval_value").value),
+        safety_interval_unit: document.getElementById("gvr_safety_interval_unit").value,
+        safety_divisor: Number(document.getElementById("gvr_safety_divisor").value)
+      })
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      status.textContent = data.error || "Speichern fehlgeschlagen.";
+      return;
+    }
+    render(data);
+    status.textContent = "Takt und Teiler gespeichert.";
+  }
+
+  const safetySave = document.getElementById("gvr_safety_save");
+  if (safetySave) safetySave.addEventListener("click", saveSafety);
+
+  function loadOrWarn() {
+    return load().catch(function () {
+      document.getElementById("gvr_alerts").innerHTML = '<div class="gvr-alert">Daten konnten nicht geladen werden.</div>';
+    });
+  }
+
+  loadOrWarn();
+  window.addEventListener("pageshow", function (event) {
+    if (event.persisted) loadOrWarn();
   });
+  setInterval(function () {
+    const active = document.activeElement;
+    if (active && active.closest && active.closest(".gvr-safety-controls")) return;
+    load().catch(function () {});
+  }, 60000);
 })();
 </script>
 {% endblock %}

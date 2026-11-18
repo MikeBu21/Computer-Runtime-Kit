@@ -1028,6 +1028,96 @@
     @media (max-width: 520px) {
       .role-sum-grid { grid-template-columns: 1fr; }
     }
+    .mehrbedarf-panel {
+      margin-bottom: 1rem;
+      background:
+        linear-gradient(135deg, rgba(33, 150, 243, 0.08), transparent 42%),
+        var(--surface);
+      border: 1px solid rgba(100, 181, 246, 0.28);
+      border-radius: 18px;
+      padding: 1.1rem 1.25rem;
+    }
+    .mehrbedarf-top {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.85rem 1.25rem;
+      align-items: flex-end;
+      justify-content: space-between;
+    }
+    .mehrbedarf-copy {
+      flex: 1 1 16rem;
+      min-width: 0;
+    }
+    .mehrbedarf-kicker {
+      margin: 0 0 0.25rem;
+      color: #90caf9;
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+    .mehrbedarf-title {
+      margin: 0;
+      color: #fff;
+      font-size: 1.15rem;
+      font-weight: 700;
+    }
+    .mehrbedarf-sub {
+      margin: 0.4rem 0 0;
+      color: var(--muted);
+      font-size: 0.9rem;
+      line-height: 1.45;
+      max-width: 40rem;
+    }
+    .mehrbedarf-form {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.55rem;
+      align-items: end;
+    }
+    .mehrbedarf-field {
+      display: flex;
+      flex-direction: column;
+      gap: 0.3rem;
+      min-width: 9rem;
+    }
+    .mehrbedarf-field label {
+      color: var(--muted);
+      font-size: 0.78rem;
+      font-weight: 600;
+    }
+    .mehrbedarf-field input {
+      width: 8.5rem;
+      border: 1px solid rgba(255,255,255,0.14);
+      border-radius: 12px;
+      background: rgba(0,0,0,0.22);
+      color: #fff;
+      padding: 0.65rem 0.8rem;
+      font-size: 1rem;
+      font-variant-numeric: tabular-nums;
+    }
+    .mehrbedarf-field input:focus {
+      outline: 2px solid rgba(100, 181, 246, 0.55);
+      outline-offset: 1px;
+    }
+    .mehrbedarf-save {
+      border: 0;
+      border-radius: 12px;
+      padding: 0.7rem 1.1rem;
+      background: linear-gradient(180deg, #42a5f5, #1e88e5);
+      color: #fff;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .mehrbedarf-save:hover { filter: brightness(1.06); }
+    .mehrbedarf-hint {
+      margin: 0.7rem 0 0;
+      min-height: 1.2rem;
+      color: var(--muted);
+      font-size: 0.86rem;
+    }
+    .mehrbedarf-hint.ok { color: var(--accent, #00e676); }
+    .mehrbedarf-hint.err { color: #ef9a9a; }
   </style>
 {% endblock %}
 
@@ -1065,6 +1155,26 @@
         <div class="role-sum-value" id="role_sum_verbrauch">—</div>
       </div>
     </div>
+  </div>
+
+  <div class="mehrbedarf-panel" id="mehrbedarf_panel">
+    <div class="mehrbedarf-top">
+      <div class="mehrbedarf-copy">
+        <p class="mehrbedarf-kicker">Hinweis</p>
+        <h5 class="mehrbedarf-title">Mehrbedarf morgen</h5>
+        <p class="mehrbedarf-sub">
+          Wie viele kW mehr brauchst du morgen tagsüber? Der Wert geht nur in die Sicherheitsanzeige, nicht in den empfohlenen Zukauf und nicht ins BMS.
+        </p>
+      </div>
+      <form class="mehrbedarf-form" id="mehrbedarf_form">
+        <div class="mehrbedarf-field">
+          <label for="mehrbedarf_kw">Zusätzlich morgen (kW)</label>
+          <input id="mehrbedarf_kw" name="kw" type="number" inputmode="decimal" min="0" max="1000" step="0.1" placeholder="z. B. 10" required>
+        </div>
+        <button type="submit" class="mehrbedarf-save" id="mehrbedarf_save">Übernehmen</button>
+      </form>
+    </div>
+    <p class="mehrbedarf-hint" id="mehrbedarf_hint"></p>
   </div>
 
   <div class="panel flow-panel">
@@ -3506,6 +3616,57 @@
       document.getElementById("flow_add_custom_btn")?.addEventListener("click", addCustomFlowField);
     }
 
+    function initMehrbedarfPanel() {
+      const form = document.getElementById("mehrbedarf_form");
+      const input = document.getElementById("mehrbedarf_kw");
+      const hint = document.getElementById("mehrbedarf_hint");
+      if (!form || !input || !hint) return;
+
+      function paintHint(text, kind) {
+        hint.textContent = text || "";
+        hint.classList.remove("ok", "err");
+        if (kind) hint.classList.add(kind);
+      }
+
+      fetch("/api/mehrbedarf-morgen", { credentials: "same-origin" })
+        .then(function (response) { return response.json(); })
+        .then(function (data) {
+          if (!data || !data.ok) return;
+          if (data.kw != null && !Number.isNaN(Number(data.kw))) {
+            input.value = String(data.kw);
+            paintHint("Gespeichert: " + Number(data.kw).toLocaleString("de-DE", { maximumFractionDigits: 2 }) + " kW", "ok");
+          } else {
+            paintHint("Noch kein Mehrbedarf hinterlegt.", "");
+          }
+        })
+        .catch(function () {});
+
+      form.addEventListener("submit", function (event) {
+        event.preventDefault();
+        const body = new FormData();
+        body.set("kw", input.value);
+        paintHint("Wird gespeichert…", "");
+        fetch("/api/mehrbedarf-morgen", {
+          method: "POST",
+          body: body,
+          credentials: "same-origin"
+        })
+          .then(function (response) { return response.json().then(function (data) { return { ok: response.ok, data: data }; }); })
+          .then(function (result) {
+            const data = result.data || {};
+            if (!result.ok || !data.ok) {
+              paintHint(data.message || "Speichern fehlgeschlagen.", "err");
+              return;
+            }
+            if (data.kw != null) input.value = String(data.kw);
+            paintHint(data.message || "Gespeichert.", "ok");
+          })
+          .catch(function () {
+            paintHint("Speichern fehlgeschlagen.", "err");
+          });
+      });
+    }
+
     function initRecoveryButtons() {
       document.querySelectorAll(".recovery-yes, .recovery-no").forEach(btn => {
         btn.addEventListener("click", () => {
@@ -3546,6 +3707,7 @@
     setInterval(updateHashrateChart, 60000);
     window.onload = function () {
       initFlowConfigUi();
+      initMehrbedarfPanel();
       initRecoveryButtons();
       loadCustomFlowMeta().then(() => updateFlowValues());
       updateFlowValues();
