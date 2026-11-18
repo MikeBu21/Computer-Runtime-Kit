@@ -263,6 +263,9 @@ INVERTERS = {item["id"]: item for item in INVERTER_LIST}
 DEFAULT_INVERTER = "deye_hybrid"
 
 _lock = threading.Lock()
+# Eine Solarman-Verbindung zur Zeit. Seite, Schreiber und Neulesen teilen sich
+# denselben Logger, egal welche IP und welche Seriennummer.
+_logger_io = threading.RLock()
 _last_write: Dict[str, Any] = {"at": 0.0, "signature": None, "result": None}
 _writer_started = False
 # Einmal lösen, nachdem wirklich ein Zukauf geschrieben wurde. Steht in den Einstellungen,
@@ -2434,10 +2437,79 @@ def _solarman_checksum(frame: bytes) -> int:
     return sum(frame[1:]) & 0xFF
 
 
-# Bytes 7–10 jedes Rahmens von 192.168.1.176, little-endian. Die
-# Home-Assistant-Konfiguration trägt eine andere Nummer, und auf die antwortet
-# dieser Logger nicht. Nur diese Nummer kommt in den Schreib- und Leserahmen.
-LOGGER_FRAME_SERIAL = 2965822000
+# Seriennummer, die der Logger an einer IP selbst genannt hat. Pro Host, nicht fest.
+_logger_serial_cache: Dict[str, int] = {}
+
+
+def _announced_logger_serial(host: str, refresh: bool = False) -> int:
+    """Seriennummer aus der Solarman-Ankündigung genau dieser IP."""
+    target = _host(host)
+    if not target:
+        return 0
+    if not refresh and target in _logger_serial_cache:
+        try:
+            return int(_logger_serial_cache[target] or 0)
+        except (TypeError, ValueError):
+            return 0
+    found = _unicast_discover(target, timeout=1.0)
+    serial = 0
+    if found and _host(found.get("ip")) == target:
+        try:
+            serial = int(found.get("serial") or 0)
+        except (TypeError, ValueError):
+            serial = 0
+    if serial:
+        _logger_serial_cache[target] = serial
+        return serial
+    try:
+        return int(_logger_serial_cache.get(target) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _configured_serial_for_host(host: str, settings: Optional[Dict[str, Any]]) -> int:
+    """Hinterlegte Seriennummer, aber nur wenn sie zu dieser IP gehört."""
+    target = _host(host)
+    if not target or not settings:
+        return 0
+    candidates = []
+    if _host(settings.get("modbus_host")) == target or _host(settings.get("logger_ip")) == target:
+        candidates.append(settings.get("logger_serial"))
+    for item in settings.get("tracked_inverters") or []:
+        if isinstance(item, dict) and _host(item.get("ip")) == target:
+            candidates.append(item.get("serial"))
+    for raw in candidates:
+        try:
+            serial = int(raw or 0)
+        except (TypeError, ValueError):
+            continue
+        if serial:
+            return serial
+    return 0
+
+
+def _serial_for_logger(
+    host: str,
+    hinted: int = 0,
+    settings: Optional[Dict[str, Any]] = None,
+    refresh: bool = False,
+) -> int:
+    """Rahmen-Seriennummer für den Logger an dieser IP.
+
+    Zuerst die Nummer, die das Gerät selbst nennt. Danach die für diese IP
+    gespeicherte Nummer. Eine fremde Home-Assistant-Nummer oder eine feste
+    Konstante wird nicht eingesetzt.
+    """
+    announced = _announced_logger_serial(host, refresh=refresh)
+    if announced:
+        return announced
+    configured = _configured_serial_for_host(host, settings)
+    if configured:
+        return configured
+    try:
+        return int(hinted or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _solarman_exchange(
@@ -2447,6 +2519,7 @@ def _solarman_exchange(
     modbus: bytes,
     accept,
     sock: Optional[socket.socket] = None,
+    timeout: float = 4.0,
 ) -> bytes:
     """Ein Modbus-Rahmen über den Solarman-Logger (Port 8899).
 
@@ -2454,12 +2527,16 @@ def _solarman_exchange(
     Antworten auf die Abfragen von Home Assistant. Gezählt wird nur ein Rahmen mit
     unserer Folgenummer, für den accept() zustimmt. Sonst ginge ein verlorener
     Schreibbefehl als bestätigt durch.
+
+    Ohne schon geöffnete Verbindung gilt die Seriennummer des Loggers an dieser IP.
+    Eine mitgegebene Verbindung behält die Seriennummer, mit der sie geöffnet wurde.
     """
+    if sock is None:
+        serial = _serial_for_logger(host, serial)
     if not serial:
         raise OSError("Solarman-Seriennummer fehlt")
-    if str(host) == "192.168.1.176":
-        serial = LOGGER_FRAME_SERIAL
     sequence = random.randint(1, 255)
+    wait_s = max(0.5, float(timeout))
     header = (
         b"\xA5"
         + struct.pack("<H", 15 + len(modbus))
@@ -2474,7 +2551,7 @@ def _solarman_exchange(
     frame = header + struct.pack("<B", _solarman_checksum(header)) + b"\x15"
 
     def _wait(active: socket.socket) -> bytes:
-        deadline = time.monotonic() + 4.0
+        deadline = time.monotonic() + wait_s
         active.sendall(frame)
         data = b""
         while time.monotonic() < deadline:
@@ -2494,16 +2571,24 @@ def _solarman_exchange(
                 if begin < 0:
                     data = b""
                     break
-                data = data[begin:]
+                if begin:
+                    data = data[begin:]
                 if len(data) < 3:
                     break
                 total = 13 + struct.unpack("<H", data[1:3])[0]
+                # Mitten in einem fremden Rahmen steht auch 0xA5. Eine unmögliche
+                # Länge würde die eigene Antwort verschlucken, bis die Wartezeit um ist.
+                if total < 16 or total > 600:
+                    data = data[1:]
+                    continue
                 if len(data) < total:
                     break
-                reply, data = data[:total], data[total:]
-                if reply[-1:] != b"\x15" or reply[4] != 0x15 or reply[5] != sequence:
+                reply = data[:total]
+                if reply[-1:] != b"\x15" or reply[-2] != _solarman_checksum(reply[:-2]):
+                    data = data[1:]
                     continue
-                if reply[-2] != _solarman_checksum(reply[:-2]):
+                data = data[total:]
+                if reply[4] != 0x15 or reply[5] != sequence:
                     continue
                 answer = reply[25:-2]
                 if len(answer) >= 3 and answer[0] == modbus[0] and answer[1] == (modbus[1] | 0x80):
@@ -2512,10 +2597,11 @@ def _solarman_exchange(
                     return answer
         raise OSError("keine passende Logger-Antwort")
 
-    if sock is not None:
-        return _wait(sock)
-    with socket.create_connection((host, int(port)), timeout=4.0) as owned:
-        return _wait(owned)
+    with _logger_io:
+        if sock is not None:
+            return _wait(sock)
+        with socket.create_connection((host, int(port)), timeout=4.0) as owned:
+            return _wait(owned)
 
 
 def write_solarman_register(host: str, port: int, unit: int, serial: int, address: int, value: int) -> None:
@@ -2572,11 +2658,12 @@ def read_solarman_span(
     address: int,
     count: int,
     sock: Optional[socket.socket] = None,
+    timeout: float = 4.0,
 ) -> List[int]:
     """Benachbarte Holding-Register in einem Modbus-Abruf lesen."""
     modbus = _modbus_read_request(unit, address, count)
     answer = _solarman_exchange(
-        host, port, serial, modbus, _accept_read(unit, count), sock=sock
+        host, port, serial, modbus, _accept_read(unit, count), sock=sock, timeout=timeout
     )
     return _words_from_read(answer, count)
 
@@ -3519,7 +3606,7 @@ class _LoggerRead:
 
     @classmethod
     def connect(cls, settings: Dict[str, Any], serial: int) -> "_LoggerRead":
-        host = str(settings.get("modbus_host") or "")
+        host = str(settings.get("modbus_host") or settings.get("logger_ip") or "")
         port = int(settings.get("modbus_port") or 0)
         unit = int(settings.get("modbus_unit") or 1)
         sock = socket.create_connection((host, port), timeout=4.0)
@@ -3531,16 +3618,56 @@ class _LoggerRead:
         except OSError:
             pass
 
-    def read_span(self, address: int, count: int) -> List[int]:
-        return read_solarman_span(
-            self.host, self.port, self.unit, self.serial, address, count, sock=self.sock
-        )
+    def reconnect(self) -> None:
+        self.close()
+        self.sock = socket.create_connection((self.host, self.port), timeout=4.0)
+
+    def read_span(self, address: int, count: int, attempts: int = 3, timeout: float = 4.0) -> List[int]:
+        """Ein Block. Antwortet der Logger nicht, neue Verbindung und noch einmal.
+
+        Das gilt für jeden Logger, nicht für eine feste IP. Ein stiller erster
+        Versuch ist kein endgültiger Fehler.
+        """
+        error: Optional[BaseException] = None
+        for _attempt in range(max(1, int(attempts))):
+            try:
+                return read_solarman_span(
+                    self.host,
+                    self.port,
+                    self.unit,
+                    self.serial,
+                    address,
+                    count,
+                    sock=self.sock,
+                    timeout=timeout,
+                )
+            except OSError as exc:
+                error = exc
+                try:
+                    self.reconnect()
+                except OSError as reconnect_error:
+                    error = reconnect_error
+        raise OSError(str(error or "keine passende Logger-Antwort"))
+
+
+def _stable_span(link: _LoggerRead, address: int, count: int) -> List[int]:
+    """Einzeln gelesene Register zweimal holen. Home Assistant schickt dieselben Längen mit."""
+    words = link.read_span(address, count)
+    if int(count) != 1:
+        return words
+    again = link.read_span(address, count)
+    if again == words:
+        return words
+    third = link.read_span(address, count)
+    if third == again:
+        return third
+    return words
 
 
 def _capture_register_map(link: _LoggerRead) -> Dict[int, int]:
     values: Dict[int, int] = {}
     for address, count in _CAPTURE_SPANS:
-        words = link.read_span(address, count)
+        words = _stable_span(link, address, count)
         for offset, word in enumerate(words):
             values[address + offset] = int(word)
     return values
@@ -3556,67 +3683,68 @@ def capture_install_from_inverter() -> Dict[str, Any]:
     """
     settings = load_settings()
     writing = _bms_is_writing(settings)
-    host = settings.get("modbus_host") or ""
-    serial = _writer_serial(settings)
-    if not host or not serial:
-        return {
-            "ok": False,
-            "message": "Kein Steuer-Logger mit Seriennummer. Zuerst den Wechselrichter hinzufügen.",
-        }
-    link: Optional[_LoggerRead] = None
-    try:
-        link = _LoggerRead.connect(settings, serial)
-        values = _capture_register_map(link)
-        updates: Dict[str, Any] = {}
-        for key, (address, scale) in INSTALL_REGISTER_SCALE.items():
-            updates[key] = int(values[address]) * int(scale)
-        updates["program_time"] = [int(values[REG_PROGRAM_TIME + index]) for index in range(PROGRAM_SLOTS)]
-        updates["program_power"] = [int(values[REG_PROGRAM_POWER + index]) for index in range(PROGRAM_SLOTS)]
-        updates["program_soc"] = [int(values[REG_PROGRAM_SOC + index]) for index in range(PROGRAM_SLOTS)]
-        updates["program_charging"] = [int(values[REG_PROGRAM_CHARGE + index]) for index in range(PROGRAM_SLOTS)]
-        zero_export = int(values[0x0068])
-        if zero_export >= 0x8000:
-            zero_export -= 0x10000
-        updates["idle_grid_w"] = _idle_grid_w({"idle_grid_w": zero_export})
-        updates["idle_energy_pattern"] = _idle_energy_pattern({"idle_energy_pattern": int(values[0x008D])})
-        updates["idle_work_mode"] = _idle_work_mode({"idle_work_mode": int(values[0x008E])})
-        updates["idle_peak_w"] = _idle_peak_w({"idle_peak_w": int(values[0x00BF])})
-        updates["install_time_of_use"] = int(values[0x0092])
-        updates["install_grid_charge"] = int(values[0x0082])
-        updates["install_grid_charge_a"] = int(values[0x0080])
-        updates["install_microinverter"] = int(values[0x0084])
-        switch = int(values[0x00B2])
-        updates["install_peak_shaving"] = 1 if switch & (1 << GRID_PEAK_ENABLE_BIT) else 0
-        updates["install_export_cutoff"] = 1 if switch & (1 << MICRO_EXPORT_CUTOFF_BIT) else 0
-        updates["install_captured"] = True
-        updates["install_captured_serial"] = serial
-    except OSError as exc:
-        outcome = {"ok": False, "message": f"Elektrikerwerte konnten nicht gelesen werden: {exc}"}
-    else:
-        if writing:
-            shown = dict(settings)
-            shown.update(updates)
-            outcome = {
-                "ok": True,
-                "saved": False,
-                "message": (
-                    "Vom Wechselrichter gelesen. Der gespeicherte Elektrikerstand bleibt, "
-                    "solange BMS schreibt."
-                ),
-                "settings": shown,
+    host = settings.get("modbus_host") or settings.get("logger_ip") or ""
+    with _logger_io:
+        serial = _serial_for_logger(host, _writer_serial(settings), settings, refresh=True)
+        if not host or not serial:
+            return {
+                "ok": False,
+                "message": "Kein Steuer-Logger mit Seriennummer. Zuerst den Wechselrichter hinzufügen.",
             }
+        link: Optional[_LoggerRead] = None
+        try:
+            link = _LoggerRead.connect(settings, serial)
+            values = _capture_register_map(link)
+            updates: Dict[str, Any] = {}
+            for key, (address, scale) in INSTALL_REGISTER_SCALE.items():
+                updates[key] = int(values[address]) * int(scale)
+            updates["program_time"] = [int(values[REG_PROGRAM_TIME + index]) for index in range(PROGRAM_SLOTS)]
+            updates["program_power"] = [int(values[REG_PROGRAM_POWER + index]) for index in range(PROGRAM_SLOTS)]
+            updates["program_soc"] = [int(values[REG_PROGRAM_SOC + index]) for index in range(PROGRAM_SLOTS)]
+            updates["program_charging"] = [int(values[REG_PROGRAM_CHARGE + index]) for index in range(PROGRAM_SLOTS)]
+            zero_export = int(values[0x0068])
+            if zero_export >= 0x8000:
+                zero_export -= 0x10000
+            updates["idle_grid_w"] = _idle_grid_w({"idle_grid_w": zero_export})
+            updates["idle_energy_pattern"] = _idle_energy_pattern({"idle_energy_pattern": int(values[0x008D])})
+            updates["idle_work_mode"] = _idle_work_mode({"idle_work_mode": int(values[0x008E])})
+            updates["idle_peak_w"] = _idle_peak_w({"idle_peak_w": int(values[0x00BF])})
+            updates["install_time_of_use"] = int(values[0x0092])
+            updates["install_grid_charge"] = int(values[0x0082])
+            updates["install_grid_charge_a"] = int(values[0x0080])
+            updates["install_microinverter"] = int(values[0x0084])
+            switch = int(values[0x00B2])
+            updates["install_peak_shaving"] = 1 if switch & (1 << GRID_PEAK_ENABLE_BIT) else 0
+            updates["install_export_cutoff"] = 1 if switch & (1 << MICRO_EXPORT_CUTOFF_BIT) else 0
+            updates["install_captured"] = True
+            updates["install_captured_serial"] = serial
+        except OSError as exc:
+            outcome = {"ok": False, "message": f"Elektrikerwerte konnten nicht gelesen werden: {exc}"}
         else:
-            saved = save_settings(updates)
-            outcome = {
-                "ok": True,
-                "saved": True,
-                "message": "Elektrikerwerte vom Wechselrichter gelesen.",
-                "settings": saved,
-            }
-    finally:
-        if link is not None:
-            link.close()
-    return outcome
+            if writing:
+                shown = dict(settings)
+                shown.update(updates)
+                outcome = {
+                    "ok": True,
+                    "saved": False,
+                    "message": (
+                        "Vom Wechselrichter gelesen. Der gespeicherte Elektrikerstand bleibt, "
+                        "solange BMS schreibt."
+                    ),
+                    "settings": shown,
+                }
+            else:
+                saved = save_settings(updates)
+                outcome = {
+                    "ok": True,
+                    "saved": True,
+                    "message": "Elektrikerwerte vom Wechselrichter gelesen.",
+                    "settings": saved,
+                }
+        finally:
+            if link is not None:
+                link.close()
+        return outcome
 
 
 def _stopped_for_soc(
@@ -4296,25 +4424,17 @@ def apply_exchange_hold(settings: Optional[Dict[str, Any]] = None) -> Dict[str, 
     return save_settings({"real_mode": True, "target_grid_kw": kw, "exchange_hold": True})
 
 
-# Not-Rampe relativ zum Storage-Sockel (aktives Elektriker-Programm-SoC / Tauchziel):
-# Nur fallend: Eintritt, wenn der SoC von oben die Schwelle Sockel+10 unterschreitet.
-# Im Fenster (Sockel, Sockel+10]: linear 10 % Cap an der Schwelle → nahe 100 % knapp über dem Sockel.
-# Am/unter dem Sockel und beim Anstieg aus dem Sockel heraus: Rampe aus (nur Planungswert).
-# Mit Planung: max(Plan, Rampe), aber nur solange die Rampe aktiv ist.
+# Die SoC-Fall-Rampe (linear bis zum maximalen Netzbezug, typisch 12 kW) ist entfernt.
+# Der Zukauf ist allein der Planungswert aus dem Grundverbrauchsrechner.
+# Schwelle bleibt nur als Bezeichnung Sockel+10, sie steuert keine Leistung mehr.
 SOC_RAMP_MARGIN = 10
-SOC_RAMP_START_FRACTION = 0.1
 # Nur Fallback, wenn kein Elektriker-Sockel (program_soc) lesbar ist.
 SOC_RAMP_DEFAULT_SOCKEL = 20
 
-_ramp_active = False
-_ramp_prev_soc: Optional[float] = None
-
 
 def reset_netzbezug_ramp_state() -> None:
-    """Rampen-Zustand zurücksetzen (Tests / klarer Neustart)."""
-    global _ramp_active, _ramp_prev_soc
-    _ramp_active = False
-    _ramp_prev_soc = None
+    """Früherer Rampen-Zustand. Die Rampe rechnet keine Leistung mehr."""
+    return None
 
 
 def _gespeicherter_max_import_w(settings: Optional[Dict[str, Any]]) -> float:
@@ -4346,66 +4466,18 @@ def netzbezug_rampe_schwelle(sockel_soc: Optional[float]) -> float:
     return _netzbezug_sockel_soc(sockel_soc) + SOC_RAMP_MARGIN
 
 
-def _netzbezug_rampe_leistung_kw(
-    soc_value: float,
-    sockel: float,
-    schwelle: float,
-    max_import_w: float,
-) -> Optional[float]:
-    """Reine Leistung im offenen Fenster (Sockel, Schwelle]. Außerhalb None."""
-    if soc_value <= sockel or soc_value > schwelle or SOC_RAMP_MARGIN <= 0:
-        return None
-    try:
-        cap_w = float(max_import_w)
-    except (TypeError, ValueError):
-        return None
-    cap_kw = max(0.0, cap_w) / 1000.0
-    if cap_kw <= 0:
-        return 0.0
-    progress = (schwelle - soc_value) / float(SOC_RAMP_MARGIN)
-    progress = max(0.0, min(1.0, progress))
-    fraction = SOC_RAMP_START_FRACTION + (1.0 - SOC_RAMP_START_FRACTION) * progress
-    return round(min(cap_kw, cap_kw * fraction), 2)
-
-
-def _update_netzbezug_ramp_active(soc_value: float, sockel: float, schwelle: float) -> bool:
-    """Nur fallend aktiv: Eintritt von oberhalb der Schwelle, Aus am/unter Sockel oder darüber."""
-    global _ramp_active, _ramp_prev_soc
-    prev = _ramp_prev_soc
-    if soc_value > schwelle or soc_value <= sockel:
-        _ramp_active = False
-    elif _ramp_active:
-        pass
-    elif prev is not None and prev > schwelle:
-        _ramp_active = True
-    else:
-        _ramp_active = False
-    _ramp_prev_soc = soc_value
-    return _ramp_active
-
-
 def netzbezug_soc_rampe_kw(
     soc: Optional[float],
     sockel_soc: Optional[float],
     max_import_w: float,
 ) -> Optional[float]:
-    """Notfall-Netzbezug in kW nur bei aktiver Fall-Rampe. Sonst None.
+    """Keine SoC-Rampe mehr. Früher linear bis zum maximalen Netzbezug, typisch 12 kW.
 
-    Eintritt: SoC unterschreitet Sockel+10 von oben. Am/unter dem Sockel aus.
-    Anstieg aus dem Sockel (z. B. 20 → 21) aktiviert die Rampe nicht.
-    Sockel kommt aus dem aktiven Elektriker-Fenster (program_soc), nicht hart kodiert.
+    Der Zukauf kommt allein aus dem Grundverbrauchsrechner über target_grid_kw.
+    Diese Funktion schreibt nichts.
     """
-    if soc is None:
-        return None
-    try:
-        soc_value = float(soc)
-    except (TypeError, ValueError):
-        return None
-    sockel = _netzbezug_sockel_soc(sockel_soc)
-    schwelle = sockel + SOC_RAMP_MARGIN
-    if not _update_netzbezug_ramp_active(soc_value, sockel, schwelle):
-        return None
-    return _netzbezug_rampe_leistung_kw(soc_value, sockel, schwelle, max_import_w)
+    del soc, sockel_soc, max_import_w
+    return None
 
 
 def soll_netzbezug_kw(
@@ -4414,29 +4486,21 @@ def soll_netzbezug_kw(
     planning_on: bool = False,
     now: Optional[datetime] = None,
 ) -> float:
-    """Soll-Netzbezug fürs Register, bevor apply_write schreibt.
+    """Soll-Netzbezug, bevor apply_write schreibt. Schreibt selbst nicht.
 
-    Ohne „Planung, keine Netzspitzen“: kein Zukauf (0); der Rampen-Zustand wird trotzdem
-    mitgeführt, damit der Fall-Eintritt nicht verpasst wird.
-    Mit Planung: Primärwert = Planungs-Soll; aktive Fall-Rampe → max(Plan, Rampe).
-    Das eigentliche Modbus-Schreiben bleibt an real_mode („Ins Register schreiben“) gebunden.
+    Ohne „Planung, keine Netzspitzen“: kein Zukauf (0).
+    Mit Planung: nur der Planungswert aus dem Grundverbrauchsrechner.
+    Die SoC-Fall-Rampe bis zum maximalen Netzbezug ist entfernt.
+    Das Modbus-Schreiben bleibt an real_mode („Ins Register schreiben“) gebunden.
     """
-    data = settings or {}
-    try:
-        base = float(data.get("target_grid_kw") or 0)
-    except (TypeError, ValueError):
-        base = 0.0
-    sockel = _electrician_soc_limit(data, now)
-    rampe = netzbezug_soc_rampe_kw(
-        _live_soc(live),
-        sockel,
-        _gespeicherter_max_import_w(data),
-    )
+    del live, now
     if not planning_on:
         return 0.0
-    if rampe is None:
-        return base
-    return max(base, rampe)
+    data = settings or {}
+    try:
+        return max(0.0, float(data.get("target_grid_kw") or 0))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 _mac_tracker_started = False
@@ -4684,7 +4748,7 @@ def _ensure_writer() -> None:
                     settings = apply_planning_hold(settings, live)
                 if settings.get("real_mode"):
                     reapply_dauerzukauf_test()
-                # Planung an: Planungs-Soll, unter der SoC-Schwelle Not-Rampe (max aus beidem).
+                # Planung an: nur der Planungswert. Keine SoC-Rampe bis zum Netzmaximum.
                 target_kw = soll_netzbezug_kw(settings, live, _planning_enabled())
                 plan = simulate(
                     live.get("grid_kw"),
@@ -4731,37 +4795,66 @@ def _program_charge_label(value: int) -> str:
     return "Battery"
 
 
+# Anzeige-Sollwerte in wenigen Blöcken. Nicht zwölf einzelne Verbindungen:
+# der Logger lässt dann das Neulesen fallen.
+_STATUS_SPANS = (
+    (0x0068, 1),
+    (0x006C, 2),
+    (0x0080, 5),
+    (0x008D, 5),
+    (0x009E, 1),
+    (0x00AA, 1),
+    (0x00B0, 1),
+    (0x00BF, 1),
+)
+
+
 def _read_inverter_registers(settings: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Sollwerte direkt vom aktuellen Logger. Unabhängig von alten Home-Assistant-Entity-IDs."""
+    """Sollwerte direkt vom aktuellen Logger. Unabhängig von alten Home-Assistant-Entity-IDs.
+
+    Läuft das Neulesen gerade, bleibt diese Abfrage weg und die Seite nimmt Home Assistant.
+    Sonst öffnet jeder Seitenabruf eigene Verbindungen und der Logger antwortet niemandem.
+    """
     host = _host(settings.get("modbus_host") or settings.get("logger_ip"))
     try:
-        serial = int(settings.get("logger_serial") or 0)
-        port = int(settings.get("modbus_port") or 8899)
-        unit = int(settings.get("modbus_unit") or 1)
+        hinted = int(settings.get("logger_serial") or 0)
     except (TypeError, ValueError):
         return None
-    if not host or not serial:
+    if not host:
         return None
-    wanted = {
-        "zero_export_w": 0x0068,
-        "work_mode": 0x008E,
-        "energy_pattern": 0x008D,
-        "peak_w": 0x00BF,
-        "grid_charge": 0x0082,
-        "grid_charge_a": 0x0080,
-        "max_discharge_a": 0x006D,
-        "program_soc": 0x00AA,
-        "program_charging": 0x00B0,
-        "program_power": 0x009E,
-        "max_export_w": 0x008F,
-        "solar_sell": 0x0091,
-    }
-    raw: Dict[str, int] = {}
-    for key, address in wanted.items():
-        try:
-            raw[key] = int(read_holding(host, port, unit, serial, address))
-        except OSError:
+    if not _logger_io.acquire(blocking=False):
+        return None
+    link: Optional[_LoggerRead] = None
+    try:
+        serial = _serial_for_logger(host, hinted, settings)
+        if not serial:
             return None
+        link = _LoggerRead.connect(settings, serial)
+        values: Dict[int, int] = {}
+        for address, count in _STATUS_SPANS:
+            words = link.read_span(address, count, attempts=1, timeout=1.5)
+            for offset, word in enumerate(words):
+                values[address + offset] = int(word)
+        raw = {
+            "zero_export_w": values[0x0068],
+            "work_mode": values[0x008E],
+            "energy_pattern": values[0x008D],
+            "peak_w": values[0x00BF],
+            "grid_charge": values[0x0082],
+            "grid_charge_a": values[0x0080],
+            "max_discharge_a": values[0x006D],
+            "program_soc": values[0x00AA],
+            "program_charging": values[0x00B0],
+            "program_power": values[0x009E],
+            "max_export_w": values[0x008F],
+            "solar_sell": values[0x0091],
+        }
+    except (OSError, KeyError):
+        return None
+    finally:
+        if link is not None:
+            link.close()
+        _logger_io.release()
     return {
         "zero_export_w": str(raw["zero_export_w"]),
         "work_mode": _work_mode_label(raw["work_mode"]),
@@ -4784,7 +4877,9 @@ def _read_register_state_ha(settings: Dict[str, Any]) -> Dict[str, Any]:
         from ha_device_control import read_ha_entity_state
     except Exception:
         return {}
-    host = _host(settings.get("modbus_host") or settings.get("logger_ip")) or "192.168.1.176"
+    host = _host(settings.get("modbus_host") or settings.get("logger_ip"))
+    if not host:
+        return {}
     prefix = host.replace(".", "_")
     return {
         "zero_export_w": read_ha_entity_state(f"number.{prefix}_zero_export_power"),
@@ -4803,12 +4898,13 @@ def _read_register_state_ha(settings: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def read_register_state() -> Dict[str, Any]:
-    """Aktuelle Soll-Register, zuerst direkt vom Wechselrichter."""
-    settings = load_settings()
-    direct = _read_inverter_registers(settings)
-    if direct:
-        return direct
-    return _read_register_state_ha(settings)
+    """Soll-Register für die Seite und die Driftprüfung.
+
+    Nicht direkt vom Logger. Die Seite fragt alle fünf Sekunden, und jede eigene
+    Verbindung liegt neben den zwei von Home Assistant. Der Logger nimmt die
+    Elektriker-Abfrage dann an, schickt aber keine passende Antwort zurück.
+    """
+    return _read_register_state_ha(load_settings())
 
 
 def status(record: bool = True) -> Dict[str, Any]:

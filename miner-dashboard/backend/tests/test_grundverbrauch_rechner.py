@@ -415,14 +415,14 @@ class LockTests(unittest.TestCase):
         )
         at_0518 = forward_purchase_kw(hours_until_sun=2.7, **common)
         at_0618 = forward_purchase_kw(hours_until_sun=1.0, **common)
-        # Mit starker Morgen-PV-Prognose sinkt der Nacht-Zukauf auf den Bandzuschlag.
+        # Mit starker Morgen-PV-Prognose und ohne Defizit zum Tagesplan ist der Zukauf 0.
+        # Der lineare Bandzuschlag am Mindest-SoC hebt ihn nicht mehr an.
         self.assertEqual(at_0518["kw"], at_0618["kw"])
         self.assertEqual(at_0618["band_factor"], 1.0)
-        self.assertEqual(at_0618["kw"], 0.7)
+        self.assertEqual(at_0618["kw"], 0.0)
         self.assertEqual(at_0618["pv_credit_kwh"], at_0618["load_kwh"])
         self.assertTrue(at_0618["pull_down"])
-        self.assertLessEqual(at_0618["kw"], 1.2)
-        self.assertNotEqual(at_0618["kw"], 2.0)
+        self.assertNotEqual(at_0618["kw"], 12.0)
         huge = forward_purchase_kw(
             hours_until_sun=1.0,
             **{**common, "daily_base_kwh": 80.0, "tomorrow_pv_kwh": 0.0, "day_after_pv_kwh": 0.0},
@@ -449,22 +449,127 @@ class LockTests(unittest.TestCase):
             daylight=False,
             max_soc_percent=95,
         )
-        # Starke PV-Prognose deckt die Last: Nacht-Zukauf = nur noch Bandzuschlag.
+        # Starke PV-Prognose deckt die Last. Der lineare Zuschlag am Mindest-SoC
+        # ist kein Zukauf mehr: 35 %, 40 %, 45 % und 50 % bleiben bei 0 kW.
         at_min = forward_purchase_kw(soc_percent=35, **common)
         halfway = forward_purchase_kw(soc_percent=40, **common)
         edge = forward_purchase_kw(soc_percent=45, **common)
         above = forward_purchase_kw(soc_percent=50, **common)
-        self.assertEqual(at_min["kw"], 0.4)
-        self.assertEqual(halfway["kw"], 0.2)
+        self.assertEqual(at_min["kw"], 0.0)
+        self.assertEqual(halfway["kw"], 0.0)
         self.assertEqual(edge["kw"], 0.0)
-        self.assertEqual(above["kw"], edge["kw"])
-        self.assertGreater(at_min["kw"], halfway["kw"])
-        self.assertGreater(halfway["kw"], edge["kw"])
+        self.assertEqual(above["kw"], 0.0)
+        self.assertEqual(at_min["plan_recovery_kw"], 0.0)
         sunny = forward_purchase_kw(soc_percent=40, hours_until_sun=10, daylight=True, **{
             key: value for key, value in common.items() if key not in {"hours_until_sun", "daylight"}
         })
         self.assertEqual(sunny["band_factor"], 0.5)
-        self.assertEqual(sunny["kw"], 0.20)
+        self.assertEqual(sunny["kw"], 0.0)
+
+    def test_day_plan_ramps_when_soc_slips_and_not_to_grid_max(self):
+        """Unter dem SoC vom Tagesbeginn wird die Lücke bis zur Tageswende gekauft.
+
+        10 Prozentpunkte unter dem Plan bei 40 kWh und 10 Stunden Rest sind 0,40 kW,
+        nicht der Cap und nicht 12 kW. PV-Gewichte und die Glättung bleiben.
+        Wieder auf dem Plan ist der Zusatz 0, und die Anzeige fährt schrittweise runter.
+        """
+        from datetime import datetime, timedelta
+
+        from grundverbrauch_rechner import (
+            FORWARD_PV_DAY_AFTER_W,
+            FORWARD_PV_TODAY_W,
+            FORWARD_PV_TOMORROW_W,
+            FORWARD_REFRESH,
+            FORWARD_SMOOTH_FAST_REL,
+            FORWARD_SMOOTH_REL,
+            apply_forward_smooth,
+            forward_purchase_kw,
+            plan_recovery_kw,
+            resolve_day_plan,
+        )
+
+        self.assertEqual(FORWARD_PV_TODAY_W, 1.0)
+        self.assertEqual(FORWARD_PV_TOMORROW_W, 0.6)
+        self.assertEqual(FORWARD_PV_DAY_AFTER_W, 0.4)
+        self.assertEqual(FORWARD_SMOOTH_REL, 0.25)
+        self.assertEqual(FORWARD_SMOOTH_FAST_REL, 0.70)
+        self.assertEqual(int(FORWARD_REFRESH.total_seconds()), 60)
+        self.assertAlmostEqual(plan_recovery_kw(40, 50, 40, 10), 0.4)
+        self.assertEqual(plan_recovery_kw(50, 50, 40, 10), 0.0)
+        self.assertEqual(plan_recovery_kw(55, 50, 40, 10), 0.0)
+
+        common = dict(
+            storage_kwh=40,
+            min_soc_percent=35,
+            daily_base_kwh=16.0,
+            base_load_scale=1.0,
+            tomorrow_pv_kwh=20.0,
+            day_after_pv_kwh=20.0,
+            forecast_trust=0.85,
+            hours_until_sun=8,
+            daylight=False,
+            max_soc_percent=95,
+        )
+        on_plan = forward_purchase_kw(
+            soc_percent=50, plan_soc_percent=50, hours_until_plan=10, **common
+        )
+        slipped = forward_purchase_kw(
+            soc_percent=40, plan_soc_percent=50, hours_until_plan=10, **common
+        )
+        self.assertEqual(on_plan["kw"], 0.0)
+        self.assertEqual(slipped["plan_recovery_kw"], 0.4)
+        self.assertEqual(slipped["kw"], 0.4)
+        self.assertLess(slipped["kw"], slipped["cap_kw"])
+        self.assertNotEqual(slipped["kw"], 12.0)
+        self.assertFalse(slipped["pull_down"])
+        huge = forward_purchase_kw(
+            soc_percent=30,
+            plan_soc_percent=80,
+            hours_until_plan=1,
+            tomorrow_pv_kwh=0.0,
+            day_after_pv_kwh=0.0,
+            **{key: value for key, value in common.items() if key not in {"tomorrow_pv_kwh", "day_after_pv_kwh"}},
+        )
+        self.assertEqual(huge["kw"], huge["cap_kw"])
+        self.assertLessEqual(huge["kw"], 1.5)
+        self.assertNotEqual(huge["kw"], 12.0)
+
+        opened = datetime(2026, 11, 17, 12, 0, 0)
+        shown = apply_forward_smooth({}, 0.0, 0.0, now=opened)
+        glimpse = apply_forward_smooth(
+            shown, slipped["p_raw"], 0.0, now=opened + timedelta(seconds=10)
+        )
+        self.assertEqual(glimpse["kw"], 0.0)
+        step = apply_forward_smooth(
+            shown, slipped["p_raw"], 0.0, now=opened + timedelta(minutes=1)
+        )
+        self.assertGreater(step["kw"], 0.0)
+        self.assertLess(step["kw"], slipped["kw"])
+        state = dict(step)
+        for minute in range(2, 8):
+            state = apply_forward_smooth(
+                state,
+                slipped["p_raw"],
+                0.0,
+                now=opened + timedelta(minutes=minute),
+            )
+        self.assertEqual(state["kw"], slipped["kw"])
+        down = apply_forward_smooth(
+            state, 0.0, 0.0, now=opened + timedelta(minutes=8)
+        )
+        self.assertGreater(down["kw"], 0.0)
+        self.assertLess(down["kw"], state["kw"])
+
+        noon = datetime(2026, 11, 17, 12, 0, 0)
+        first, soc, hours = resolve_day_plan({}, noon.date(), noon, 62.0)
+        self.assertEqual(first["soc_percent"], 62.0)
+        self.assertEqual(soc, 62.0)
+        self.assertAlmostEqual(hours, 12.0)
+        again, soc_again, _hours_again = resolve_day_plan(
+            {"day_plan": first}, noon.date(), noon.replace(hour=18), 40.0
+        )
+        self.assertEqual(again["soc_percent"], 62.0)
+        self.assertEqual(soc_again, 62.0)
 
     def test_forward_day_plateau_is_zero_near_max_soc(self):
         from grundverbrauch_rechner import forward_purchase_kw
@@ -520,7 +625,8 @@ class LockTests(unittest.TestCase):
         surge = blend_forward_load_kwh(17, 17, 34)
         self.assertAlmostEqual(calm, 17.0)
         self.assertAlmostEqual(surge, 0.70 * 34 + 0.20 * 17 + 0.10 * 17)
-        # Ohne PV-Gutschrift: verdoppelte 48h-Last hebt den Soll bis an den Cap.
+        # Ohne PV-Gutschrift folgt der Soll der höheren Last und bleibt unter dem Cap.
+        # Der lineare Bandzuschlag schiebt ihn nicht mehr auf 1,5 kW.
         out = forward_purchase_kw(
             soc_percent=35,
             storage_kwh=41,
@@ -537,8 +643,9 @@ class LockTests(unittest.TestCase):
             max_soc_percent=95,
         )
         self.assertGreater(out["kw"], 1.0)
-        self.assertLessEqual(out["kw"], 1.5)
-        self.assertEqual(out["kw"], 1.5)
+        self.assertEqual(out["kw"], 1.2)
+        self.assertLess(out["kw"], out["cap_kw"])
+        self.assertNotEqual(out["kw"], 12.0)
         self.assertEqual(out["cap_kw"], 1.5)
         self.assertEqual(out["band_factor"], 1.0)
 
@@ -564,30 +671,69 @@ class LockTests(unittest.TestCase):
         ]
         self.assertAlmostEqual(same_weekday_base_kwh(thursdays, today), 18.0)
 
-    def test_forward_smooth_holds_two_hours_then_steps(self):
+    def test_forward_smooth_follows_a_stable_target_within_minutes(self):
+        """Angezeigter Zukauf folgt dem frischen Soll in wenigen Minuten.
+
+        Rauschen unter 0,05 kW bleibt liegen. Ein einzelner neuer Zielwert
+        springt nicht sofort auf den vollen Wert. 0,65 kW bei frischem Soll
+        1,5 kW, floored und unter dem Mindest-SoC, ist nach wenigen Minuten
+        bei 1,5 kW und nicht erst nach stundenlangem Kriechen.
+        """
         from datetime import datetime, timedelta
 
-        from grundverbrauch_rechner import FORWARD_REFRESH, FORWARD_SMOOTH_ABS, apply_forward_smooth
+        from grundverbrauch_rechner import apply_forward_smooth
 
-        opened = datetime(2026, 11, 4, 10, 0, 0)
+        opened = datetime(2026, 11, 17, 15, 53, 0)
         first = apply_forward_smooth({}, 0.5, 0.0, now=opened)
         self.assertTrue(first["updated"])
         self.assertEqual(first["kw"], 0.5)
-        held = apply_forward_smooth(first, 1.0, 0.0, now=opened + timedelta(seconds=10))
-        self.assertFalse(held["updated"])
-        self.assertEqual(held["kw"], 0.5)
-        self.assertEqual(held["updated_at"], first["updated_at"])
-        later = apply_forward_smooth(first, 1.0, 0.0, now=opened + FORWARD_REFRESH)
-        self.assertTrue(later["updated"])
-        self.assertEqual(later["kw"], 0.6)
-        self.assertLessEqual(later["kw"] - first["kw"], FORWARD_SMOOTH_ABS)
-        self.assertNotEqual(later["kw"], 1.0)
-        emergency = apply_forward_smooth(
-            first, 1.0, 0.0, now=opened + FORWARD_REFRESH, emergency=True
-        )
-        self.assertEqual(emergency["kw"], 0.65)
+        glimpse = apply_forward_smooth(first, 1.0, 0.0, now=opened + timedelta(seconds=10))
+        self.assertFalse(glimpse["updated"])
+        self.assertEqual(glimpse["kw"], 0.5)
+        self.assertEqual(glimpse["updated_at"], first["updated_at"])
+        one_step = apply_forward_smooth(first, 1.0, 0.0, now=opened + timedelta(minutes=1))
+        self.assertTrue(one_step["updated"])
+        self.assertGreater(one_step["kw"], 0.5)
+        self.assertLess(one_step["kw"], 1.0)
+        self.assertGreater(one_step["kw"] - first["kw"], 0.10)
+        noise = apply_forward_smooth(first, 0.53, 0.0, now=opened + timedelta(minutes=2))
+        self.assertEqual(noise["kw"], 0.5)
         capped = apply_forward_smooth({}, 2.0, 0.0, now=opened)
         self.assertEqual(capped["kw"], 1.5)
+
+        behind = {
+            "kw": 0.65,
+            "raw_kw": 1.5,
+            "smoothed_kw": 0.65,
+            "floored": True,
+            "updated_at": opened.isoformat(timespec="seconds"),
+        }
+        early = apply_forward_smooth(
+            behind, 1.5, 0.0, now=opened + timedelta(seconds=10), emergency=True
+        )
+        self.assertGreater(early["kw"], 0.65)
+        self.assertLess(early["kw"], 1.5)
+        caught = apply_forward_smooth(
+            behind, 1.5, 0.0, now=opened + timedelta(minutes=3), emergency=True
+        )
+        self.assertEqual(caught["kw"], 1.5)
+        self.assertFalse(caught["floored"])
+        state = dict(behind)
+        reached_at = None
+        for minute in range(1, 6):
+            state = apply_forward_smooth(
+                state,
+                1.5,
+                0.0,
+                now=opened + timedelta(minutes=minute),
+                emergency=True,
+            )
+            if state["kw"] == 1.5:
+                reached_at = minute
+                break
+        self.assertIsNotNone(reached_at)
+        self.assertLessEqual(reached_at, 5)
+        self.assertEqual(state["kw"], 1.5)
 
     def test_today_rest_cuts_purchase_that_would_stay_near_1kw(self):
         """Hoher noch erwarteter Rest heute gegen niedriges Ist.
@@ -595,7 +741,7 @@ class LockTests(unittest.TestCase):
         Ohne today_pv_kwh bleibt der Tag-Zukauf bei 1,05 kW, weil die Mischung
         nur morgen/übermorgen kennt und die hier 0 sind. Der Rest (nicht die
         schon erzeugten kWh) drückt ihn auf 0, oberhalb des Pufferbands.
-        Im Band bleibt nur der lineare Aufschlag. Nachts zählt der heutige Rest
+        Im Band bleibt ohne Tagesdefizit kein linearer Aufschlag. Nachts zählt der heutige Rest
         weiterhin nicht — wohl aber die Vorwärtsprognose morgen/übermorgen.
         Ältere Tag-Tests lassen today_pv_kwh weg und behalten deshalb die
         reine Vorwärts-Mischung 0,6/0,4.
@@ -628,10 +774,10 @@ class LockTests(unittest.TestCase):
         self.assertGreater(covered["pv_blend_kwh"], without["pv_blend_kwh"])
         in_band = forward_purchase_kw(soc_percent=40, today_pv_kwh=40.0, **common)
         high_band = forward_purchase_kw(soc_percent=40, today_pv_kwh=0.0, **common)
-        self.assertEqual(high_band["kw"], 1.2)
-        self.assertEqual(in_band["kw"], 0.55)
+        self.assertEqual(high_band["kw"], 1.1)
+        self.assertEqual(in_band["kw"], 0.0)
         self.assertGreater(in_band["band_factor"], 0.0)
-        self.assertLess(in_band["kw"], 0.6)
+        self.assertEqual(in_band["plan_recovery_kw"], 0.0)
         self.assertAlmostEqual(in_band["p_day"], in_band["extra_kw"], places=2)
         night = dict(common)
         night["daylight"] = False
@@ -730,13 +876,13 @@ class LockTests(unittest.TestCase):
 
         40 minus das kleine Ist wären 35 kWh Gutschrift und decken die Last,
         der Zukauf fiele auf 0. Die Zukunft bleibt 20 kWh. Die fehlenden 15 kWh
-        der Vergangenheit erhöhen den Rohwert sofort. Die Glättung startet bei
-        Soll 0 und lässt den angezeigten Wert erst nach der Haltezeit steigen.
+        der Vergangenheit erhöhen den Rohwert sofort. Die Glättung übernimmt
+        diesen Rohwert nicht in den ersten Sekunden, nach einer halben Stunde
+        aber vollständig.
         """
         from datetime import datetime, timedelta
 
         from grundverbrauch_rechner import (
-            FORWARD_REFRESH,
             apply_forward_smooth,
             forecast_rest_today_kwh,
             forward_purchase_kw,
@@ -798,7 +944,7 @@ class LockTests(unittest.TestCase):
             prev,
             correct["p_raw"],
             0.0,
-            now=noon + timedelta(minutes=30),
+            now=noon + timedelta(seconds=10),
             pull_down=bool(correct["pull_down"]),
         )
         self.assertEqual(held["kw"], 0.0)
@@ -806,19 +952,19 @@ class LockTests(unittest.TestCase):
             prev,
             correct["p_raw"],
             0.0,
-            now=noon + FORWARD_REFRESH,
+            now=noon + timedelta(minutes=30),
             pull_down=bool(correct["pull_down"]),
         )
         self.assertGreater(later["raw_kw"], 0.0)
         self.assertAlmostEqual(later["raw_kw"], correct["p_raw"], places=3)
-        self.assertGreater(later["kw"], 0.0)
-        self.assertEqual(later["kw"], 0.10)
+        self.assertEqual(later["kw"], correct["kw"])
+        self.assertGreater(later["kw"], 0.10)
         self.assertNotEqual(later["kw"], 0.0)
 
     def test_clear_today_surplus_is_not_frozen_at_the_old_purchase(self):
         from datetime import datetime, timedelta
 
-        from grundverbrauch_rechner import FORWARD_REFRESH, apply_forward_smooth
+        from grundverbrauch_rechner import apply_forward_smooth
 
         now = datetime(2026, 11, 14, 8, 30, 0)
         prev = {
@@ -826,19 +972,21 @@ class LockTests(unittest.TestCase):
             "raw_kw": 1.05,
             "updated_at": now.isoformat(timespec="seconds"),
         }
-        frozen = apply_forward_smooth(prev, 0.0, 0.0, now=now + timedelta(minutes=20))
-        self.assertEqual(frozen["kw"], 1.05)
+        fresh = apply_forward_smooth(prev, 0.0, 0.0, now=now + timedelta(seconds=10))
+        self.assertEqual(fresh["kw"], 1.05)
         pulled = apply_forward_smooth(
-            prev, 0.0, 0.0, now=now + timedelta(minutes=20), pull_down=True
+            prev, 0.0, 0.0, now=now + timedelta(seconds=10), pull_down=True
         )
         self.assertEqual(pulled["kw"], 0.0)
         band = apply_forward_smooth(
-            prev, 0.30, 0.0, now=now + timedelta(minutes=20), pull_down=True
+            prev, 0.30, 0.0, now=now + timedelta(seconds=10), pull_down=True
         )
         self.assertEqual(band["kw"], 0.30)
-        stepped = apply_forward_smooth(prev, 0.0, 0.0, now=now + FORWARD_REFRESH)
-        self.assertEqual(stepped["kw"], 0.95)
-        self.assertNotEqual(stepped["kw"], 0.0)
+        stepped = apply_forward_smooth(prev, 0.0, 0.0, now=now + timedelta(minutes=1))
+        self.assertLess(stepped["kw"], 1.05 - 0.10)
+        self.assertGreater(stepped["kw"], 0.0)
+        caught = apply_forward_smooth(prev, 0.0, 0.0, now=now + timedelta(minutes=20))
+        self.assertEqual(caught["kw"], 0.0)
 
     def test_zero_anchor_can_reach_new_raw_next_week(self):
         first = apply_recommendation_locks(

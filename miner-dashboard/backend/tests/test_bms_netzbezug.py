@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import struct
 import unittest
 from unittest import mock
 
@@ -244,6 +245,184 @@ class ProgramAndReleaseTests(unittest.TestCase):
             )
         self.assertEqual(str(caught.exception), "keine passende Logger-Antwort")
         sock.recv.assert_called_once()
+
+    def test_reply_after_a_stray_frame_start_is_still_accepted(self):
+        """Ein 0xA5 mitten in fremdem Verkehr darf die eigene Antwort nicht verschlucken."""
+        sent = {}
+
+        class Sock:
+            def sendall(self, data):
+                sent["frame"] = data
+
+            def settimeout(self, _timeout):
+                return None
+
+            def recv(self, _size):
+                if sent.get("done"):
+                    raise TimeoutError("timed out")
+                sent["done"] = True
+                reply = bytearray.fromhex(
+                    "a515001015dafb30dac6b002014e8ce403650b000059e216670103020014b84b9815"
+                )
+                reply[5] = sent["frame"][5]
+                reply[-2] = sum(reply[1:-2]) & 0xFF
+                # Länge 0x0FFF wäre über 600 und hat früher den Rest der Wartezeit blockiert.
+                return bytes.fromhex("a5ff0f") + bytes(reply)
+
+            def close(self):
+                return None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc):
+                return False
+
+        with mock.patch.object(bms_seite, "_unicast_discover", return_value=None), mock.patch(
+            "bms_seite.socket.create_connection", return_value=Sock()
+        ):
+            words = bms_seite.read_solarman_span("10.2.2.8", 8899, 1, 818181, 0x0068, 1)
+        self.assertEqual(words, [20])
+
+    def test_reread_uses_the_logger_announced_at_that_ip(self):
+        """Nicht die feste Nummer aus einem anderen Netz, sondern die des Loggers an der IP."""
+        other_host = "10.8.0.20"
+        other_serial = 555001
+        sent = {}
+
+        class Sock:
+            def sendall(self, data):
+                sent["frame"] = data
+
+            def settimeout(self, _timeout):
+                return None
+
+            def recv(self, _size):
+                if sent.get("done"):
+                    raise TimeoutError("timed out")
+                sent["done"] = True
+                reply = bytearray.fromhex(
+                    "a515001015dafb30dac6b002014e8ce403650b000059e216670103020014b84b9815"
+                )
+                reply[5] = sent["frame"][5]
+                reply[-2] = sum(reply[1:-2]) & 0xFF
+                return bytes(reply)
+
+            def close(self):
+                return None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc):
+                return False
+
+        bms_seite._logger_serial_cache.clear()
+        discovered = {
+            "ip": other_host,
+            "mac": "aa:bb:cc:dd:ee:11",
+            "serial": other_serial,
+            "port": 8899,
+        }
+        with mock.patch.object(bms_seite, "_unicast_discover", return_value=discovered), mock.patch(
+            "bms_seite.socket.create_connection", return_value=Sock()
+        ):
+            words = bms_seite.read_solarman_span(other_host, 8899, 1, 2405169065, 0x0068, 1)
+        self.assertEqual(words, [20])
+        packed = struct.unpack_from("<I", sent["frame"], 7)[0]
+        self.assertEqual(packed, other_serial)
+        self.assertNotEqual(packed, 2965822000)
+        self.assertNotEqual(packed, 2405169065)
+
+    def test_span_retries_when_the_first_socket_stays_silent(self):
+        """Ein stiller erster Versuch wird auf einer neuen Verbindung wiederholt. Andere IP, andere Nummer."""
+        host = "10.9.9.40"
+        serial = 777001
+        sockets = []
+
+        class Sock:
+            def __init__(self, answer: bool):
+                self.answer = answer
+                self.sent = b""
+                self.used = False
+
+            def sendall(self, data):
+                self.sent += data
+
+            def settimeout(self, _timeout):
+                return None
+
+            def recv(self, _size):
+                if not self.answer or self.used:
+                    raise TimeoutError("timed out")
+                self.used = True
+                reply = bytearray.fromhex(
+                    "a515001015dafb30dac6b002014e8ce403650b000059e216670103020014b84b9815"
+                )
+                reply[5] = self.sent[5]
+                reply[-2] = sum(reply[1:-2]) & 0xFF
+                return bytes(reply)
+
+            def close(self):
+                return None
+
+        def connect(*_args, **_kwargs):
+            sock = Sock(answer=True)
+            sockets.append(sock)
+            return sock
+
+        link = bms_seite._LoggerRead(Sock(answer=False), host, 8899, 1, serial)
+        with mock.patch("bms_seite.socket.create_connection", side_effect=connect):
+            words = link.read_span(0x0068, 1, attempts=2, timeout=0.2)
+        self.assertEqual(words, [20])
+        self.assertEqual(len(sockets), 1)
+        self.assertEqual(link.host, host)
+        self.assertEqual(link.serial, serial)
+
+    def test_capture_reads_whichever_inverter_is_configured(self):
+        other_host = "10.4.4.12"
+        other_serial = 424242
+        settings = {
+            "modbus_host": other_host,
+            "modbus_port": 8899,
+            "modbus_unit": 1,
+            "logger_ip": other_host,
+            "logger_serial": 2965822000,
+            "inverter": "deye_hybrid",
+            "real_mode": True,
+            "known_entry_ids": [],
+            "tracked_inverters": [{"ip": other_host, "serial": 2965822000, "control": True}],
+        }
+        seen = {}
+
+        class Link:
+            def __init__(self, _sock, host, _port, _unit, serial):
+                seen["host"] = host
+                seen["serial"] = serial
+
+            def close(self):
+                return None
+
+            def read_span(self, address, count):
+                return [1] * count
+
+        bms_seite._logger_serial_cache.clear()
+        discovered = {"ip": other_host, "mac": "aa:bb:cc:dd:ee:22", "serial": other_serial, "port": 8899}
+        with mock.patch.object(bms_seite, "load_settings", return_value=settings), mock.patch.object(
+            bms_seite, "_unicast_discover", return_value=discovered
+        ), mock.patch.object(
+            bms_seite, "resolve_ha_link", return_value={"serial": 2405169065, "host": other_host}
+        ), mock.patch.object(
+            bms_seite._LoggerRead, "connect", side_effect=lambda *_args, **_kwargs: Link(None, other_host, 8899, 1, other_serial)
+        ) as connect, mock.patch.object(bms_seite, "save_settings") as save:
+            # connect is mocked, so assert the serial capture would pass in.
+            result = bms_seite.capture_install_from_inverter()
+        self.assertTrue(result["ok"], result.get("message"))
+        save.assert_not_called()
+        connect.assert_called_once()
+        self.assertEqual(connect.call_args.args[1], other_serial)
+        self.assertNotEqual(connect.call_args.args[1], 2965822000)
+        self.assertEqual(result["settings"]["install_captured_serial"], other_serial)
 
     def test_readback_reports_a_mismatch(self):
         self.assertIsNone(bms_seite.readback_diff(0x0091, "Solar Sell", 0, 0))
@@ -931,178 +1110,69 @@ class SocImportRampTests(unittest.TestCase):
             40,
         )
 
-    def test_ramp_is_linear_relative_to_sockel_only_when_falling(self):
-        # Ohne Fall-Eintritt: im Fenster keine Rampe.
-        self.assertIsNone(bms_seite.netzbezug_soc_rampe_kw(25, 20, 12000))
-        # Sockel 20 → Start 30: 10 % … nahe 100 % von 12 kW, nur nach Fall von oben.
-        self._enter_falling(20, 12000)
-        self.assertEqual(bms_seite.netzbezug_soc_rampe_kw(30, 20, 12000), 1.2)
-        self.assertEqual(bms_seite.netzbezug_soc_rampe_kw(29, 20, 12000), 2.28)
-        self.assertEqual(bms_seite.netzbezug_soc_rampe_kw(25, 20, 12000), 6.6)
-        # Am/unter Sockel: Rampe aus.
-        self.assertIsNone(bms_seite.netzbezug_soc_rampe_kw(20, 20, 12000))
-        self.assertIsNone(bms_seite.netzbezug_soc_rampe_kw(19, 20, 12000))
-        # Sockel 30 → Start 40.
-        bms_seite.reset_netzbezug_ramp_state()
-        self._enter_falling(30, 12000)
-        self.assertEqual(bms_seite.netzbezug_soc_rampe_kw(40, 30, 12000), 1.2)
-        self.assertEqual(bms_seite.netzbezug_soc_rampe_kw(35, 30, 12000), 6.6)
-        self.assertIsNone(bms_seite.netzbezug_soc_rampe_kw(30, 30, 12000))
-        self.assertIsNone(bms_seite.netzbezug_soc_rampe_kw(41, 30, 12000))
-        # Sockel 35 → Start 45.
-        bms_seite.reset_netzbezug_ramp_state()
-        self._enter_falling(35, 8000)
-        self.assertEqual(bms_seite.netzbezug_soc_rampe_kw(45, 35, 8000), 0.8)
-        self.assertIsNone(bms_seite.netzbezug_soc_rampe_kw(35, 35, 8000))
+    def test_ramp_never_raises_import_at_any_soc(self):
+        """Fall unter Sockel+10 erzeugt keine lineare Leistung mehr, auch nicht bis 12 kW."""
+        for soc, sockel, watts in (
+            (30, 20, 12000),
+            (29, 20, 12000),
+            (25, 20, 12000),
+            (22, 20, 8000),
+            (22, 20, 3000),
+            (40, 30, 12000),
+            (35, 30, 12000),
+            (45, 35, 8000),
+            (39, 30, 8000),
+            (21, 20, 12000),
+        ):
+            self._enter_falling(sockel, watts)
+            self.assertIsNone(bms_seite.netzbezug_soc_rampe_kw(soc, sockel, watts))
 
-    def test_rise_from_sockel_keeps_only_planner_no_ramp(self):
-        """Anstieg 20 → 21: nur Grundverbrauch, keine Rampe (kein Vollzukauf)."""
+    def test_planner_stays_the_only_setpoint_inside_the_old_ramp_window(self):
         morning = bms_seite.datetime(2026, 11, 14, 10, 0, tzinfo=bms_seite.TZ)
-        settings = self._settings_sockel(12000, sockel=20, target_kw=0.4)
-        # Zuerst unter/am Sockel → Rampe aus.
-        self.assertEqual(
-            bms_seite.soll_netzbezug_kw(
-                settings, {"soc_percent": 20}, planning_on=True, now=morning
-            ),
-            0.4,
+        afternoon = bms_seite.datetime(2026, 11, 14, 13, 0, tzinfo=bms_seite.TZ)
+        cases = (
+            (self._settings_sockel(12000, sockel=20, target_kw=0.4), 25, morning, 0.4),
+            (self._settings_sockel(12000, sockel=20, target_kw=0.4), 22, morning, 0.4),
+            (self._settings_sockel(8000, sockel=20, target_kw=0.2), 22, morning, 0.2),
+            (self._settings_sockel(3000, sockel=20, target_kw=0.2), 22, morning, 0.2),
+            (self._settings_sockel(12000, sockel=30, target_kw=0.5), 40, morning, 0.5),
+            (self._settings_sockel(12000, sockel=30, target_kw=0.5), 35, morning, 0.5),
+            (self._settings_sockel(12000, sockel=30, target_kw=0.5), 30, morning, 0.5),
+            (self._settings_sockel(12000, sockel=20, target_kw=3.0), 30, morning, 3.0),
+            (self._settings_sockel(12000, sockel=20, target_kw=0.4), 21, morning, 0.4),
+            (self._settings(8000, target_kw=0.5), 39, afternoon, 0.5),
+            (self._settings_sockel(8000, sockel=20, target_kw=2.0), 31, morning, 2.0),
         )
-        self.assertEqual(
-            bms_seite.soll_netzbezug_kw(
-                settings, {"soc_percent": 19}, planning_on=True, now=morning
-            ),
-            0.4,
-        )
-        # Anstieg auf 21: weiterhin nur Planung, keine ~11 kW-Rampe.
-        self.assertEqual(
-            bms_seite.soll_netzbezug_kw(
-                settings, {"soc_percent": 21}, planning_on=True, now=morning
-            ),
-            0.4,
-        )
-        self.assertIsNone(bms_seite.netzbezug_soc_rampe_kw(21, 20, 12000))
-
-    def test_cap_is_the_stored_import_field_not_a_fixed_8000(self):
-        # Sockel 20, SoC 22, Start 30 → progress 0,8 → 82 % Cap — nach Fall-Eintritt.
-        self._enter_falling(20, 8000)
-        self.assertEqual(bms_seite.netzbezug_soc_rampe_kw(22, 20, 8000), 6.56)
-        bms_seite.reset_netzbezug_ramp_state()
-        self._enter_falling(20, 3000)
-        self.assertEqual(bms_seite.netzbezug_soc_rampe_kw(22, 20, 3000), 2.46)
-        morning = bms_seite.datetime(2026, 11, 14, 10, 0, tzinfo=bms_seite.TZ)
-        for watts, expected in ((8000, 6.56), (3000, 2.46), (12000, 9.84)):
-            bms_seite.reset_netzbezug_ramp_state()
-            settings = self._settings_sockel(watts, sockel=20, target_kw=0.2)
-            bms_seite.soll_netzbezug_kw(
-                settings, {"soc_percent": 31}, planning_on=True, now=morning
-            )
+        for settings, soc, now, expected in cases:
             kw = bms_seite.soll_netzbezug_kw(
-                settings, {"soc_percent": 22}, planning_on=True, now=morning
+                settings, {"soc_percent": soc}, planning_on=True, now=now
             )
             self.assertEqual(kw, expected)
-            self.assertEqual(settings["install_max_import_w"], watts)
+            self.assertNotEqual(kw, 12.0)
+            self.assertLess(kw, 12.0)
 
-    def test_sockel_thirty_uses_forty_as_ramp_start(self):
-        morning = bms_seite.datetime(2026, 11, 14, 10, 0, tzinfo=bms_seite.TZ)
-        settings = self._settings_sockel(12000, sockel=30, target_kw=0.5)
-        self.assertEqual(bms_seite._electrician_soc_limit(settings, morning), 30)
-        self.assertEqual(
-            bms_seite.soll_netzbezug_kw(
-                settings, {"soc_percent": 41}, planning_on=True, now=morning
-            ),
-            0.5,
-        )
-        self.assertEqual(
-            bms_seite.soll_netzbezug_kw(
-                settings, {"soc_percent": 40}, planning_on=True, now=morning
-            ),
-            1.2,
-        )
-        self.assertEqual(
-            bms_seite.soll_netzbezug_kw(
-                settings, {"soc_percent": 35}, planning_on=True, now=morning
-            ),
-            6.6,
-        )
-        # Am Sockel: Rampe aus → nur Planung.
-        self.assertEqual(
-            bms_seite.soll_netzbezug_kw(
-                settings, {"soc_percent": 30}, planning_on=True, now=morning
-            ),
-            0.5,
-        )
-
-    def test_above_threshold_leaves_the_existing_setpoint(self):
-        self.assertIsNone(bms_seite.netzbezug_soc_rampe_kw(31, 20, 8000))
-        self.assertIsNone(bms_seite.netzbezug_soc_rampe_kw(41, 30, 12000))
-        self.assertIsNone(bms_seite.netzbezug_soc_rampe_kw(46, 35, 8000))
-        morning = bms_seite.datetime(2026, 11, 14, 10, 0, tzinfo=bms_seite.TZ)
-        settings = self._settings_sockel(8000, sockel=20, target_kw=2.0)
-        kw = bms_seite.soll_netzbezug_kw(
-            settings, {"soc_percent": 31}, planning_on=True, now=morning
-        )
-        self.assertEqual(kw, 2.0)
-
-    def test_planning_off_blocks_all_grid_import_including_ramp(self):
+    def test_planning_off_blocks_grid_import(self):
         morning = bms_seite.datetime(2026, 11, 14, 10, 0, tzinfo=bms_seite.TZ)
         settings = self._settings_sockel(12000, sockel=20, target_kw=0.4)
         with mock.patch.object(bms_seite, "save_settings") as save, mock.patch.object(
             bms_seite, "capture_install_from_inverter"
         ) as capture, mock.patch.object(bms_seite, "load_settings") as load:
-            # Zustand mitführen: zuerst über der Schwelle, dann fallen — aber Planung aus → 0.
             off_above = bms_seite.soll_netzbezug_kw(
                 settings, {"soc_percent": 50}, planning_on=False, now=morning
             )
-            off_ramp = bms_seite.soll_netzbezug_kw(
+            off_low = bms_seite.soll_netzbezug_kw(
                 settings, {"soc_percent": 25}, planning_on=False, now=morning
             )
-            on_above = bms_seite.soll_netzbezug_kw(
-                settings, {"soc_percent": 50}, planning_on=True, now=morning
-            )
-            on_ramp = bms_seite.soll_netzbezug_kw(
+            on_low = bms_seite.soll_netzbezug_kw(
                 settings, {"soc_percent": 25}, planning_on=True, now=morning
             )
         self.assertEqual(off_above, 0.0)
-        self.assertEqual(off_ramp, 0.0)
-        self.assertEqual(on_above, 0.4)
-        self.assertEqual(on_ramp, 6.6)
+        self.assertEqual(off_low, 0.0)
+        self.assertEqual(on_low, 0.4)
         self.assertEqual(settings["target_grid_kw"], 0.4)
         save.assert_not_called()
         capture.assert_not_called()
         load.assert_not_called()
-
-    def test_ramp_takes_max_with_planner_setpoint(self):
-        morning = bms_seite.datetime(2026, 11, 14, 10, 0, tzinfo=bms_seite.TZ)
-        # Sockel 20, Start 30: Planung schon höher als Rampe an der Schwelle → Planung bleibt.
-        high = self._settings_sockel(12000, sockel=20, target_kw=3.0)
-        bms_seite.soll_netzbezug_kw(high, {"soc_percent": 31}, planning_on=True, now=morning)
-        self.assertEqual(
-            bms_seite.soll_netzbezug_kw(
-                high, {"soc_percent": 30}, planning_on=True, now=morning
-            ),
-            3.0,
-        )
-        # Rampe überholt niedrigen Planungswert.
-        bms_seite.reset_netzbezug_ramp_state()
-        low = self._settings_sockel(12000, sockel=20, target_kw=0.4)
-        bms_seite.soll_netzbezug_kw(low, {"soc_percent": 31}, planning_on=True, now=morning)
-        self.assertEqual(
-            bms_seite.soll_netzbezug_kw(
-                low, {"soc_percent": 25}, planning_on=True, now=morning
-            ),
-            6.6,
-        )
-
-    def test_active_window_not_the_lowest_of_six(self):
-        afternoon = bms_seite.datetime(2026, 11, 14, 13, 0, tzinfo=bms_seite.TZ)
-        settings = self._settings(8000, target_kw=0.5)
-        # Aktives Fenster Sockel 30, Start 40. Fall von oben → SoC 39 → 1,52 kW.
-        bms_seite.soll_netzbezug_kw(
-            settings, {"soc_percent": 41}, planning_on=True, now=afternoon
-        )
-        kw = bms_seite.soll_netzbezug_kw(
-            settings, {"soc_percent": 39}, planning_on=True, now=afternoon
-        )
-        self.assertEqual(kw, 1.52)
 
 
 class ReleaseLoopAndTrackerTests(unittest.TestCase):

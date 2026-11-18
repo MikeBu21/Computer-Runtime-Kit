@@ -84,13 +84,19 @@ FORWARD_SURGE_WEEKDAY_WEIGHT = 0.20
 FORWARD_SURGE_WEEK_WEIGHT = 0.10
 FORWARD_CAP_KW = 1.2
 FORWARD_CAP_RAISED_KW = 1.5
-# Schritt nach der Haltezeit. Relativwert darf den Absolutwert nicht überschreiten.
-FORWARD_SMOOTH_REL = 0.12
+# Anteil der Lücke je Rechenintervall. Der Relativanteil bezieht sich auf die
+# Lücke und wird nicht auf den Absolutwert zurückgeklemmt. Der Absolutwert ist
+# nur die Untergrenze, sobald mindestens ein Intervall vergangen ist.
+# Kleiner Anteil: Zielwert zum ersten Mal. Großer Anteil: derselbe Rohwert liegt
+# schon an, die Anzeige ist abgehängt (floored) oder der Speicher ist unter dem Mindest-SoC.
+FORWARD_SMOOTH_REL = 0.25
+FORWARD_SMOOTH_FAST_REL = 0.70
 FORWARD_SMOOTH_ABS = 0.10
 FORWARD_SMOOTH_EMERGENCY_ABS = 0.15
 FORWARD_DEADBAND_KW = 0.05
-# Angezeigter Dauer-Zukauf bleibt zwei Stunden stehen. Danach höchstens ein Schritt.
-FORWARD_REFRESH = timedelta(hours=2)
+# Neu rechnen jede Minute, damit ein bestätigter Abstand in wenigen Minuten zu ist.
+# Kein zweistündiges Festhalten des angezeigten Solls.
+FORWARD_REFRESH = timedelta(minutes=1)
 FORWARD_REFRESH_SEC = int(FORWARD_REFRESH.total_seconds())
 MIN_SOC_HARD_LOW = 30.0
 MIN_SOC_HARD_HIGH = 35.0
@@ -1614,16 +1620,94 @@ def buffer_band_extra_kw(base_kw: float, soc_percent: float, min_soc_percent: fl
     return max(0.0, float(base_kw)) * buffer_band_factor(soc_percent, min_soc_percent)
 
 
-def _purchase_step_kw(prev_kw: Optional[float], emergency: bool) -> float:
-    """Höchstens 0,10 kW, in der Notlage unter Min-SoC 0,15 kW.
+def plan_recovery_kw(
+    soc_percent: float,
+    plan_soc_percent: Optional[float],
+    storage_kwh: float,
+    hours_until_due: Optional[float],
+) -> float:
+    """Fehlende kWh bis zum Tagesbeginn-SoC, verteilt auf die Restzeit.
 
-    Der relative Deckel zählt mit, darf den Absolutwert aber nicht anheben.
+    Kein Sprung auf den maximalen Netzbezug. Die Anzeige glättet den Wert
+    danach schrittweise. Unter einer Stunde Restzeit wird nicht enger als
+    auf eine Stunde gerechnet, damit die letzte Stunde nicht zum Cap schnellt.
     """
-    cap = FORWARD_SMOOTH_EMERGENCY_ABS if emergency else FORWARD_SMOOTH_ABS
-    if emergency or prev_kw is None:
-        return cap
-    relative = abs(float(prev_kw)) * FORWARD_SMOOTH_REL
-    return min(cap, max(relative, FORWARD_SMOOTH_ABS))
+    if plan_soc_percent is None or hours_until_due is None:
+        return 0.0
+    try:
+        plan = float(plan_soc_percent)
+        hours = float(hours_until_due)
+        soc = float(soc_percent)
+        storage = float(storage_kwh)
+    except (TypeError, ValueError):
+        return 0.0
+    if storage <= 0 or hours <= 0:
+        return 0.0
+    gap = plan - soc
+    if gap <= 0.05:
+        return 0.0
+    hours = max(hours, 1.0)
+    return (gap / 100.0) * storage / hours
+
+
+def resolve_day_plan(
+    state: Dict[str, Any],
+    today: date,
+    now: datetime,
+    current_soc: Optional[float],
+) -> Tuple[Dict[str, Any], Optional[float], Optional[float]]:
+    """SoC-Soll vom ersten Wert des Kalendertags, fällig zur nächsten Tageswende."""
+    raw = state.get("day_plan") if isinstance(state.get("day_plan"), dict) else {}
+    plan = dict(raw or {})
+    same_day = str(plan.get("date") or "") == today.isoformat()
+    anchored: Optional[float] = None
+    if same_day and plan.get("soc_percent") is not None:
+        try:
+            anchored = float(plan["soc_percent"])
+        except (TypeError, ValueError):
+            anchored = None
+    if anchored is None and current_soc is not None:
+        anchored = round(float(current_soc), 2)
+    if anchored is None:
+        return plan, None, None
+    plan = {"date": today.isoformat(), "soc_percent": round(float(anchored), 2)}
+    due = datetime.combine(today + timedelta(days=1), datetime.min.time())
+    hours = (due - now).total_seconds() / 3600.0
+    return plan, float(plan["soc_percent"]), hours
+
+
+def _purchase_step_kw(
+    prev_kw: Optional[float],
+    gap_kw: float,
+    emergency: bool,
+    elapsed_sec: float,
+    *,
+    confirmed: bool,
+) -> float:
+    """Anteil der Lücke in der verstrichenen Zeit.
+
+    Der Relativanteil ist ein Teil der Lücke je Rechenintervall und darf den
+    Absolutwert übersteigen. Der Absolutwert ist die Untergrenze, sobald
+    mindestens ein Intervall vergangen ist, nicht mehr die Obergrenze.
+    Ein Schritt unter 0,05 kW wird nicht ausgeführt.
+    """
+    gap = abs(float(gap_kw))
+    if gap <= 0:
+        return 0.0
+    if prev_kw is None:
+        return gap
+    rel = FORWARD_SMOOTH_FAST_REL if (confirmed or emergency) else FORWARD_SMOOTH_REL
+    rel = min(0.95, max(0.0, float(rel)))
+    window = max(1.0, FORWARD_REFRESH.total_seconds())
+    windows = max(0.0, float(elapsed_sec)) / window
+    alpha = 1.0 - ((1.0 - rel) ** windows) if windows > 0 else 0.0
+    step = alpha * gap
+    if windows >= 1.0:
+        floor = FORWARD_SMOOTH_EMERGENCY_ABS if emergency else FORWARD_SMOOTH_ABS
+        step = max(step, floor)
+    if 0.0 < step < FORWARD_DEADBAND_KW:
+        return 0.0
+    return min(gap, step)
 
 
 def _forecast_hour(key: Any) -> Optional[int]:
@@ -1770,17 +1854,20 @@ def forward_purchase_kw(
     recent_48h_kwh: Optional[float] = None,
     daylight: Optional[bool] = None,
     max_soc_percent: float = 95.0,
+    plan_soc_percent: Optional[float] = None,
+    hours_until_plan: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Dauer-Zukauf mit PV-Wetterprognose (Open-Meteo über morgen/übermorgen).
 
     Last = Mischung aus 48 Stunden, Wochentag und 7-Tage-Mittel, mal base_load_scale.
     Zukauf = (Last − PV-Gutschrift − Speicher über dem Pufferband) / 24, Tag und Nacht.
-    PV-Gutschrift = (0,6×morgen + 0,4×übermorgen [+ Rest heute nur am Tag]) × forecast_trust,
+    PV-Gutschrift = (1,0×Rest heute nur am Tag + 0,6×morgen + 0,4×übermorgen) × forecast_trust,
     gedeckelt bei der Last. Deckt die Prognose die Last (oder füllt bis Max-SoC), sinkt
-    der Soll Richtung 0. today_pv_kwh zählt nur bei Tageslicht; nachts nur die Vorwärtsprognose.
-    today_shortfall_kwh erhöht nur am Tag den Zukauf. Im Band über dem Min-SoC kommt
-    extra = Basislast × (1 − Abstand / Bandbreite) dazu. Einspeisung/Überschuss bleibt
-    Sache des Steuerungsalgorithmus — hier nur der Zukaufswert.
+    der Soll Richtung 0. today_shortfall_kwh erhöht nur am Tag den Zukauf.
+    Liegt der Speicher unter dem SoC vom Tagesbeginn, kommt die fehlende Energie
+    geteilt durch die Stunden bis zur nächsten Tageswende dazu. Die Anzeige fährt
+    diesen Zusatz über die Glättung hoch und wieder runter, ohne auf das Maximum
+    zu springen. Einspeisung/Überschuss bleibt Sache des Steuerungsalgorithmus.
     """
     empty: Dict[str, Any] = {
         "kw": None,
@@ -1838,10 +1925,10 @@ def forward_purchase_kw(
     band_kwh = FORWARD_BUFFER_BAND_PCT / 100.0 * storage
     usable = max(0.0, headroom - band_kwh)
     base_kw = load_kwh / HOURS
-    extra_kw = buffer_band_extra_kw(base_kw, soc, min_soc)
     # Referenz ohne PV (Anzeige). Der aktive Soll nutzt immer die Prognose-Gutschrift.
-    p_night = base_kw + extra_kw
-    p_day = max(0.0, load_kwh - pv_credit - usable) / HOURS + extra_kw
+    # Der lineare Bandzuschlag am Mindest-SoC ist kein Zukauf mehr.
+    p_night = base_kw
+    p_day = max(0.0, load_kwh - pv_credit - usable) / HOURS
     try:
         max_soc = float(max_soc_percent)
     except (TypeError, ValueError):
@@ -1851,8 +1938,9 @@ def forward_purchase_kw(
     max_kwh = max_soc / 100.0 * storage
     stored_kwh = max(0.0, soc / 100.0 * storage)
     room_to_max = max(0.0, max_kwh - stored_kwh)
-    if stored_kwh + pv_blend >= max_kwh:
-        p_day = extra_kw
+    pv_fills = stored_kwh + pv_blend >= max_kwh
+    if pv_fills:
+        p_day = 0.0
     if room_to_max <= 0:
         p_night = 0.0
         p_day = 0.0
@@ -1863,15 +1951,24 @@ def forward_purchase_kw(
         # PV-Gutschrift und der Volllade-Deckel rechnen ihn nicht auf 0.
         if shortfall_kwh > 0.0:
             p_day = min(room_to_max, p_day + shortfall_kwh / HOURS)
+    recovery = 0.0
+    if not pv_fills and room_to_max > 0:
+        recovery = plan_recovery_kw(soc, plan_soc_percent, storage, hours_until_plan)
+        if recovery > 0:
+            p_day = min(room_to_max, p_day + recovery)
     today_trusted = today_kwh * trust if daylight else 0.0
     # Prognose deckt Last oder füllt bis Max-SoC — Kauf überflüssig (auch nachts).
+    # Mit Tagesplan bleibt die Glättung zuständig, damit der Ausgleich nicht springt.
     pull_down = bool(
-        (pv_credit + 1e-9 >= load_kwh)
-        or (stored_kwh + pv_blend + 1e-9 >= max_kwh)
-        or (
-            daylight
-            and today_kwh > 0.0
-            and (today_trusted + 1e-9 >= load_kwh or stored_kwh + today_kwh >= max_kwh)
+        plan_soc_percent is None
+        and (
+            (pv_credit + 1e-9 >= load_kwh)
+            or (stored_kwh + pv_blend + 1e-9 >= max_kwh)
+            or (
+                daylight
+                and today_kwh > 0.0
+                and (today_trusted + 1e-9 >= load_kwh or stored_kwh + today_kwh >= max_kwh)
+            )
         )
     )
     # Immer Prognose-Pfad: bei genug PV sinkt der Zukauf Tag und Nacht.
@@ -1895,8 +1992,10 @@ def forward_purchase_kw(
         "headroom_kwh": round(headroom, 2),
         "min_soc_percent": round(min_soc, 1),
         "hours_until_sun": round(horizon, 2),
-        "short": bool(extra_kw > 0.02),
-        "extra_kw": round(extra_kw, 3),
+        "short": bool(recovery > 0.02),
+        "extra_kw": round(recovery, 3),
+        "plan_soc_percent": None if plan_soc_percent is None else round(float(plan_soc_percent), 2),
+        "plan_recovery_kw": round(recovery, 3),
         "band_factor": round(buffer_band_factor(soc, min_soc), 3),
         "daylight": bool(daylight),
         "cap_kw": cap,
@@ -1911,8 +2010,51 @@ def forward_purchase_kw(
     }
 
 
-def _forward_hold_active(prev: Optional[Dict[str, Any]], now: Optional[datetime] = None) -> bool:
-    """True, solange der letzte Soll jünger als zwei Stunden ist."""
+def _smooth_elapsed_sec(prev: Optional[Dict[str, Any]], now: datetime) -> float:
+    refreshed = _parsed_stamp((prev or {}).get("updated_at"))
+    if refreshed is None:
+        return FORWARD_REFRESH.total_seconds()
+    try:
+        return max(0.0, (now - refreshed).total_seconds())
+    except TypeError:
+        return FORWARD_REFRESH.total_seconds()
+
+
+def _forward_gap_is_confirmed(
+    prev: Optional[Dict[str, Any]],
+    target: float,
+    emergency: bool,
+) -> bool:
+    """True, wenn der Zielwert kein einzelner neuer Ausreißer ist.
+
+    Bestätigt heißt: Notlage unter dem Mindest-SoC, die Anzeige hängt schon
+    hinter dem Soll (floored), oder der gespeicherte Rohwert ist derselbe.
+    """
+    prev = prev or {}
+    if emergency or bool(prev.get("floored")):
+        return True
+    try:
+        prev_raw = float(prev["raw_kw"]) if prev.get("raw_kw") is not None else None
+    except (TypeError, ValueError):
+        return False
+    if prev_raw is None:
+        return False
+    return abs(prev_raw - float(target)) < FORWARD_DEADBAND_KW
+
+
+def _forward_hold_active(
+    prev: Optional[Dict[str, Any]],
+    now: Optional[datetime] = None,
+    *,
+    confirmed: bool = False,
+) -> bool:
+    """True nur für einen noch nicht bestätigten Zielwert in der ersten halben Minute.
+
+    Bestätigte Lücken werden nicht festgehalten. Die halbe Minute filtert einen
+    zweiten Aufruf im selben Rechenintervall, nicht einen Abstand von Stunden.
+    """
+    if confirmed:
+        return False
     prev = prev or {}
     if prev.get("kw") is None:
         return False
@@ -1921,7 +2063,7 @@ def _forward_hold_active(prev: Optional[Dict[str, Any]], now: Optional[datetime]
         return False
     now = now or datetime.now()
     try:
-        return now - refreshed < FORWARD_REFRESH
+        return now - refreshed < (FORWARD_REFRESH / 2)
     except TypeError:
         return False
 
@@ -1935,11 +2077,18 @@ def apply_forward_smooth(
     emergency: bool = False,
     pull_down: bool = False,
 ) -> Dict[str, Any]:
-    """Hält den Dauerzukauf zwei Stunden. Danach höchstens ein Schritt zum neuen Soll.
+    """Zieht den angezeigten Dauerzukauf zum frischen Soll nach.
 
-    Deckt der noch erwartete Rest von heute die Last, entfällt die Haltezeit
+    Unter 0,05 kW bleibt der angezeigte Wert stehen. Ein Zielwert, der zum
+    ersten Mal auftaucht, nimmt in der ersten halben Minute nicht mit und
+    danach nur einen Teil der Lücke, damit ein einzelner Ausreißer nicht
+    auf den vollen Wert springt. Liegt derselbe Rohwert schon an, ist die
+    Anzeige abgehängt oder der Speicher unter dem Mindest-SoC, schließt der
+    größere Anteil die Lücke in wenigen Minuten.
+
+    Deckt der noch erwartete Rest von heute die Last, entfällt das Nachziehen
     und der Soll springt auf den neuen Zielwert. Sonst bliebe ein Überschuss-Tag
-    stundenlang auf dem alten hohen Zukauf, obwohl der Zielwert schon bei 0 liegt.
+    auf dem alten hohen Zukauf, obwohl der Zielwert schon bei 0 liegt.
     """
     now = now or datetime.now()
     prev = dict(prev or {})
@@ -1953,16 +2102,6 @@ def apply_forward_smooth(
         and prev_kw is not None
         and float(raw_kw) + FORWARD_DEADBAND_KW < float(prev_kw)
     )
-    if _forward_hold_active(prev, now) and not surplus_pull:
-        return {
-            "kw": prev_kw,
-            "raw_kw": prev.get("raw_kw"),
-            "floor_kw": prev.get("floor_kw"),
-            "smoothed_kw": prev.get("smoothed_kw", prev_kw),
-            "updated": False,
-            "updated_at": prev.get("updated_at"),
-            "floored": bool(prev.get("floored")),
-        }
     if raw_kw is None:
         return {
             "kw": prev_kw,
@@ -1975,6 +2114,17 @@ def apply_forward_smooth(
     target = max(0.0, float(raw_kw))
     floor = max(0.0, float(floor_kw))
     aimed = _clamp_kw(max(target, floor), 0.0, FORWARD_CAP_RAISED_KW)
+    confirmed = _forward_gap_is_confirmed(prev, target, emergency)
+    if _forward_hold_active(prev, now, confirmed=confirmed) and not surplus_pull:
+        return {
+            "kw": prev_kw,
+            "raw_kw": round(target, 3),
+            "floor_kw": round(floor, 3),
+            "smoothed_kw": prev.get("smoothed_kw", prev_kw),
+            "updated": False,
+            "updated_at": prev.get("updated_at"),
+            "floored": bool(prev.get("floored")),
+        }
     if prev_kw is None:
         shown = round(_round_step(aimed, PURCHASE_STEP_KW), 2)
         changed = True
@@ -1984,19 +2134,34 @@ def apply_forward_smooth(
             shown = round(float(prev_kw), 2)
             changed = False
         else:
-            step = _purchase_step_kw(prev_kw, emergency)
+            elapsed = _smooth_elapsed_sec(prev, now)
+            step = _purchase_step_kw(
+                prev_kw,
+                delta,
+                emergency,
+                elapsed,
+                confirmed=confirmed,
+            )
             if surplus_pull and delta < 0:
                 step = abs(delta)
-            move = math.copysign(min(abs(delta), step), delta)
-            shown = round(_round_step(float(prev_kw) + move, PURCHASE_STEP_KW), 2)
-            changed = abs(shown - float(prev_kw)) >= 0.005
+            if step <= 0:
+                shown = round(float(prev_kw), 2)
+                changed = False
+            else:
+                move = math.copysign(min(abs(delta), step), delta)
+                approached = float(prev_kw) + move
+                # Der Anlauf unter 0,05 kW ist kein neues Rauschen: der Zielwert ist erreicht.
+                if abs(aimed - approached) < FORWARD_DEADBAND_KW:
+                    approached = aimed
+                shown = round(_round_step(approached, PURCHASE_STEP_KW), 2)
+                changed = abs(shown - float(prev_kw)) >= 0.005
     return {
         "kw": shown,
         "raw_kw": round(target, 3),
         "floor_kw": round(floor, 3),
         "smoothed_kw": shown,
         "updated": changed,
-        "updated_at": now.isoformat(timespec="seconds"),
+        "updated_at": now.isoformat(timespec="seconds") if changed else prev.get("updated_at"),
         "floored": bool(shown + 0.005 < aimed),
     }
 
@@ -2008,6 +2173,8 @@ def _forward_for_report(
     storage_kwh: Optional[float],
     prev_forward: Optional[Dict[str, Any]] = None,
     base_dir: Optional[str] = None,
+    plan_soc_percent: Optional[float] = None,
+    hours_until_plan: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Baut den angezeigten Dauer-Zukauf aus Steuerungsdaten und Glättung."""
     bases: List[float] = []
@@ -2087,6 +2254,8 @@ def _forward_for_report(
         recent_48h_kwh=recent,
         daylight=daylight,
         max_soc_percent=max_soc,
+        plan_soc_percent=plan_soc_percent,
+        hours_until_plan=hours_until_plan,
     )
     emergency = current_soc is not None and float(current_soc) < float(min_soc)
     lock = apply_forward_smooth(
@@ -2343,16 +2512,31 @@ def get_report(base_dir: str) -> Dict[str, Any]:
         state["base_archive"] = archive
         report["base_history"] = archive
         report.update(describe_history(archive, today))
-        # Angezeigter Dauer-Zukauf: normal zwei Stunden halten. Deckt der heutige Rest
-        # die Last, zieht der PV-Pfad den Soll sofort auf den neuen Zielwert.
+        # Angezeigter Dauer-Zukauf folgt dem frischen Soll. Unter 0,05 kW keine
+        # Änderung. Ein bestätigter Abstand ist in wenigen Minuten beim neuen Soll.
+        # Deckt der heutige Rest die Last, zieht der PV-Pfad den Soll sofort auf den
+        # neuen Zielwert.
         # weekly/daily bleibt der Rest der letzten Tage und geht nicht ins Register.
         prev_forward = (
             state.get("forward_purchase")
             if isinstance(state.get("forward_purchase"), dict)
             else {}
         )
+        now_plan = datetime.now()
+        day_plan, plan_soc, hours_plan = resolve_day_plan(
+            state, today, now_plan, current_soc
+        )
+        state["day_plan"] = day_plan
+        report["day_plan"] = day_plan
         forward = _forward_for_report(
-            days, today, current_soc, storage, prev_forward, base_dir
+            days,
+            today,
+            current_soc,
+            storage,
+            prev_forward,
+            base_dir,
+            plan_soc_percent=plan_soc,
+            hours_until_plan=hours_plan,
         )
         if (
             forward.get("kw") is None
@@ -2392,11 +2576,19 @@ def get_report(base_dir: str) -> Dict[str, Any]:
                 "Schon erzeugte kWh von heute stecken nicht noch einmal in der Gutschrift. "
                 "Liegt das Ist hinter der Prognose der vergangenen Stunden, erhöht dieser "
                 "Fehlbetrag den Tag-Zukauf und zählt nicht als zusätzliche PV. "
-                "Im Band von 10 Prozentpunkten über dem Min-SoC gilt extra = Basislast × "
-                "(1 − Abstand zum Min-SoC / 10). Bei +5 % ist der Zuschlag halb, ab +10 % null. "
+                "Der SoC am Tagesbeginn ist der Soll-Prozentsatz. Fällt der Speicher darunter, "
+                "gilt das als Mehrverbrauch. Der Zukauf steigt um die fehlenden Kilowattstunden "
+                "geteilt durch die Stunden bis zur nächsten Tageswende. Die Glättung fährt "
+                "diesen Wert schrittweise hoch und, wenn der Verbrauch wieder normal ist, "
+                "wieder runter, sodass der geplante Prozentwert zur Tageswende erreicht wird. "
+                "Kein Sprung auf den maximalen Netzbezug. "
                 "Nahe am maximalen SoC ist der Tagwert 0. "
-                "Der Soll bleibt zwei Stunden stehen und ändert sich dann höchstens um 0,10 kW "
-                "(0,15 kW nur unter dem Mindest-SoC). Deckt der heutige Rest die Last, fällt der "
+                "Abweichungen unter 0,05 kW bleiben liegen. Ein Zielwert, der zum ersten Mal "
+                "auftaucht, nimmt nur einen Teil der Lücke mit. Liegt derselbe Soll schon an, "
+                "hängt die Anzeige hinter dem frischen Wert oder liegt der Speicher unter dem "
+                "Mindest-SoC, ist der angezeigte Zukauf in wenigen Minuten beim neuen Soll. "
+                "Der Schritt ist ein Anteil der Lücke und nicht auf 0,10 kW gedeckelt. "
+                "Deckt der heutige Rest die Last, fällt der "
                 "Soll auf 0 plus den Band-Aufschlag, ohne auf dem alten hohen Wert stehen zu bleiben. "
                 "Normal bis 1,2 kW, bei hoher 48-Stunden-Last bis 1,5 kW. "
                 "Nur bei eingeschaltetem Schalter Planung, keine Netzspitzen geht dieser Wert ins BMS."
