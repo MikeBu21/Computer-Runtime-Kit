@@ -167,6 +167,15 @@
     align-items: center;
     gap: 0.45rem !important;
   }
+  .gvr-pv-mode {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.75rem 1rem;
+    margin-bottom: 1rem;
+  }
+  .gvr-pv-mode .gvr-modes label { margin: 0; }
+  .gvr-pv-mode-state { color: var(--muted); font-size: 0.85rem; }
   @media (max-width: 900px) {
     .gvr-hero, .gvr-cards, .gvr-miner { grid-template-columns: 1fr; }
     .gvr-value { font-size: 3rem; }
@@ -181,6 +190,15 @@
 </div>
 
 <div id="gvr_alerts"></div>
+
+<div class="gvr-panel gvr-pv-mode" id="gvr_pv_mode_panel">
+  <strong style="color:#fff; font-size:0.95rem;">PV-Quelle für alle Vorwärtspfade</strong>
+  <div class="gvr-modes" id="gvr_pv_mode_modes">
+    <label class="active"><input type="radio" name="gvr_pv_estimate_mode" value="pv" checked> PV-Schätzung</label>
+    <label><input type="radio" name="gvr_pv_estimate_mode" value="pattern"> Musterschätzung</label>
+  </div>
+  <span class="gvr-pv-mode-state" id="gvr_pv_mode_state">Standard: Open-Meteo. Gilt für Zukauf, Sicherheit, Nachtboden und Rest der letzten Tage.</span>
+</div>
 
 <div class="gvr-hero">
   <div class="gvr-hero-main" id="gvr_purchase_card">
@@ -451,6 +469,26 @@
     } else if (divisorEl && safety.divisor != null) {
       divisorEl.value = String(safety.divisor);
     }
+    const modeFromParts = (data.recommended_parts || {}).pv_estimate_mode;
+    const mode = String(targets.pv_estimate_mode || modeFromParts || "pv").toLowerCase() === "pattern"
+      ? "pattern"
+      : "pv";
+    document.querySelectorAll('input[name="gvr_pv_estimate_mode"]').forEach(function (input) {
+      input.checked = input.value === mode;
+      const lab = input.closest("label");
+      if (lab) lab.classList.toggle("active", input.checked);
+    });
+    const modeState = document.getElementById("gvr_pv_mode_state");
+    if (modeState) {
+      const src = (data.recommended_parts || {}).pv_estimate_source;
+      if (mode === "pattern") {
+        modeState.textContent = src === "pv_fallback"
+          ? "Musterschätzung aktiv – Muster fehlt, deshalb Open-Meteo als Fallback."
+          : "Musterschätzung aktiv für Zukauf, Sicherheit, Nachtboden und Rest der letzten Tage.";
+      } else {
+        modeState.textContent = "PV-Schätzung (Open-Meteo) aktiv für Zukauf, Sicherheit, Nachtboden und Rest der letzten Tage.";
+      }
+    }
     const meta = document.getElementById("gvr_meta");
     const w = data.window || {};
     meta.innerHTML = [
@@ -715,8 +753,36 @@
     status.textContent = "Takt und Teiler gespeichert.";
   }
 
+  async function savePvEstimateMode(mode) {
+    const status = document.getElementById("gvr_pv_mode_state");
+    if (status) status.textContent = "Speichere …";
+    const response = await fetch("/api/grundverbrauch/ziele", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify({ pv_estimate_mode: mode })
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      if (status) status.textContent = data.error || "Speichern fehlgeschlagen.";
+      return;
+    }
+    render(data);
+  }
+
   const safetySave = document.getElementById("gvr_safety_save");
   if (safetySave) safetySave.addEventListener("click", saveSafety);
+
+  document.querySelectorAll('input[name="gvr_pv_estimate_mode"]').forEach(function (input) {
+    input.addEventListener("change", function () {
+      if (!input.checked) return;
+      document.querySelectorAll('input[name="gvr_pv_estimate_mode"]').forEach(function (el) {
+        const lab = el.closest("label");
+        if (lab) lab.classList.toggle("active", el.checked);
+      });
+      savePvEstimateMode(input.value);
+    });
+  });
 
   function loadOrWarn() {
     return load().catch(function () {

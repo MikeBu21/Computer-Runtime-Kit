@@ -428,7 +428,9 @@ class LockTests(unittest.TestCase):
             hours_until_sun=1.0,
             **{**common, "daily_base_kwh": 80.0, "tomorrow_pv_kwh": 0.0, "day_after_pv_kwh": 0.0},
         )
-        self.assertEqual(huge["kw"], 1.2)
+        # Ohne Leistungsdeckel: volle benötigte Leistung (vorher auf 1,2 kW gekappt).
+        self.assertEqual(huge["kw"], 3.35)
+        self.assertIsNone(huge["cap_kw"])
 
     def test_buffer_band_scales_linearly_and_fades_above_the_edge(self):
         from grundverbrauch_rechner import buffer_band_extra_kw, buffer_band_factor, forward_purchase_kw
@@ -521,7 +523,7 @@ class LockTests(unittest.TestCase):
         self.assertEqual(on_plan["kw"], 0.0)
         self.assertEqual(slipped["plan_recovery_kw"], 0.4)
         self.assertEqual(slipped["kw"], 0.4)
-        self.assertLess(slipped["kw"], slipped["cap_kw"])
+        self.assertIsNone(slipped["cap_kw"])
         self.assertNotEqual(slipped["kw"], 12.0)
         self.assertFalse(slipped["pull_down"])
         huge = forward_purchase_kw(
@@ -532,8 +534,10 @@ class LockTests(unittest.TestCase):
             day_after_pv_kwh=0.0,
             **{key: value for key, value in common.items() if key not in {"tomorrow_pv_kwh", "day_after_pv_kwh"}},
         )
-        self.assertEqual(huge["kw"], huge["cap_kw"])
-        self.assertLessEqual(huge["kw"], 1.5)
+        # Ohne Deckel: Plan-Recovery und Last fließen voll in den Zukauf.
+        self.assertEqual(huge["plan_recovery_kw"], 20.0)
+        self.assertEqual(huge["kw"], 20.65)
+        self.assertIsNone(huge["cap_kw"])
         self.assertNotEqual(huge["kw"], 12.0)
 
         opened = datetime(2026, 11, 17, 12, 0, 0)
@@ -620,15 +624,14 @@ class LockTests(unittest.TestCase):
         self.assertEqual(blocked["kw"], 0.0)
         self.assertEqual(open_room["kw"], 0.75)
 
-    def test_forward_doubled_48h_load_raises_setpoint_under_cap(self):
+    def test_forward_doubled_48h_load_raises_setpoint(self):
         from grundverbrauch_rechner import blend_forward_load_kwh, forward_purchase_kw
 
         calm = blend_forward_load_kwh(17, 17, 17)
         surge = blend_forward_load_kwh(17, 17, 34)
         self.assertAlmostEqual(calm, 17.0)
         self.assertAlmostEqual(surge, 0.70 * 34 + 0.20 * 17 + 0.10 * 17)
-        # Ohne PV-Gutschrift folgt der Soll der höheren Last und bleibt unter dem Cap.
-        # Der lineare Bandzuschlag schiebt ihn nicht mehr auf 1,5 kW.
+        # Ohne PV-Gutschrift folgt der Soll der höheren Last ohne Leistungsdeckel.
         out = forward_purchase_kw(
             soc_percent=35,
             storage_kwh=41,
@@ -646,9 +649,8 @@ class LockTests(unittest.TestCase):
         )
         self.assertGreater(out["kw"], 1.0)
         self.assertEqual(out["kw"], 1.2)
-        self.assertLess(out["kw"], out["cap_kw"])
+        self.assertIsNone(out["cap_kw"])
         self.assertNotEqual(out["kw"], 12.0)
-        self.assertEqual(out["cap_kw"], 1.5)
         self.assertEqual(out["band_factor"], 1.0)
 
     def test_recent_48h_extrapolates_to_a_day(self):
@@ -700,8 +702,9 @@ class LockTests(unittest.TestCase):
         self.assertGreater(one_step["kw"] - first["kw"], 0.10)
         noise = apply_forward_smooth(first, 0.53, 0.0, now=opened + timedelta(minutes=2))
         self.assertEqual(noise["kw"], 0.5)
-        capped = apply_forward_smooth({}, 2.0, 0.0, now=opened)
-        self.assertEqual(capped["kw"], 1.5)
+        # Kein oberer Deckel mehr: 2,0 kW Soll bleibt 2,0 kW.
+        uncapped = apply_forward_smooth({}, 2.0, 0.0, now=opened)
+        self.assertEqual(uncapped["kw"], 2.0)
 
         behind = {
             "kw": 0.65,
@@ -1150,7 +1153,7 @@ class SafetyCorrectionTests(unittest.TestCase):
         expected = (e_load - headroom) / 10.0
         self.assertAlmostEqual(thin["night_bridge_kw"], expected, places=3)
         self.assertGreater(thin["kw"], 0.0)
-        self.assertAlmostEqual(thin["kw"], round(min(1.2, expected) / 0.05) * 0.05, places=2)
+        self.assertAlmostEqual(thin["kw"], round(expected / 0.05) * 0.05, places=2)
         self.assertTrue(thin["short"])
         self.assertFalse(thin["pull_down"])
         # Ohne Nachtboden würde die starke PV den Zukauf auf 0 ziehen.
@@ -1473,6 +1476,227 @@ class SafetyCorrectionTests(unittest.TestCase):
         self.assertAlmostEqual(
             mean_kw_from_hourly(hourly, start, end), 11.0, places=4
         )
+
+
+class PvEstimateModeTests(unittest.TestCase):
+    """Umschalter PV-Schätzung vs. Musterschätzung für alle Vorwärtspfade."""
+
+    def test_default_is_pv_and_aliases_normalize(self):
+        from grundverbrauch_rechner import (
+            PV_ESTIMATE_MODE_PATTERN,
+            PV_ESTIMATE_MODE_PV,
+            default_targets,
+            normalize_pv_estimate_mode,
+        )
+
+        self.assertEqual(default_targets()["pv_estimate_mode"], PV_ESTIMATE_MODE_PV)
+        self.assertEqual(normalize_pv_estimate_mode(None), PV_ESTIMATE_MODE_PV)
+        self.assertEqual(normalize_pv_estimate_mode("pv"), PV_ESTIMATE_MODE_PV)
+        self.assertEqual(normalize_pv_estimate_mode("pattern"), PV_ESTIMATE_MODE_PATTERN)
+        self.assertEqual(normalize_pv_estimate_mode("Muster"), PV_ESTIMATE_MODE_PATTERN)
+        self.assertEqual(
+            normalize_pv_estimate_mode("Musterschätzung"), PV_ESTIMATE_MODE_PATTERN
+        )
+
+    def test_resolve_pattern_scales_all_forward_days(self):
+        from datetime import datetime
+
+        from grundverbrauch_rechner import resolve_forward_pv_inputs
+
+        now = datetime(2026, 11, 20, 10, 0, 0)
+        algo = {
+            "pv_yield_today_kwh": 20.0,
+            "pv_yield_tomorrow_kwh": 40.0,
+            "pv_yield_day_after_kwh": 30.0,
+            "pv_forecast_today_hours": {str(h): 20.0 / 24.0 for h in range(24)},
+            "forecast_trust": 0.85,
+            "live_pv_kwh_actual": 5.0,
+            "pv_pattern_estimate": {
+                "estimated_kwh": 10.0,
+                "oms_forecast_kwh": 20.0,
+            },
+        }
+        pv = resolve_forward_pv_inputs(algo, "pv", now=now)
+        self.assertEqual(pv["mode"], "pv")
+        self.assertEqual(pv["source"], "pv")
+        self.assertEqual(pv["today_kwh"], 20.0)
+        self.assertEqual(pv["tomorrow_kwh"], 40.0)
+        self.assertEqual(pv["day_after_kwh"], 30.0)
+
+        muster = resolve_forward_pv_inputs(algo, "pattern", now=now)
+        self.assertEqual(muster["mode"], "pattern")
+        self.assertEqual(muster["source"], "pattern")
+        self.assertEqual(muster["today_kwh"], 10.0)
+        self.assertAlmostEqual(muster["ratio"], 0.5, places=4)
+        self.assertAlmostEqual(muster["tomorrow_kwh"], 20.0, places=3)
+        self.assertAlmostEqual(muster["day_after_kwh"], 15.0, places=3)
+        self.assertIsNotNone(muster["today_rest_kwh"])
+        self.assertLess(muster["today_rest_kwh"], pv["today_rest_kwh"])
+
+    def test_pattern_feeds_purchase_safety_night_and_rest(self):
+        """Musterschätzung senkt PV-Gutschrift → Zukauf, Sicherheit, Nachtboden, Rest."""
+        from datetime import datetime
+
+        from grundverbrauch_rechner import forward_purchase_kw, resolve_forward_pv_inputs
+
+        algo = {
+            "pv_yield_today_kwh": 40.0,
+            "pv_yield_tomorrow_kwh": 50.0,
+            "pv_yield_day_after_kwh": 40.0,
+            "pv_forecast_today_hours": {str(h): 40.0 / 24.0 for h in range(24)},
+            "forecast_trust": 0.85,
+            # Ist ≈ vergangene Prognose → kein Tages-Rückstand, der den Vergleich verzerrt.
+            "live_pv_kwh_actual": 20.0,
+            "pv_pattern_estimate": {"estimated_kwh": 8.0, "oms_forecast_kwh": 40.0},
+        }
+        now = datetime(2026, 11, 20, 12, 0, 0)
+        pv_in = resolve_forward_pv_inputs(algo, "pv", now=now)
+        muster_in = resolve_forward_pv_inputs(algo, "pattern", now=now)
+        self.assertAlmostEqual(pv_in["today_shortfall_kwh"], 0.0, places=2)
+        # Am Tag: kein Nachtboden, damit der Zukauf die PV-Quelle zeigt.
+        day_common = dict(
+            soc_percent=50.0,
+            storage_kwh=41.0,
+            min_soc_percent=35.0,
+            daily_base_kwh=24.0,
+            base_load_scale=1.0,
+            forecast_trust=0.85,
+            hours_until_sun=6.0,
+            daylight=True,
+            night_kwh=12.0,
+            house_kwh=30.0,
+            weekday_kwh=24.0,
+            recent_48h_kwh=24.0,
+        )
+        pv_day = forward_purchase_kw(
+            tomorrow_pv_kwh=pv_in["tomorrow_kwh"],
+            day_after_pv_kwh=pv_in["day_after_kwh"],
+            today_pv_kwh=pv_in["today_rest_kwh"],
+            today_shortfall_kwh=pv_in["today_shortfall_kwh"],
+            **day_common,
+        )
+        muster_day = forward_purchase_kw(
+            tomorrow_pv_kwh=muster_in["tomorrow_kwh"],
+            day_after_pv_kwh=muster_in["day_after_kwh"],
+            today_pv_kwh=muster_in["today_rest_kwh"],
+            today_shortfall_kwh=muster_in["today_shortfall_kwh"],
+            **day_common,
+        )
+        self.assertGreater(muster_day["kw"], pv_day["kw"])
+        self.assertGreater(muster_day["p_day"], pv_day["p_day"])
+        self.assertGreater(muster_day["new_risk_kw"], pv_day["new_risk_kw"])
+        self.assertLess(muster_day["pv_credit_kwh"], pv_day["pv_credit_kwh"])
+        self.assertLessEqual(muster_day["safety_base_kw"], pv_day["safety_base_kw"])
+
+        night_common = dict(day_common)
+        night_common.update(daylight=False, hours_until_sun=10.0, soc_percent=38.0)
+        pv_night = forward_purchase_kw(
+            tomorrow_pv_kwh=pv_in["tomorrow_kwh"],
+            day_after_pv_kwh=pv_in["day_after_kwh"],
+            today_pv_kwh=pv_in["today_rest_kwh"],
+            today_shortfall_kwh=0.0,
+            **night_common,
+        )
+        muster_night = forward_purchase_kw(
+            tomorrow_pv_kwh=muster_in["tomorrow_kwh"],
+            day_after_pv_kwh=muster_in["day_after_kwh"],
+            today_pv_kwh=muster_in["today_rest_kwh"],
+            today_shortfall_kwh=0.0,
+            **night_common,
+        )
+        self.assertGreater(pv_night["night_bridge_kw"], 0.0)
+        self.assertGreater(muster_night["night_bridge_kw"], 0.0)
+        # Nachtboden selbst ist PV-unabhängig; p_day/new_risk folgen weiter der Quelle.
+        self.assertGreater(muster_night["p_day"], pv_night["p_day"])
+        self.assertGreater(muster_night["new_risk_kw"], pv_night["new_risk_kw"])
+
+    def test_save_targets_persists_and_toggles_both_ways(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from grundverbrauch_rechner import (
+            PV_ESTIMATE_MODE_PATTERN,
+            PV_ESTIMATE_MODE_PV,
+            _load_state,
+            _state_path,
+            default_targets,
+            save_targets,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "energy_monitor"
+            folder.mkdir()
+            fake_report = {
+                "targets": default_targets(),
+                "recommended_kw": 0.0,
+                "recommended_parts": {},
+            }
+
+            def _fake_report(base_dir):
+                state = _load_state(_state_path(base_dir))
+                fake_report["targets"] = dict(state.get("targets") or default_targets())
+                return dict(fake_report)
+
+            with patch(
+                "grundverbrauch_rechner.get_report", side_effect=_fake_report
+            ):
+                first = save_targets(tmp, {"pv_estimate_mode": "pattern"})
+                self.assertEqual(
+                    first["targets"]["pv_estimate_mode"], PV_ESTIMATE_MODE_PATTERN
+                )
+                loaded = _load_state(_state_path(tmp))
+                self.assertEqual(
+                    loaded["targets"]["pv_estimate_mode"], PV_ESTIMATE_MODE_PATTERN
+                )
+
+                back = save_targets(tmp, {"pv_estimate_mode": "pv"})
+                self.assertEqual(
+                    back["targets"]["pv_estimate_mode"], PV_ESTIMATE_MODE_PV
+                )
+                again = _load_state(_state_path(tmp))
+                self.assertEqual(
+                    again["targets"]["pv_estimate_mode"], PV_ESTIMATE_MODE_PV
+                )
+
+            # Ohne explizites Feld bleibt der Default PV.
+            bare = _load_state(_state_path(tmp))
+            bare["targets"].pop("pv_estimate_mode", None)
+            from grundverbrauch_rechner import _save_state
+
+            _save_state(_state_path(tmp), bare)
+            restored = _load_state(_state_path(tmp))
+            self.assertEqual(
+                restored["targets"]["pv_estimate_mode"], PV_ESTIMATE_MODE_PV
+            )
+
+    def test_below_floor_daylight_zero_purchase_despite_soc(self):
+        """Unter 35 % am Tag: hohe PV-Gutschrift → p_day 0; Boden nur in Sicherheit."""
+        from grundverbrauch_rechner import forward_purchase_kw
+
+        out = forward_purchase_kw(
+            soc_percent=29.0,
+            storage_kwh=41.0,
+            min_soc_percent=35.0,
+            daily_base_kwh=17.0,
+            base_load_scale=1.0,
+            tomorrow_pv_kwh=46.0,
+            day_after_pv_kwh=16.0,
+            today_pv_kwh=0.0,
+            today_shortfall_kwh=0.0,
+            forecast_trust=0.85,
+            hours_until_sun=2.0,
+            daylight=True,
+            night_kwh=8.0,
+            house_kwh=20.0,
+            weekday_kwh=17.0,
+            recent_48h_kwh=17.0,
+        )
+        self.assertEqual(out["kw"], 0.0)
+        self.assertEqual(out["p_day"], 0.0)
+        self.assertEqual(out["night_bridge_kw"], 0.0)
+        self.assertLess(out["safety_base_kw"], 0.0)
+        self.assertEqual(out["new_risk_kw"], 0.0)
 
 
 if __name__ == "__main__":

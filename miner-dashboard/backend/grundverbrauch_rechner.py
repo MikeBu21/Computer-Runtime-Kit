@@ -90,8 +90,6 @@ FORWARD_SURGE_RATIO = 1.5
 FORWARD_SURGE_RECENT_WEIGHT = 0.70
 FORWARD_SURGE_WEEKDAY_WEIGHT = 0.20
 FORWARD_SURGE_WEEK_WEIGHT = 0.10
-FORWARD_CAP_KW = 1.2
-FORWARD_CAP_RAISED_KW = 1.5
 # Anteil der Lücke je Rechenintervall. Der Relativanteil bezieht sich auf die
 # Lücke und wird nicht auf den Absolutwert zurückgeklemmt. Der Absolutwert ist
 # nur die Untergrenze, sobald mindestens ein Intervall vergangen ist.
@@ -136,6 +134,23 @@ def _state_path(base_dir: str):
     return energy_file(base_dir, "grundverbrauch_rechner.json")
 
 
+PV_ESTIMATE_MODE_PV = "pv"
+PV_ESTIMATE_MODE_PATTERN = "pattern"
+
+
+def normalize_pv_estimate_mode(raw: Any) -> str:
+    """pv = Open-Meteo-Schätzung, pattern = Musterschätzung."""
+    text = str(raw or PV_ESTIMATE_MODE_PV).strip().lower()
+    if text in (
+        PV_ESTIMATE_MODE_PATTERN,
+        "muster",
+        "musterschätzung",
+        "musterschaetzung",
+    ):
+        return PV_ESTIMATE_MODE_PATTERN
+    return PV_ESTIMATE_MODE_PV
+
+
 def default_targets() -> Dict[str, Any]:
     return {
         "soc_hold_enabled": False,
@@ -146,6 +161,8 @@ def default_targets() -> Dict[str, Any]:
         "safety_enabled": True,
         "safety_interval_minutes": SAFETY_INTERVAL_DEFAULT_MINUTES,
         "safety_divisor": SAFETY_DIVISOR_DEFAULT,
+        # Standard: PV-/Open-Meteo-Schätzung. Alternative: Musterschätzung.
+        "pv_estimate_mode": PV_ESTIMATE_MODE_PV,
     }
 
 
@@ -242,6 +259,9 @@ def _load_state(path) -> Dict[str, Any]:
         targets.get("safety_interval_minutes")
     )
     targets["safety_divisor"] = normalize_safety_divisor(targets.get("safety_divisor"))
+    targets["pv_estimate_mode"] = normalize_pv_estimate_mode(
+        targets.get("pv_estimate_mode")
+    )
     data["targets"] = targets
     if not isinstance(data.get("safety"), dict):
         data["safety"] = _empty_safety_state()
@@ -1709,14 +1729,6 @@ def blend_forward_load_kwh(
     return sum(item[0] * item[1] for item in pieces) / weight
 
 
-def _forward_cap_kw(recent_48h_kwh: Optional[float]) -> float:
-    """1,2 kW normal. 1,5 kW nur wenn die 48-Stunden-Last selbst darüber liegt."""
-    recent = _optional_kwh(recent_48h_kwh)
-    if recent is not None and recent / HOURS > FORWARD_CAP_KW:
-        return FORWARD_CAP_RAISED_KW
-    return FORWARD_CAP_KW
-
-
 def recent_48h_daily_kwh(
     days: Sequence[Dict[str, Any]],
     today: date,
@@ -2352,8 +2364,8 @@ def forward_purchase_kw(
         )
     )
     active = max(p_day, bridge)
-    cap = _forward_cap_kw(recent_48h_kwh)
-    held = _clamp_kw(active, 0.0, cap)
+    # Kein Leistungsdeckel: der empfohlene Zukauf folgt der vollen benötigten Leistung.
+    held = max(0.0, float(active))
     shown = round(_round_step(held, PURCHASE_STEP_KW), 2)
     applied_credit = pv_credit
     return {
@@ -2378,7 +2390,7 @@ def forward_purchase_kw(
         "night_kwh": None if night_kwh is None else round(max(0.0, _f(night_kwh)), 2),
         "band_factor": round(buffer_band_factor(soc, min_soc), 3),
         "daylight": bool(daylight),
-        "cap_kw": cap,
+        "cap_kw": None,
         "base_load_scale": round(scale, 4),
         "forecast_trust": round(trust, 3),
         "pv_blend_kwh": round(pv_blend, 2),
@@ -2503,7 +2515,7 @@ def apply_forward_smooth(
         }
     target = max(0.0, float(raw_kw))
     floor = max(0.0, float(floor_kw))
-    aimed = _clamp_kw(max(target, floor), 0.0, FORWARD_CAP_RAISED_KW)
+    aimed = max(target, floor)
     confirmed = _forward_gap_is_confirmed(prev, target, emergency)
     if _forward_hold_active(prev, now, confirmed=confirmed) and not surplus_pull:
         return {
@@ -2557,6 +2569,96 @@ def apply_forward_smooth(
     }
 
 
+def _scale_pv_hour_map(hours: Any, ratio: float) -> Optional[Dict[str, float]]:
+    if not isinstance(hours, dict) or not hours:
+        return None
+    try:
+        factor = float(ratio)
+    except (TypeError, ValueError):
+        factor = 1.0
+    factor = max(0.0, factor)
+    out: Dict[str, float] = {}
+    for key, raw in hours.items():
+        try:
+            out[str(key)] = round(max(0.0, float(raw or 0.0) * factor), 4)
+        except (TypeError, ValueError):
+            out[str(key)] = 0.0
+    return out
+
+
+def resolve_forward_pv_inputs(
+    algo: Dict[str, Any],
+    mode: Any,
+    *,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """PV- oder Musterschätzung für Zukauf, Sicherheit, Nachtboden und Resttage.
+
+    pv: reine Open-Meteo-Werte, ohne Muster-Override.
+    pattern: Musterschätzung für heute; morgen/übermorgen mit dem Tagesverhältnis
+    Muster/OMS skaliert, damit alle Vorwärtspfade dieselbe Quelle nutzen.
+    """
+    chosen = normalize_pv_estimate_mode(mode)
+    now = now or datetime.now()
+    oms_today = _optional_kwh(algo.get("pv_yield_today_kwh"))
+    oms_tom = _optional_kwh(algo.get("pv_yield_tomorrow_kwh"))
+    oms_after = _optional_kwh(algo.get("pv_yield_day_after_kwh"))
+    oms_hours = algo.get("pv_forecast_today_hours")
+    trust = _clamp_kw(_f(algo.get("forecast_trust"), 0.85), 0.3, 1.0)
+    if chosen == PV_ESTIMATE_MODE_PV:
+        day_total = oms_today
+        today_hours = oms_hours if isinstance(oms_hours, dict) else None
+        ratio = 1.0
+        source = "pv"
+    else:
+        pattern = algo.get("pv_pattern_estimate") if isinstance(algo.get("pv_pattern_estimate"), dict) else {}
+        estimated = _optional_kwh(pattern.get("estimated_kwh"))
+        if estimated is None:
+            estimated = _optional_kwh(pattern.get("similar_estimate_kwh"))
+        if estimated is None:
+            estimated = _optional_kwh(pattern.get("pace_estimate_kwh"))
+        oms_ref = oms_today or _optional_kwh(pattern.get("oms_forecast_kwh"))
+        if estimated is not None and oms_ref is not None and oms_ref > 0.5:
+            ratio = max(0.05, min(1.5, float(estimated) / float(oms_ref)))
+        elif estimated is not None:
+            ratio = 1.0
+        else:
+            ratio = 1.0
+        day_total = estimated if estimated is not None else oms_today
+        today_hours = _scale_pv_hour_map(oms_hours, ratio) if estimated is not None else (
+            oms_hours if isinstance(oms_hours, dict) else None
+        )
+        source = "pattern" if estimated is not None else "pv_fallback"
+    tomorrow_pv = None if oms_tom is None else round(float(oms_tom) * ratio, 4)
+    day_after_pv = None if oms_after is None else round(float(oms_after) * ratio, 4)
+    actual_pv = algo.get("live_pv_kwh_actual")
+    today_rest = forecast_rest_today_kwh(today_hours, now, day_total, actual_pv)
+    today_shortfall = today_pv_shortfall_kwh(today_hours, now, actual_pv, day_total)
+    horizon = hours_until_morning_sun(
+        now,
+        today_hours,
+        algo.get("pv_forecast_tomorrow_hours"),
+    )
+    daylight = in_pv_daylight(now, today_hours)
+    return {
+        "mode": chosen,
+        "source": source,
+        "ratio": round(float(ratio), 4),
+        "trust": trust,
+        "today_kwh": None if day_total is None else round(float(day_total), 4),
+        "today_rest_kwh": today_rest,
+        "today_shortfall_kwh": today_shortfall,
+        "tomorrow_kwh": tomorrow_pv,
+        "day_after_kwh": day_after_pv,
+        "today_hours": today_hours,
+        "hours_until_sun": horizon,
+        "daylight": daylight,
+        "oms_today_kwh": oms_today,
+        "oms_tomorrow_kwh": oms_tom,
+        "oms_day_after_kwh": oms_after,
+    }
+
+
 def _forward_for_report(
     days: Sequence[Dict[str, Any]],
     today: date,
@@ -2566,9 +2668,11 @@ def _forward_for_report(
     base_dir: Optional[str] = None,
     plan_soc_percent: Optional[float] = None,
     hours_until_plan: Optional[float] = None,
+    pv_estimate_mode: Any = PV_ESTIMATE_MODE_PV,
 ) -> Dict[str, Any]:
     """Baut den angezeigten Dauer-Zukauf aus Steuerungsdaten und Glättung."""
     bases: List[float] = []
+    pv_in: Dict[str, Any] = {}
     try:
         from control_algorithm.config import load_config, load_state
         from control_algorithm.soc_calibration import normalize_base_load_scale
@@ -2582,44 +2686,16 @@ def _forward_for_report(
         bases = _complete_base_totals(algo, days, today, FORWARD_LOOKBACK_DAYS)
         daily = sum(bases) / len(bases) if bases else None
         scale = normalize_base_load_scale(algo.get("base_load_scale"))
-        trust = _f(algo.get("forecast_trust"), 0.85)
-        raw_tom = algo.get("pv_yield_tomorrow_kwh")
-        raw_after = algo.get("pv_yield_day_after_kwh")
-        tomorrow_pv = None if raw_tom is None else float(raw_tom)
-        day_after_pv = None if raw_after is None else float(raw_after)
         now = datetime.now()
-        today_hours = algo.get("pv_forecast_today_hours")
-        day_total = algo.get("pv_yield_today_kwh")
-        try:
-            from control_algorithm.pv_pattern_estimate import (
-                effective_today_hours,
-                effective_today_pv_kwh,
-            )
-
-            eff_hours = effective_today_hours(algo)
-            if isinstance(eff_hours, dict) and eff_hours:
-                today_hours = eff_hours
-            day_total = effective_today_pv_kwh(algo)
-        except Exception:
-            pass
-        actual_pv = algo.get("live_pv_kwh_actual")
-        today_pv = forecast_rest_today_kwh(
-            today_hours,
-            now,
-            day_total,
-            actual_pv,
-        )
-        today_shortfall = today_pv_shortfall_kwh(
-            today_hours,
-            now,
-            actual_pv,
-            day_total,
-        )
-        horizon = hours_until_morning_sun(
-            now,
-            today_hours,
-            algo.get("pv_forecast_tomorrow_hours"),
-        )
+        pv_in = resolve_forward_pv_inputs(algo, pv_estimate_mode, now=now)
+        trust = float(pv_in["trust"])
+        tomorrow_pv = pv_in.get("tomorrow_kwh")
+        day_after_pv = pv_in.get("day_after_kwh")
+        today_hours = pv_in.get("today_hours")
+        today_pv = pv_in.get("today_rest_kwh")
+        today_shortfall = pv_in.get("today_shortfall_kwh")
+        horizon = float(pv_in.get("hours_until_sun") or 1.0)
+        daylight = bool(pv_in.get("daylight"))
         try:
             max_soc = float(cfg.get("max_soc_percent"))
         except (TypeError, ValueError):
@@ -2627,7 +2703,6 @@ def _forward_for_report(
         weekday = weekday_load_kwh(days, today, base_dir)
         recent = recent_48h_daily_kwh(days, today, now)
         night = recent_night_base_kwh(days, today)
-        daylight = in_pv_daylight(now, today_hours)
         house_kwh = 0.0
         if base_dir:
             try:
@@ -2670,6 +2745,10 @@ def _forward_for_report(
         house_kwh=house_kwh,
         night_kwh=night,
     )
+    parts = dict(parts)
+    parts["pv_estimate_mode"] = pv_in.get("mode") if isinstance(pv_in, dict) else normalize_pv_estimate_mode(pv_estimate_mode)
+    parts["pv_estimate_source"] = pv_in.get("source") if isinstance(pv_in, dict) else None
+    parts["pv_estimate_ratio"] = pv_in.get("ratio") if isinstance(pv_in, dict) else None
     emergency = current_soc is not None and float(current_soc) < float(min_soc)
     lock = apply_forward_smooth(
         prev_forward,
@@ -2679,7 +2758,6 @@ def _forward_for_report(
         pull_down=bool(parts.get("pull_down")),
     )
     if lock.get("kw") is not None:
-        parts = dict(parts)
         parts["kw"] = lock["kw"]
         parts["smoothed_kw"] = lock.get("smoothed_kw")
         parts["floored"] = lock.get("floored")
@@ -3216,6 +3294,7 @@ def get_report(base_dir: str) -> Dict[str, Any]:
             base_dir,
             plan_soc_percent=plan_soc,
             hours_until_plan=hours_plan,
+            pv_estimate_mode=targets.get("pv_estimate_mode"),
         )
         if (
             forward.get("kw") is None
@@ -3423,6 +3502,10 @@ def save_targets(base_dir: str, updates: Dict[str, Any]) -> Dict[str, Any]:
                     f"{SAFETY_DIVISOR_MAX:g} liegen"
                 )
             targets["safety_divisor"] = divisor
+        if "pv_estimate_mode" in updates:
+            targets["pv_estimate_mode"] = normalize_pv_estimate_mode(
+                updates.get("pv_estimate_mode")
+            )
         state["targets"] = targets
         _save_state(path, state)
     return get_report(base_dir)

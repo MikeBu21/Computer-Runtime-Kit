@@ -1892,6 +1892,8 @@ def api_grundverbrauch_ziele():
         updates["safety_interval_unit"] = payload.get("safety_interval_unit")
     if "safety_divisor" in payload:
         updates["safety_divisor"] = payload.get("safety_divisor")
+    if "pv_estimate_mode" in payload:
+        updates["pv_estimate_mode"] = payload.get("pv_estimate_mode")
     try:
         report = save_targets(os.path.dirname(__file__), updates)
     except ValueError as exc:
