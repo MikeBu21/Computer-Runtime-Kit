@@ -415,13 +415,14 @@ class LockTests(unittest.TestCase):
         )
         at_0518 = forward_purchase_kw(hours_until_sun=2.7, **common)
         at_0618 = forward_purchase_kw(hours_until_sun=1.0, **common)
-        # Mit starker Morgen-PV-Prognose und ohne Defizit zum Tagesplan ist der Zukauf 0.
-        # Der lineare Bandzuschlag am Mindest-SoC hebt ihn nicht mehr an.
+        # Am Boden: starke Morgen-PV deckt den Tag, der Nachtboden hält den
+        # Abstand zum 35-Prozent-Boden mit der mittleren Nachtlast.
         self.assertEqual(at_0518["kw"], at_0618["kw"])
         self.assertEqual(at_0618["band_factor"], 1.0)
-        self.assertEqual(at_0618["kw"], 0.0)
+        self.assertEqual(at_0618["kw"], 0.70)
+        self.assertGreater(at_0618["night_bridge_kw"], 0.0)
         self.assertEqual(at_0618["pv_credit_kwh"], at_0618["load_kwh"])
-        self.assertTrue(at_0618["pull_down"])
+        self.assertFalse(at_0618["pull_down"])
         self.assertNotEqual(at_0618["kw"], 12.0)
         huge = forward_purchase_kw(
             hours_until_sun=1.0,
@@ -449,13 +450,14 @@ class LockTests(unittest.TestCase):
             daylight=False,
             max_soc_percent=95,
         )
-        # Starke PV-Prognose deckt die Last. Der lineare Zuschlag am Mindest-SoC
-        # ist kein Zukauf mehr: 35 %, 40 %, 45 % und 50 % bleiben bei 0 kW.
+        # Starke PV-Prognose deckt die Tagelast. Am Boden hebt der Nachtboden den
+        # Zukauf. Schon etwas darüber reicht der Puffer für die kurze Restnacht.
         at_min = forward_purchase_kw(soc_percent=35, **common)
         halfway = forward_purchase_kw(soc_percent=40, **common)
         edge = forward_purchase_kw(soc_percent=45, **common)
         above = forward_purchase_kw(soc_percent=50, **common)
-        self.assertEqual(at_min["kw"], 0.0)
+        self.assertGreater(at_min["kw"], 0.0)
+        self.assertGreater(at_min["night_bridge_kw"], 0.0)
         self.assertEqual(halfway["kw"], 0.0)
         self.assertEqual(edge["kw"], 0.0)
         self.assertEqual(above["kw"], 0.0)
@@ -1110,6 +1112,118 @@ class SafetyCorrectionTests(unittest.TestCase):
         )
         self.assertEqual(with_house["safety_base_kw"], 0.0)
         self.assertEqual(with_house["kw"], out["kw"])
+
+    def test_night_bridge_raises_purchase_before_floor_is_hit(self):
+        from datetime import date
+
+        from grundverbrauch_rechner import (
+            NIGHT_SPAN_HOURS,
+            forward_purchase_kw,
+            night_bridge_kw,
+            recent_night_base_kwh,
+        )
+
+        hourly = [0.2] * 7 + [0.6] * 11 + [0.9] * 6
+        night = sum(hourly[h] for h in list(range(0, 7)) + list(range(18, 24)))
+        days = [
+            {"date": f"2026-11-{day:02d}", "base_hourly": hourly}
+            for day in range(10, 17)
+        ]
+        self.assertAlmostEqual(recent_night_base_kwh(days, date(2026, 11, 17)), night, places=4)
+        # SoC 40 %: noch über dem Boden, aber 5 Prozent = 2,05 kWh reichen für
+        # die schwere Nacht nicht. Der Zukauf steigt schon vorher.
+        common = dict(
+            storage_kwh=41,
+            min_soc_percent=35,
+            daily_base_kwh=18.0,
+            base_load_scale=1.0,
+            tomorrow_pv_kwh=40.0,
+            day_after_pv_kwh=40.0,
+            forecast_trust=0.85,
+            hours_until_sun=10.0,
+            daylight=False,
+            night_kwh=night,
+        )
+        thin = forward_purchase_kw(soc_percent=40, **common)
+        headroom = (40 - 35) / 100.0 * 41
+        e_load = night * (10.0 / NIGHT_SPAN_HOURS)
+        expected = (e_load - headroom) / 10.0
+        self.assertAlmostEqual(thin["night_bridge_kw"], expected, places=3)
+        self.assertGreater(thin["kw"], 0.0)
+        self.assertAlmostEqual(thin["kw"], round(min(1.2, expected) / 0.05) * 0.05, places=2)
+        self.assertTrue(thin["short"])
+        self.assertFalse(thin["pull_down"])
+        # Ohne Nachtboden würde die starke PV den Zukauf auf 0 ziehen.
+        self.assertEqual(thin["pv_credit_kwh"], thin["load_kwh"])
+        self.assertGreater(thin["kw"], thin["p_day"])
+        # Sicherheitsfeld greift früher (plus 5 Prozent Reserve) und liegt höher.
+        safety_headroom = max(0.0, (40 - 35 - 5) / 100.0 * 41)
+        safety_expected = (e_load - safety_headroom) / 10.0
+        self.assertAlmostEqual(thin["safety_base_kw"], -safety_expected, places=3)
+        self.assertLess(thin["safety_base_kw"], 0.0)
+        self.assertGreater(-thin["safety_base_kw"], thin["night_bridge_kw"])
+        self.assertGreater(-thin["safety_base_kw"], thin["kw"])
+        fat = forward_purchase_kw(soc_percent=80, **common)
+        self.assertEqual(fat["night_bridge_kw"], 0.0)
+        self.assertEqual(fat["kw"], 0.0)
+        self.assertGreater(fat["safety_base_kw"], 0.0)
+        self.assertEqual(
+            night_bridge_kw(
+                load_kwh=18.0,
+                night_kwh=night,
+                hours_until_sun=10.0,
+                headroom_kwh=headroom,
+                daylight=True,
+            ),
+            0.0,
+        )
+
+    def test_safety_below_floor_buys_the_shortfall_despite_pv_surplus(self):
+        from grundverbrauch_rechner import HOURS, forward_purchase_kw, safety_feed_kw
+
+        tomorrow, after = 50.0, 25.775
+        blend = 0.6 * tomorrow + 0.4 * after
+        self.assertAlmostEqual(blend, 40.31, places=2)
+        house = 16.44
+        common = dict(
+            storage_kwh=41,
+            min_soc_percent=35,
+            daily_base_kwh=18.0,
+            base_load_scale=1.0,
+            tomorrow_pv_kwh=tomorrow,
+            day_after_pv_kwh=after,
+            forecast_trust=0.85,
+            hours_until_sun=10,
+            daylight=True,
+            house_kwh=house,
+        )
+        shortfall_kwh = (35 - 28) / 100.0 * 41
+        bezug_kw = round(shortfall_kwh / HOURS, 3)
+        self.assertGreater(bezug_kw, 0.0)
+        below = forward_purchase_kw(soc_percent=28, **common)
+        # Gespeichert negativ, die Seite dreht das Vorzeichen zum positiven Bezug.
+        self.assertAlmostEqual(below["safety_base_kw"], -bezug_kw, places=3)
+        self.assertGreater(-below["safety_base_kw"], 0.0)
+        surplus = round(max(0.0, blend * 0.85 - house) / HOURS, 3)
+        self.assertGreater(surplus, 0.0)
+        self.assertNotEqual(below["safety_base_kw"], surplus)
+        self.assertEqual(
+            safety_feed_kw(blend, 0.85, 0.0, house, shortfall_kwh),
+            -bezug_kw,
+        )
+        on_floor = forward_purchase_kw(soc_percent=35, **common)
+        self.assertAlmostEqual(on_floor["safety_base_kw"], surplus, places=3)
+        self.assertGreater(on_floor["safety_base_kw"], 0.0)
+        above = forward_purchase_kw(soc_percent=80, **common)
+        headroom = (80 - 35) / 100.0 * 41
+        usable = headroom - 0.10 * 41
+        self.assertAlmostEqual(
+            above["safety_base_kw"],
+            round((blend * 0.85 + usable - house) / HOURS, 3),
+            places=3,
+        )
+        self.assertGreater(above["safety_base_kw"], 0.0)
+        self.assertNotEqual(below["kw"], -bezug_kw)
 
     def test_safety_house_is_rest_of_today_plus_all_of_tomorrow(self):
         from datetime import datetime

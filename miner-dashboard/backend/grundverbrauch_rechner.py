@@ -56,6 +56,11 @@ PURCHASE_FLOOR_SKIP_KWH = 0.4
 PURCHASE_STEP_KW = 0.05
 PURCHASE_MAX_KW = 2.0
 PURCHASE_PV_HOUR_KWH = 0.1
+# Nachtstunden ohne PV-Kurve: 18 bis 6 Uhr, 13 Stunden.
+NIGHT_SPAN_HOURS = 13.0
+NIGHT_LOOKBACK_DAYS = 7
+# Sicherheitsfeld greift früher: zusätzlicher Puffer über dem 35-Prozent-Boden.
+SAFETY_NIGHT_RESERVE_PCT = 5.0
 # Angezeigter Zukauf aus den ersten drei Kalendertagen des Monats.
 MONTH_OPEN_DAYS = 3
 MONTH_SHAPE_LIMIT = 0.12
@@ -1815,6 +1820,82 @@ def buffer_band_extra_kw(base_kw: float, soc_percent: float, min_soc_percent: fl
     return max(0.0, float(base_kw)) * buffer_band_factor(soc_percent, min_soc_percent)
 
 
+def _hour_is_night(hour: int, pv_hourly: Optional[Sequence[float]] = None) -> bool:
+    if pv_hourly is not None and hour < len(pv_hourly):
+        try:
+            return float(pv_hourly[hour]) < PURCHASE_PV_HOUR_KWH
+        except (TypeError, ValueError):
+            pass
+    return hour < 7 or hour >= 18
+
+
+def night_kwh_from_hourly(
+    hourly: Sequence[float],
+    pv_hourly: Optional[Sequence[float]] = None,
+) -> float:
+    """Summe der Nachtstunden eines Tagesprofils."""
+    total = 0.0
+    for hour, value in enumerate(list(hourly)[:HOURS]):
+        if _hour_is_night(hour, pv_hourly):
+            total += max(0.0, _f(value))
+    return total
+
+
+def recent_night_base_kwh(
+    days: Sequence[Dict[str, Any]],
+    today: date,
+    lookback: int = NIGHT_LOOKBACK_DAYS,
+) -> Optional[float]:
+    """Mittlerer Nacht-Grundverbrauch der letzten vollen Tage."""
+    nights: List[float] = []
+    for day in reversed(list(days)):
+        try:
+            day_date = date.fromisoformat(str(day.get("date") or "")[:10])
+        except ValueError:
+            continue
+        if day_date >= today:
+            continue
+        hourly = _hourly_or_zero(day.get("base_hourly"))
+        if _measured_hours(hourly) < MIN_HOURS:
+            continue
+        pv_raw = day.get("pv_hourly")
+        pv = _hourly_or_zero(pv_raw) if isinstance(pv_raw, list) and len(pv_raw) >= HOURS else None
+        night = night_kwh_from_hourly(hourly, pv)
+        if night > 0:
+            nights.append(night)
+        if len(nights) >= max(1, int(lookback)):
+            break
+    if not nights:
+        return None
+    return sum(nights) / len(nights)
+
+
+def night_bridge_kw(
+    *,
+    load_kwh: float,
+    night_kwh: Optional[float],
+    hours_until_sun: float,
+    headroom_kwh: float,
+    daylight: bool,
+) -> float:
+    """Zukauf, der den 35-Prozent-Boden über die Restnacht hält.
+
+    Nur nachts. PV von morgen deckt das nicht. Braucht die erwartete Nachtlast
+    mehr Energie als den Abstand zum Boden, steigt der Dauerzukauf schon vorher.
+    """
+    if daylight:
+        return 0.0
+    horizon = max(1.0, float(hours_until_sun))
+    if night_kwh is not None and float(night_kwh) > 0:
+        e_load = float(night_kwh) * min(1.0, horizon / NIGHT_SPAN_HOURS)
+    else:
+        e_load = (max(0.0, float(load_kwh)) / HOURS) * horizon
+    e_floor = max(0.0, e_load - max(0.0, float(headroom_kwh)))
+    if e_floor < PURCHASE_FLOOR_SKIP_KWH:
+        return 0.0
+    return e_floor / horizon
+
+
 def plan_recovery_kw(
     soc_percent: float,
     plan_soc_percent: Optional[float],
@@ -2056,8 +2137,20 @@ def safety_feed_kw(
     trust: float,
     relief_kwh: float,
     house_kwh: float,
+    floor_shortfall_kwh: float = 0.0,
+    night_bridge_kw: float = 0.0,
 ) -> float:
-    """(PV-Mischung mal Vertrauen plus Entlastung minus Hausverbrauch) / 24, mindestens 0."""
+    """Sicherheitswert in kW. Positiv = Überschuss, negativ = Bezug.
+
+    Über dem Boden: (PV-Mischung mal Vertrauen plus Entlastung minus Haus) / 24,
+    mindestens 0. Unter dem 35-Prozent-Boden oder wenn der Nachtpuffer nicht
+    reicht, wird Bezug ausgegeben. PV darf diesen Bezug nicht zudecken.
+    """
+    shortfall = max(0.0, _f(floor_shortfall_kwh))
+    bridge = max(0.0, _f(night_bridge_kw))
+    bezug = max(shortfall / HOURS, bridge)
+    if bezug > 0.0:
+        return round(-bezug, 3)
     credited = max(0.0, _f(pv_blend_kwh)) * max(0.0, _f(trust)) + max(0.0, _f(relief_kwh))
     gap = credited - max(0.0, _f(house_kwh))
     return round(max(0.0, gap) / HOURS, 3)
@@ -2103,6 +2196,7 @@ def forward_purchase_kw(
     plan_soc_percent: Optional[float] = None,
     hours_until_plan: Optional[float] = None,
     house_kwh: Optional[float] = None,
+    night_kwh: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Dauer-Zukauf mit PV-Wetterprognose (Open-Meteo über morgen/übermorgen).
 
@@ -2114,7 +2208,10 @@ def forward_purchase_kw(
     Liegt der Speicher unter dem SoC vom Tagesbeginn, kommt die fehlende Energie
     geteilt durch die Stunden bis zur nächsten Tageswende dazu. Die Anzeige fährt
     diesen Zusatz über die Glättung hoch und wieder runter, ohne auf das Maximum
-    zu springen. Einspeisung/Überschuss bleibt Sache des Steuerungsalgorithmus.
+    zu springen. Nachts hält der Nachtboden den Abstand zum 35-Prozent-Boden:
+    reicht der Puffer für die erwartete Nachtlast nicht, steigt der Zukauf schon
+    vorher. PV von morgen deckt das nicht. Einspeisung/Überschuss bleibt Sache
+    des Steuerungsalgorithmus.
     """
     empty: Dict[str, Any] = {
         "kw": None,
@@ -2133,6 +2230,8 @@ def forward_purchase_kw(
         "short": False,
         "daylight": None,
         "cap_kw": None,
+        "night_bridge_kw": None,
+        "night_kwh": None,
     }
     blended = blend_forward_load_kwh(daily_base_kwh, weekday_kwh, recent_48h_kwh)
     if blended is None or blended <= 0:
@@ -2168,7 +2267,12 @@ def forward_purchase_kw(
     pv_credit = min(load_kwh, pv_blend * trust)
     storage = float(storage_kwh)
     soc = float(soc_percent)
-    headroom = max(0.0, (soc - min_soc) / 100.0 * storage)
+    # Abstand zum Boden bleibt vorzeichenbehaftet. Nur die Entlastung über
+    # dem Boden ist nach oben begrenzt. Der Fehlbetrag darunter geht in den
+    # Sicherheitswert und wird nicht auf null geklemmt.
+    soc_delta_kwh = (soc - min_soc) / 100.0 * storage
+    headroom = max(0.0, soc_delta_kwh)
+    floor_shortfall_kwh = max(0.0, -soc_delta_kwh)
     band_kwh = FORWARD_BUFFER_BAND_PCT / 100.0 * storage
     usable = max(0.0, headroom - band_kwh)
     base_kw = load_kwh / HOURS
@@ -2203,11 +2307,40 @@ def forward_purchase_kw(
         recovery = plan_recovery_kw(soc, plan_soc_percent, storage, hours_until_plan)
         if recovery > 0:
             p_day = min(room_to_max, p_day + recovery)
+    horizon = max(1.0, float(hours_until_sun))
+    bridge = night_bridge_kw(
+        load_kwh=load_kwh,
+        night_kwh=night_kwh,
+        hours_until_sun=horizon,
+        headroom_kwh=headroom,
+        daylight=bool(daylight),
+    )
+    if room_to_max > 0 and bridge > 0:
+        bridge = min(room_to_max, bridge)
+    else:
+        bridge = 0.0
+    # Sicherheitsfeld: früherer Eingriff (Boden plus Reserve), deshalb höherer Bezug.
+    safety_headroom = max(
+        0.0,
+        (soc - min_soc - SAFETY_NIGHT_RESERVE_PCT) / 100.0 * storage,
+    )
+    safety_bridge = night_bridge_kw(
+        load_kwh=load_kwh,
+        night_kwh=night_kwh,
+        hours_until_sun=horizon,
+        headroom_kwh=safety_headroom,
+        daylight=bool(daylight),
+    )
+    if room_to_max > 0 and safety_bridge > 0:
+        safety_bridge = min(room_to_max, safety_bridge)
+    else:
+        safety_bridge = 0.0
     today_trusted = today_kwh * trust if daylight else 0.0
-    # Prognose deckt Last oder füllt bis Max-SoC — Kauf überflüssig (auch nachts).
-    # Mit Tagesplan bleibt die Glättung zuständig, damit der Ausgleich nicht springt.
+    # Prognose deckt Last oder füllt bis Max-SoC — Kauf überflüssig.
+    # Der Nachtboden bleibt davon unberührt: PV von morgen hilft der Restnacht nicht.
     pull_down = bool(
-        plan_soc_percent is None
+        bridge <= 0.0
+        and plan_soc_percent is None
         and (
             (pv_credit + 1e-9 >= load_kwh)
             or (stored_kwh + pv_blend + 1e-9 >= max_kwh)
@@ -2218,17 +2351,15 @@ def forward_purchase_kw(
             )
         )
     )
-    # Immer Prognose-Pfad: bei genug PV sinkt der Zukauf Tag und Nacht.
-    active = p_day
+    active = max(p_day, bridge)
     cap = _forward_cap_kw(recent_48h_kwh)
     held = _clamp_kw(active, 0.0, cap)
     shown = round(_round_step(held, PURCHASE_STEP_KW), 2)
     applied_credit = pv_credit
-    horizon = max(1.0, float(hours_until_sun))
     return {
         "kw": shown,
         "p_raw": round(active, 3),
-        "p_floor": 0.0,
+        "p_floor": round(bridge, 3),
         "p_night": round(p_night, 3),
         "p_day": round(p_day, 3),
         "p_held": round(held, 3),
@@ -2239,10 +2370,12 @@ def forward_purchase_kw(
         "headroom_kwh": round(headroom, 2),
         "min_soc_percent": round(min_soc, 1),
         "hours_until_sun": round(horizon, 2),
-        "short": bool(recovery > 0.02),
+        "short": bool(recovery > 0.02 or bridge > 0.02),
         "extra_kw": round(recovery, 3),
         "plan_soc_percent": None if plan_soc_percent is None else round(float(plan_soc_percent), 2),
         "plan_recovery_kw": round(recovery, 3),
+        "night_bridge_kw": round(bridge, 3),
+        "night_kwh": None if night_kwh is None else round(max(0.0, _f(night_kwh)), 2),
         "band_factor": round(buffer_band_factor(soc, min_soc), 3),
         "daylight": bool(daylight),
         "cap_kw": cap,
@@ -2254,6 +2387,8 @@ def forward_purchase_kw(
             trust,
             usable,
             0.0 if house_kwh is None else house_kwh,
+            floor_shortfall_kwh,
+            safety_bridge,
         ),
         "safety_house_kwh": None if house_kwh is None else round(max(0.0, _f(house_kwh)), 2),
         "new_risk_kw": new_risk_model_kw(load_kwh, pv_tom, pv_after, usable),
@@ -2417,7 +2552,8 @@ def apply_forward_smooth(
         "smoothed_kw": shown,
         "updated": changed,
         "updated_at": now.isoformat(timespec="seconds") if changed else prev.get("updated_at"),
-        "floored": bool(shown + 0.005 < aimed),
+        # Unter der Totzone hängt die Anzeige nicht hinter dem Soll.
+        "floored": bool(shown + FORWARD_DEADBAND_KW < aimed),
     }
 
 
@@ -2490,6 +2626,7 @@ def _forward_for_report(
             max_soc = 95.0
         weekday = weekday_load_kwh(days, today, base_dir)
         recent = recent_48h_daily_kwh(days, today, now)
+        night = recent_night_base_kwh(days, today)
         daylight = in_pv_daylight(now, today_hours)
         house_kwh = 0.0
         if base_dir:
@@ -2531,6 +2668,7 @@ def _forward_for_report(
         plan_soc_percent=plan_soc_percent,
         hours_until_plan=hours_until_plan,
         house_kwh=house_kwh,
+        night_kwh=night,
     )
     emergency = current_soc is not None and float(current_soc) < float(min_soc)
     lock = apply_forward_smooth(
