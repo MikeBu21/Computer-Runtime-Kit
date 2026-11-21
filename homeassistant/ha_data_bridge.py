@@ -114,11 +114,29 @@ def _banned(*parts: str) -> bool:
     return any(needle in folded for needle in BANNED_NAME_PARTS)
 
 
+def _configured_logger_tokens() -> tuple[str, ...]:
+    """IP aus Energie / Netzbezug / Logger-IP. Keine fest eingebaute Adresse."""
+    path = Path("/home/piminer/minersteuerung/miner-dashboard/backend/bms_test_settings.json")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        return ()
+    if not isinstance(data, dict):
+        return ()
+    tokens: list[str] = []
+    for key in ("logger_ip", "modbus_host"):
+        host = str(data.get(key) or "").strip().casefold()
+        if host and " " not in host and len(host) <= 253:
+            tokens.append(host)
+            tokens.append(host.replace(".", "_"))
+    return tuple(dict.fromkeys(tokens))
+
+
 def _is_kept_text(text: str) -> bool:
     folded = (text or "").casefold()
     if folded.strip() in INVERTER_DEVICE_NAMES:
         return True
-    if "192.168.1.176" in folded or "192_168_1_176" in folded:
+    if any(token in folded for token in _configured_logger_tokens()):
         return True
     return any(part in folded for part in KEEP_NAME_PARTS)
 

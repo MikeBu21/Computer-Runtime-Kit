@@ -1711,7 +1711,7 @@ def api_logic_gate_layout():
 def api_ha_entities():
     from ha_entity_mapping import list_ha_entities, load_config, mapped_entity_ids, snapshot_updated_at
 
-    # Standard: nur verfügbare Sensoren — Alt-Müll (z. B. 192.168.1.176 unavailable)
+    # Standard: nur verfügbare Sensoren — alte, nicht mehr erreichbare Entity-IDs
     # nicht mehr in Zuordnungs-Dropdowns. ?all=1 für Debug.
     want_all = str(request.args.get('all') or '').strip().lower() in ('1', 'true', 'yes')
     keep = mapped_entity_ids(load_config()) if not want_all else None

@@ -264,6 +264,24 @@ def _banned_entity(item: Dict[str, Any]) -> bool:
     return any(part in folded for part in BANNED_NAME_PARTS)
 
 
+def _configured_logger_tokens() -> tuple:
+    """IP aus Energie / Netzbezug / Logger-IP. Keine fest eingebaute Adresse."""
+    path = BACKEND_DIR / "bms_test_settings.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        return ()
+    if not isinstance(data, dict):
+        return ()
+    tokens = []
+    for key in ("logger_ip", "modbus_host"):
+        host = str(data.get(key) or "").strip().casefold()
+        if host and " " not in host and len(host) <= 253:
+            tokens.append(host)
+            tokens.append(host.replace(".", "_"))
+    return tuple(dict.fromkeys(tokens))
+
+
 def _is_inverter_entity(item: Dict[str, Any]) -> bool:
     device = str(item.get("device") or "").casefold().strip()
     folded = " ".join(
@@ -271,7 +289,7 @@ def _is_inverter_entity(item: Dict[str, Any]) -> bool:
     ).casefold()
     if device in INVERTER_DEVICE_NAMES or any(part in folded for part in KEEP_NAME_PARTS):
         return True
-    return "192_168_1_176" in folded or "192.168.1.176" in folded
+    return any(token in folded for token in _configured_logger_tokens())
 
 
 def list_ha_entities(

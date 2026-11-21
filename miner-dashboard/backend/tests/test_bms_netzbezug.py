@@ -1597,5 +1597,276 @@ class LoggerResolveTests(unittest.TestCase):
         self.assertEqual(settings["modbus_host"], "192.168.1.20")
 
 
+class SharedMachineRuleTests(unittest.TestCase):
+    def setUp(self):
+        _reset_hold(None)
+        bms_seite._known_phase = None
+        bms_seite._confirmed.clear()
+        bms_seite._confirmed_at = 0.0
+        bms_seite._announce_block_until.clear()
+        bms_seite._logger_serial_cache.clear()
+        bms_seite._discharge_amps = 0
+
+    def test_discharge_amps_one_step_under_installer_ceiling(self):
+        settings = {"install_max_discharge_a": 340}
+        live = {"grid_kw": 0.0, "battery_kw": -4.8}
+        watts = max(0, 0 - 1100 - (-4800))
+        self.assertEqual(watts, 3700)
+        first = bms_seite._discharge_limit_amps(1100, live, settings)
+        self.assertEqual(first, int(round(3700 / bms_seite.PACK_VOLT)))
+        self.assertNotEqual(first, 0)
+        self.assertLess(first, 340)
+        self.assertNotEqual(first, MAX_DISCHARGE_AMPS)
+        second = bms_seite._discharge_limit_amps(1100, live, settings)
+        self.assertEqual(second, first)
+        kept = bms_seite._discharge_limit_amps(1100, {"grid_kw": 0.0}, settings)
+        self.assertEqual(kept, first)
+        capped = bms_seite._discharge_limit_amps(
+            0, {"grid_kw": 50.0, "battery_kw": 0.0}, {"install_max_discharge_a": 80}
+        )
+        self.assertEqual(capped, 80)
+
+    def test_ha_entity_prefix_follows_logger_ip(self):
+        import inspect
+
+        source = inspect.getsource(bms_seite._sync_ha_release)
+        self.assertNotIn("192_168_1_176", source)
+        self.assertNotIn("10_0_0_10", source)
+        seen = []
+
+        def fake_read(entity):
+            seen.append(entity)
+            return ""
+
+        settings = {
+            "logger_ip": "10.0.0.10",
+            "modbus_host": "10.0.0.10",
+            "idle_grid_w": 20,
+            "program_soc": [20] * 6,
+            "program_power": [12000] * 6,
+            "program_charging": [1] * 6,
+        }
+        with mock.patch("ha_device_control.read_ha_entity_state", side_effect=fake_read), mock.patch(
+            "ha_device_control.ha_service"
+        ):
+            bms_seite._sync_ha_release(settings)
+        self.assertTrue(seen)
+        self.assertTrue(all("10_0_0_10" in entity for entity in seen))
+        self.assertFalse(any("192_168" in entity for entity in seen))
+        self.assertIn("switch.10_0_0_10_battery_grid_charging", seen)
+        self.assertIn("switch.10_0_0_10_export_surplus", seen)
+        self.assertIn("switch.10_0_0_10_microinverter", seen)
+        self.assertIn("switch.10_0_0_10_microinverter_export_cut_off", seen)
+        seen.clear()
+        local = dict(settings)
+        local["logger_ip"] = "192.168.1.176"
+        local["modbus_host"] = "192.168.1.176"
+        with mock.patch("ha_device_control.read_ha_entity_state", side_effect=fake_read), mock.patch(
+            "ha_device_control.ha_service"
+        ):
+            bms_seite._sync_ha_release(local)
+        self.assertTrue(seen)
+        self.assertTrue(all("192_168_1_176" in entity for entity in seen))
+
+    def test_hold_program_stays_12000_and_zero_export_stays_20(self):
+        values = _by_addr(_tou_program_writes(_item(), 100, 1, with_power=True))
+        self.assertEqual(values[0x009A], TOU_HOLD_POWER_W)
+        self.assertEqual(values[0x009F], TOU_HOLD_POWER_W)
+        self.assertEqual(TOU_HOLD_POWER_W, 12000)
+        released = _by_addr(_release_writes(_item()))
+        self.assertEqual(released[0x0068], 20)
+        self.assertEqual(bms_seite._idle_grid_w({}), 20)
+        ceiling = {"program_power": [20000] * 6, "install_max_charge_a": 624}
+        held = _by_addr(
+            bms_seite._prepare_writes(
+                _tou_program_writes(_item(), 100, 1, with_power=True),
+                ceiling,
+            )
+        )
+        self.assertEqual(held[0x009A], 12000)
+        raised = _by_addr(
+            bms_seite._prepare_writes([(0x009A, "Program 1 Power", 25000)], ceiling)
+        )
+        self.assertEqual(raised[0x009A], 20000)
+        charge = _by_addr(
+            bms_seite._prepare_writes(
+                [(0x006C, "Battery Max Charging Current", 900), (0x0080, "Grid charge", 900)],
+                ceiling,
+            )
+        )
+        self.assertEqual(charge[0x006C], 624)
+        self.assertEqual(charge[0x0080], 624)
+        self.assertEqual(bms_seite._grid_charge_amps(40000, 624), 624)
+
+    def test_last_register_value_wins_and_illegal_mode_is_dropped(self):
+        rows = bms_seite._prepare_writes(
+            [(0x006D, "Battery Max Discharging Current", 10), (0x006D, "Battery Max Discharging Current", 40)],
+            {"install_max_discharge_a": 340},
+        )
+        self.assertEqual(rows, [(0x006D, "Battery Max Discharging Current", 40)])
+        dropped = bms_seite._prepare_writes([(0x008E, "Work Mode", 5)], None)
+        self.assertEqual(dropped, [])
+        kept = _by_addr(
+            bms_seite._prepare_writes(
+                [(0x008E, "Work Mode", 2), (0x008E, "Work Mode", 7), (0x0073, "SOC", 140), (0x0073, "SOC", 40)],
+                None,
+            )
+        )
+        self.assertEqual(kept[0x008E], 2)
+        self.assertEqual(kept[0x0073], 40)
+
+    def test_three_phase_card_stays_without_link_and_single_phase_stays(self):
+        base = bms_seite.INVERTERS["deye_hybrid"]
+        seen = _control_item(base, {"name": "Keller", "model": "SUN-12K-SG04LP3"})
+        self.assertEqual(seen["register"], 0x0068)
+        self.assertEqual(seen["max_discharge_register"], 0x006D)
+        self.assertEqual(seen["grid_peak_power_register"], 0x00BF)
+        missing = _control_item(base, None)
+        self.assertEqual(missing["register"], 0x0068)
+        self.assertEqual(missing["max_discharge_register"], 0x006D)
+        self.assertEqual(missing["grid_peak_power_register"], 0x00BF)
+        bms_seite._known_phase = None
+        single = _control_item(base, {"name": "Mikro", "model": "einphasig"})
+        self.assertEqual(single["register"], 0x00CE)
+        self.assertEqual(_control_item(base, None)["register"], 0x00CE)
+        bms_seite._known_phase = None
+        named = _control_item(base, {"name": "SG04 Keller"})
+        self.assertEqual(named["register"], 0x0068)
+
+    def test_failed_announcement_is_not_repeated_per_register(self):
+        settings = {"modbus_host": "10.1.1.1", "logger_ip": "10.1.1.1", "logger_serial": 99}
+        with mock.patch.object(bms_seite, "_unicast_discover", return_value=None) as discover:
+            first = bms_seite._serial_for_logger("10.1.1.1", 0, settings)
+            second = bms_seite._serial_for_logger("10.1.1.1", 0, settings)
+            third = bms_seite._serial_for_logger("10.1.1.1", 0, settings)
+        self.assertEqual(discover.call_count, 1)
+        self.assertEqual((first, second, third), (99, 99, 99))
+
+    def _settings(self):
+        return {
+            "modbus_host": "10.0.0.10",
+            "modbus_port": 8899,
+            "modbus_unit": 1,
+            "logger_ip": "10.0.0.10",
+            "logger_serial": 5,
+            "idle_grid_w": 20,
+        }
+
+    def test_old_readback_does_not_cause_a_second_write(self):
+        bms_seite._confirmed[0x0068] = 20
+        bms_seite._confirmed_at = 0.0
+        with mock.patch("bms_seite.socket.create_connection") as connect:
+            result = bms_seite._send_verified(self._settings(), 5, [(0x0068, "Zero Export", 20)], 20)
+        connect.assert_not_called()
+        self.assertIn("nichts neu geschrieben", result["write_text"])
+        reads = iter([7, 20])
+
+        def fake_read(*_args, **_kwargs):
+            return next(reads)
+
+        writes = {"n": 0}
+
+        def fake_write(*_args, **_kwargs):
+            writes["n"] += 1
+
+        bms_seite._confirmed.clear()
+        with mock.patch("bms_seite.socket.create_connection", return_value=mock.Mock()), mock.patch.object(
+            bms_seite, "_serial_for_logger", return_value=5
+        ), mock.patch.object(bms_seite, "_write_on_sock", side_effect=fake_write), mock.patch.object(
+            bms_seite, "_read_on_sock", side_effect=fake_read
+        ), mock.patch.object(
+            bms_seite.time, "sleep"
+        ):
+            result = bms_seite._send_verified(self._settings(), 5, [(0x0068, "Zero Export", 20)], 20)
+        self.assertEqual(writes["n"], 1)
+        self.assertEqual(bms_seite._confirmed[0x0068], 20)
+        self.assertTrue(result["command_sent"])
+
+    def test_discarded_frame_is_sent_again(self):
+        calls = {"n": 0}
+
+        def fake_write(*_args, **_kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise OSError("keine passende Logger-Antwort")
+
+        with mock.patch("bms_seite.socket.create_connection", return_value=mock.Mock()), mock.patch.object(
+            bms_seite, "_serial_for_logger", return_value=5
+        ), mock.patch.object(bms_seite, "_write_on_sock", side_effect=fake_write), mock.patch.object(
+            bms_seite, "_read_on_sock", return_value=20
+        ), mock.patch.object(
+            bms_seite.time, "sleep"
+        ):
+            result = bms_seite._send_verified(self._settings(), 5, [(0x0068, "Zero Export", 20)], 20)
+        self.assertEqual(calls["n"], 2)
+        self.assertTrue(result["command_sent"])
+        self.assertEqual(bms_seite._confirmed[0x0068], 20)
+
+        class Sock:
+            def __init__(self):
+                self.sent = []
+                self.step = 0
+
+            def sendall(self, data):
+                self.sent.append(data)
+
+            def settimeout(self, _timeout):
+                return None
+
+            def recv(self, _size):
+                self.step += 1
+                if self.step == 1:
+                    frame = bytearray(40)
+                    frame[0] = 0xA5
+                    frame[1:3] = struct.pack("<H", 27)
+                    frame[-1] = 0x15
+                    frame[-2] = 0x00
+                    if frame[-2] == (sum(frame[1:-2]) & 0xFF):
+                        frame[-2] = 0xFF
+                    return bytes(frame)
+                if self.step == 2:
+                    reply = bytearray.fromhex(
+                        "a515001015dafb30dac6b002014e8ce403650b000059e216670103020014b84b9815"
+                    )
+                    reply[5] = self.sent[-1][5]
+                    reply[-2] = sum(reply[1:-2]) & 0xFF
+                    return bytes(reply)
+                raise TimeoutError("timed out")
+
+        sock = Sock()
+        modbus = bms_seite._modbus_read_request(1, 0x0068, 1)
+        words = bms_seite._solarman_exchange(
+            "10.0.0.10", 8899, 1, modbus, bms_seite._accept_read(1, 1), sock=sock, timeout=1.0
+        )
+        self.assertEqual(bms_seite._words_from_read(words, 1), [20])
+        self.assertGreaterEqual(len(sock.sent), 2)
+
+    def test_write_block_uses_one_connection(self):
+        sleeps = []
+        sock = mock.Mock()
+        def fake_read(*args, **_kwargs):
+            return 20 if int(args[5]) == 0x0068 else 40
+
+        with mock.patch("bms_seite.socket.create_connection", return_value=sock) as connect, mock.patch.object(
+            bms_seite, "_serial_for_logger", return_value=5
+        ) as serial, mock.patch.object(bms_seite, "_write_on_sock"), mock.patch.object(
+            bms_seite, "_read_on_sock", side_effect=fake_read
+        ), mock.patch.object(
+            bms_seite.time, "sleep", side_effect=lambda sec: sleeps.append(sec)
+        ):
+            result = bms_seite._send_verified(
+                self._settings(),
+                5,
+                [(0x0068, "Zero Export", 20), (0x006D, "Battery Max Discharging Current", 40)],
+                20,
+            )
+        connect.assert_called_once()
+        serial.assert_called_once()
+        sock.close.assert_called_once()
+        self.assertIn(bms_seite.WRITE_REGISTER_GAP_SEC, sleeps)
+        self.assertGreaterEqual(sleeps.count(bms_seite.READBACK_WAIT_SEC), 2)
+        self.assertTrue(result["command_sent"])
+
+
 if __name__ == "__main__":
     unittest.main()

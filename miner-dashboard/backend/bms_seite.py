@@ -301,8 +301,9 @@ MICRO_EXPORT_CUTOFF_BIT = 0
 # Schalter Generator/Microinverter, Register 0x0084. 0 = aus.
 REG_MICROINVERTER = 0x0084
 REG_SOLAR_SELL = 0x0091
-MAX_DISCHARGE_AMPS = 240
 TOU_HOLD_SOC = 20
+# Fallback-Defaults, wenn noch kein Elektrikerstand vorliegt. Der Regelkreis liest
+# Ampere/Watt immer über _max_* / program_power aus den Elektrikerwerten.
 TOU_HOLD_POWER_W = 12000
 # Werte des Elektrikers bei der Installation (am SG04LP3 gelesen). Sie werden beim
 # Ausschalten zurückgeschrieben; Ströme und Leistungen sind zugleich Obergrenzen.
@@ -317,9 +318,12 @@ INSTALL_DEFAULTS = {
     # Solar Sell (0x0091): Elektriker-Soll, beim Release und beim BMS-Schreiben wiederherstellen.
     "install_solar_sell": SOLAR_SELL_ON,
 }
+# Alias für Tests/Defaults: entspricht INSTALL_DEFAULTS, ist kein Schreib-Cap mehr.
+MAX_DISCHARGE_AMPS = INSTALL_DEFAULTS["install_max_discharge_a"]
 INSTALL_RANGES = {
-    "install_max_charge_a": (0, 350),
-    "install_max_discharge_a": (0, 350),
+    # 16-Bit-Register. Was der Elektriker einträgt, bleibt die Obergrenze, auch 624 A oder mehr.
+    "install_max_charge_a": (0, 65535),
+    "install_max_discharge_a": (0, 65535),
     "install_max_sell_w": (0, 24000),
     "install_max_import_w": (0, 80000),
     "install_shutdown_soc": (0, 100),
@@ -373,7 +377,7 @@ def _install_grid_charge(settings: Optional[Dict[str, Any]] = None) -> int:
 
 
 def _install_grid_charge_a(settings: Optional[Dict[str, Any]] = None) -> int:
-    return _saved_int(settings, "install_grid_charge_a", 0, 0, 350)
+    return _saved_int(settings, "install_grid_charge_a", 0, 0, 1000)
 
 
 def _install_microinverter(settings: Optional[Dict[str, Any]] = None) -> int:
@@ -576,6 +580,30 @@ def _install_value(settings: Optional[Dict[str, Any]], key: str) -> int:
     return max(lowest, min(highest, value))
 
 
+def _max_discharge_a(settings: Optional[Dict[str, Any]] = None) -> int:
+    """Elektriker-Obergrenze Entladestrom (A)."""
+    return _install_value(settings, "install_max_discharge_a")
+
+
+def _max_charge_a(settings: Optional[Dict[str, Any]] = None) -> int:
+    """Elektriker-Obergrenze Ladestrom (A)."""
+    return _install_value(settings, "install_max_charge_a")
+
+
+def _max_sell_w(settings: Optional[Dict[str, Any]] = None) -> int:
+    """Elektriker-Obergrenze Einspeiseleistung (W)."""
+    return _install_value(settings, "install_max_sell_w")
+
+
+def _tou_hold_program_powers(settings: Optional[Dict[str, Any]] = None) -> List[int]:
+    """Programmleistung aus Elektrikerwerten; fehlt der Snapshot, idle_tou_power_w."""
+    powers = _coerce_program_list((settings or {}).get("program_power"))
+    if powers is not None:
+        return powers
+    fallback = _idle_tou_power_w(settings)
+    return [fallback] * PROGRAM_SLOTS
+
+
 def _install_solar_sell(settings: Optional[Dict[str, Any]] = None) -> int:
     """Elektriker-Soll für Solar Sell (0/1). Nicht fest aus."""
     return _install_value(settings, "install_solar_sell")
@@ -609,7 +637,7 @@ def _install_caps(settings: Optional[Dict[str, Any]]) -> Dict[int, int]:
     """Obergrenzen je Register aus den Elektriker-Werten. Die Steuerung schreibt nie darüber."""
     charge_a = _install_value(settings, "install_max_charge_a")
     import_w = _install_value(settings, "install_max_import_w")
-    return {
+    caps = {
         REG_MAX_CHARGE: charge_a,
         0x0080: charge_a,
         0x006D: _install_value(settings, "install_max_discharge_a"),
@@ -617,6 +645,9 @@ def _install_caps(settings: Optional[Dict[str, Any]]) -> Dict[int, int]:
         0x00BF: import_w,
         0x00E9: import_w // 10,
     }
+    for index, power in enumerate(_tou_hold_program_powers(settings)):
+        caps[REG_PROGRAM_POWER + index] = power
+    return caps
 
 
 def _cap_rows(rows: List[tuple], settings: Optional[Dict[str, Any]]) -> List[tuple]:
@@ -641,6 +672,13 @@ def _unit(value: Any) -> int:
     except (TypeError, ValueError):
         return 1
     return min(247, max(1, number))
+
+
+def _ha_entity_token(settings: Optional[Dict[str, Any]]) -> str:
+    """Home-Assistant-Präfix aus der Logger-IP. Punkte werden Unterstriche."""
+    data = settings or {}
+    host = _host(data.get("logger_ip")) or _host(data.get("modbus_host"))
+    return host.replace(".", "_") if host else ""
 
 
 def _host(value: Any) -> str:
@@ -1876,9 +1914,37 @@ def _solarman_device(host: str) -> Optional[Dict[str, Any]]:
     return found
 
 
+# Einmal erkannt, bleibt die Karte auch ohne Home-Assistant-Link auf derselben Adresse.
+_known_phase: Optional[str] = None
+_PHASE_THREE_TOKENS = ("sg04", "lp3", "sg0", "deye_p3")
+
+
+def _phase_text(link: Optional[Dict[str, Any]]) -> str:
+    if not link:
+        return ""
+    return " ".join(
+        str(link.get(key) or "")
+        for key in ("name", "name_by_user", "label", "device_name", "device", "lookup", "model")
+    ).lower()
+
+
 def _three_phase(link: Optional[Dict[str, Any]]) -> bool:
-    text = f"{(link or {}).get('lookup', '')} {(link or {}).get('model', '')}".lower()
-    return any(token in text for token in ("sg04", "lp3", "deye_p3", "sg0"))
+    """Drehstrom, wenn Modell oder Gerätename sg0, lp3 oder sg04 enthält.
+
+    Fehlt der Link, gilt die zuletzt erkannte Karte. Drehstrom bleibt bei
+    0x0068, 0x006D und 0x00BF, eine einphasige Karte bei 0x00CE.
+    """
+    global _known_phase
+    text = _phase_text(link)
+    if text.strip():
+        three = any(token in text for token in _PHASE_THREE_TOKENS)
+        _known_phase = "three" if three else "single"
+        return three
+    if _known_phase == "three":
+        return True
+    if _known_phase == "single":
+        return False
+    return False
 
 
 def _control_item(item: Dict[str, Any], link: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -2442,6 +2508,16 @@ def _solarman_checksum(frame: bytes) -> int:
 
 # Seriennummer, die der Logger an einer IP selbst genannt hat. Pro Host, nicht fest.
 _logger_serial_cache: Dict[str, int] = {}
+# Fehlgeschlagene Ankündigung: 20 s nicht erneut fragen, auch nicht je Register.
+ANNOUNCE_RETRY_SEC = 20.0
+_announce_block_until: Dict[str, float] = {}
+
+
+def _cached_logger_serial(target: str) -> int:
+    try:
+        return int(_logger_serial_cache.get(target) or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _announced_logger_serial(host: str, refresh: bool = False) -> int:
@@ -2449,11 +2525,11 @@ def _announced_logger_serial(host: str, refresh: bool = False) -> int:
     target = _host(host)
     if not target:
         return 0
+    now = time.monotonic()
+    if now < _announce_block_until.get(target, 0.0):
+        return _cached_logger_serial(target)
     if not refresh and target in _logger_serial_cache:
-        try:
-            return int(_logger_serial_cache[target] or 0)
-        except (TypeError, ValueError):
-            return 0
+        return _cached_logger_serial(target)
     found = _unicast_discover(target, timeout=1.0)
     serial = 0
     if found and _host(found.get("ip")) == target:
@@ -2463,11 +2539,10 @@ def _announced_logger_serial(host: str, refresh: bool = False) -> int:
             serial = 0
     if serial:
         _logger_serial_cache[target] = serial
+        _announce_block_until.pop(target, None)
         return serial
-    try:
-        return int(_logger_serial_cache.get(target) or 0)
-    except (TypeError, ValueError):
-        return 0
+    _announce_block_until[target] = now + ANNOUNCE_RETRY_SEC
+    return _cached_logger_serial(target)
 
 
 def _configured_serial_for_host(host: str, settings: Optional[Dict[str, Any]]) -> int:
@@ -2557,6 +2632,7 @@ def _solarman_exchange(
         deadline = time.monotonic() + wait_s
         active.sendall(frame)
         data = b""
+        resent = 0
         while time.monotonic() < deadline:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -2589,6 +2665,10 @@ def _solarman_exchange(
                 reply = data[:total]
                 if reply[-1:] != b"\x15" or reply[-2] != _solarman_checksum(reply[:-2]):
                     data = data[1:]
+                    # Vollständiger, aber verworfener Rahmen: denselben Befehl noch einmal senden.
+                    if resent < 2 and time.monotonic() < deadline:
+                        resent += 1
+                        active.sendall(frame)
                     continue
                 data = data[total:]
                 if reply[4] != 0x15 or reply[5] != sequence:
@@ -2614,12 +2694,20 @@ def write_solarman_register(host: str, port: int, unit: int, serial: int, addres
     _solarman_exchange(host, port, serial, modbus, lambda answer: answer[:6] == modbus[:6])
 
 
-def write_solarman_multiple(host: str, port: int, unit: int, serial: int, address: int, value: int) -> None:
+def write_solarman_multiple(
+    host: str,
+    port: int,
+    unit: int,
+    serial: int,
+    address: int,
+    value: int,
+    sock: Optional[socket.socket] = None,
+) -> None:
     """Funktionscode 16. Einzelne Schreibbefehle bleiben am SG04LP3 nicht stehen."""
     payload = struct.pack(">H", _u16(value))
     modbus = struct.pack(">BBHHB", int(unit) & 0xFF, 16, int(address) & 0xFFFF, 1, len(payload)) + payload
     modbus += _modbus_crc(modbus)
-    _solarman_exchange(host, port, serial, modbus, lambda answer: answer[:6] == modbus[:6])
+    _solarman_exchange(host, port, serial, modbus, lambda answer: answer[:6] == modbus[:6], sock=sock)
 
 
 def readback_diff(address: int, name: str, wanted: int, actual: int) -> Optional[str]:
@@ -2745,17 +2833,21 @@ def _write_result(sent: bool, text: str, raw: Optional[int] = None) -> Dict[str,
     return {"command_sent": sent, "write_text": text, "raw": raw}
 
 
-def _grid_charge_amps(watts: int) -> int:
-    """Ampere für Register 0x0080. Deckt den vollen Zukauf bei GRID_CHARGE_SIZING_VOLT ab."""
+def _grid_charge_amps(watts: int, cap: Optional[int] = None) -> int:
+    """Ampere für Register 0x0080. Decke ist der Elektriker-Ladestrom, nicht ein fester Wert."""
     if watts <= 0:
         return 0
+    limit = GRID_CHARGE_CURRENT_MAX if cap is None else max(0, int(cap))
+    if limit <= 0:
+        return 0
     amps = (int(watts) + GRID_CHARGE_SIZING_VOLT - 1) // GRID_CHARGE_SIZING_VOLT
-    return max(1, min(GRID_CHARGE_CURRENT_MAX, amps))
+    return max(1, min(limit, amps))
 
 
 # Gemessene Packspannung. Die Ströme sind nur Stellgrößen, gehalten wird am Netzzähler.
 PACK_VOLT = 53
-CHARGE_CURRENT_CAP = 240
+# Fallback-Alias (Elektriker-Default). Der Regelkreis nutzt _max_charge_a(settings).
+CHARGE_CURRENT_CAP = INSTALL_DEFAULTS["install_max_charge_a"]
 # Am SG04LP3 deckelt die Spitzenkappung den ganzen Netzbezug, auch die Netzladung
 # (gemessen: Kappung 1000/2000 W bei 60 A Netzladung ergibt 945/1937 W). Der Ladestrom
 # bekommt Reserve über den Bedarf, den Soll hält die Kappung im Wechselrichter selbst.
@@ -2768,15 +2860,15 @@ PEAK_TRIM_GAIN = 0.5
 # Home Assistant liefert den Netzzähler nur alle 5–30 s. Öfter nachgeführt, zählt die
 # Nachführung denselben alten Wert mehrfach und schwingt über.
 PEAK_TRIM_EVERY_SEC = 30
-DISCHARGE_GAIN = 0.5
 MODE_SWITCH_W = 150
 GRID_DEADBAND_W = 250
-SELL_POWER_MAX_W = 12000
+# Fallback-Alias. Der Regelkreis nutzt _max_sell_w(settings).
+SELL_POWER_MAX_W = TOU_HOLD_POWER_W
 # Programm-Modus 0x00AC–0x00B1: Bit 0–1 Laden (Netz/Generator), Bit 5 Verkaufen.
 # Ohne Bit 5 entlädt Export First die Batterie nur ins Haus, nie ins Netz.
 TOU_SELL_BIT = 1 << 5
 _commanded_amps = 0
-_discharge_amps = MAX_DISCHARGE_AMPS
+_discharge_amps = 0
 # "charge": Netz deckt Haus plus Netzladung, Kappung hält den Soll.
 # "discharge": Haus über dem Soll, Entladestrom begrenzt, damit trotzdem der Soll vom Netz kommt.
 # "feed": Einspeisung aus Batterie und PV.
@@ -2792,10 +2884,10 @@ def _hold_deadband_w(soll_kw: float) -> int:
     return max(60, min(GRID_DEADBAND_W, int(round(target_w * 0.25)) or 60))
 
 
-def _reset_hold(target_w: Optional[int]) -> None:
+def _reset_hold(target_w: Optional[int], settings: Optional[Dict[str, Any]] = None) -> None:
     global _commanded_amps, _discharge_amps, _hold_mode, _hold_target_w, _peak_trim_w, _peak_trim_at, _tou_hold_applied, _tou_soc_applied
     _commanded_amps = 0
-    _discharge_amps = MAX_DISCHARGE_AMPS
+    _discharge_amps = 0
     _hold_mode = None
     _hold_target_w = target_w
     _peak_trim_w = 0
@@ -2828,23 +2920,28 @@ def _amps_for(watts: float, cap: int) -> int:
     return max(1, min(cap, int((watts + PACK_VOLT - 1) // PACK_VOLT)))
 
 
-def _needed_charge_amps(target_w: int, live: Optional[Dict[str, Any]]) -> int:
+def _needed_charge_amps(
+    target_w: int,
+    live: Optional[Dict[str, Any]],
+    settings: Optional[Dict[str, Any]] = None,
+) -> int:
     """Netzladestrom mit Reserve. Steigt sofort, fällt in kleinen Schritten."""
     global _commanded_amps
+    charge_cap = _max_charge_a(settings)
     soc = None if not live else live.get("soc_percent")
     if soc is not None and float(soc) >= SOC_FULL:
         _commanded_amps = 0
         return 0
     need = _battery_need_w(target_w, live)
     if need is None:
-        goal = _grid_charge_amps(target_w)
+        goal = _grid_charge_amps(target_w, charge_cap)
     else:
-        goal = _amps_for(need + CHARGE_HEADROOM_W, CHARGE_CURRENT_CAP)
+        goal = _amps_for(need + CHARGE_HEADROOM_W, charge_cap)
     if goal >= _commanded_amps:
         _commanded_amps = goal
     else:
         _commanded_amps = max(goal, _commanded_amps - AMP_STEP_DOWN)
-    return _commanded_amps
+    return min(_commanded_amps, charge_cap)
 
 
 def _trim_due() -> bool:
@@ -2867,21 +2964,37 @@ def _track_peak_trim(target_w: int, live: Optional[Dict[str, Any]]) -> None:
     _peak_trim_w = max(PEAK_TRIM_MIN_W, min(PEAK_TRIM_MAX_W, _peak_trim_w + int(round(error * PEAK_TRIM_GAIN))))
 
 
-def _discharge_limit_amps(target_w: int, live: Optional[Dict[str, Any]]) -> int:
-    """Entladestrom so begrenzen, dass die Hauslast über dem Soll aus der Batterie kommt."""
+def _discharge_limit_amps(
+    target_w: int,
+    live: Optional[Dict[str, Any]],
+    settings: Optional[Dict[str, Any]] = None,
+) -> int:
+    """Entladewatt in einem Schritt. Positives Netz ist Bezug, negative Batterie ist Entladen.
+
+    Entladewatt = max(0, Netz − Zukauf − Batterie). Ampere = dieser Wert / PACK_VOLT,
+    gerundet, mindestens 0, höchstens die Elektriker-Decke. Fehlt Netz oder Batterie,
+    bleibt der letzte Wert stehen.
+    """
     global _discharge_amps
+    discharge_cap = _max_discharge_a(settings)
     grid = _grid_w(live)
-    if grid is None:
-        return _discharge_amps
-    error = grid - target_w
-    if abs(error) > max(30, min(GRID_DEADBAND_W, abs(target_w) // 10)):
-        step = int(round(error * DISCHARGE_GAIN / PACK_VOLT)) or (1 if error > 0 else -1)
-        _discharge_amps = max(0, min(MAX_DISCHARGE_AMPS, _discharge_amps + step))
+    battery = None if not live else live.get("battery_kw")
+    if grid is None or battery is None:
+        return max(0, min(discharge_cap, int(_discharge_amps)))
+    battery_w = int(round(float(battery) * 1000))
+    watts = max(0, int(grid) - int(target_w) - battery_w)
+    amps = int(round(watts / PACK_VOLT))
+    _discharge_amps = max(0, min(discharge_cap, amps))
     return _discharge_amps
 
 
-def _choose_import_mode(target_w: int, live: Optional[Dict[str, Any]]) -> str:
+def _choose_import_mode(
+    target_w: int,
+    live: Optional[Dict[str, Any]],
+    settings: Optional[Dict[str, Any]] = None,
+) -> str:
     global _hold_mode, _discharge_amps
+    discharge_cap = _max_discharge_a(settings)
     need = _battery_need_w(target_w, live)
     soc = None if not live else live.get("soc_percent")
     can_discharge = soc is None or float(soc) > SOC_EMPTY
@@ -2891,7 +3004,7 @@ def _choose_import_mode(target_w: int, live: Optional[Dict[str, Any]]) -> str:
         return _hold_mode
     if _hold_mode == "charge" and need < -MODE_SWITCH_W and can_discharge:
         _hold_mode = "discharge"
-        _discharge_amps = _amps_for(-need, MAX_DISCHARGE_AMPS)
+        _discharge_amps = _amps_for(-need, discharge_cap)
     elif _hold_mode == "discharge" and (need > MODE_SWITCH_W or not can_discharge):
         _hold_mode = "charge"
     return _hold_mode
@@ -2984,17 +3097,19 @@ def _import_writes(
     current = item.get("grid_charge_current_register")
     if enable is None or current is None:
         return [], _bms_hold_tou_soc(settings), 1
+    discharge_cap = _max_discharge_a(settings)
+    charge_cap = _max_charge_a(settings)
     if immediate:
         house = _house_load_kw(live)
         house_w = 0 if house is None else max(0, int(round(house * 1000)))
         charge_w = max(0, int(target_w))
         peak_w = charge_w + house_w
-        amps = _grid_charge_amps(charge_w)
+        amps = _grid_charge_amps(charge_w, charge_cap)
         _commanded_amps = amps
         _hold_mode = "charge"
         _peak_trim_w = 0
     else:
-        mode = _choose_import_mode(target_w, live)
+        mode = _choose_import_mode(target_w, live, settings)
         if mode == "charge":
             _track_peak_trim(target_w, live)
         peak_w = max(0, target_w + _peak_trim_w)
@@ -3020,13 +3135,15 @@ def _import_writes(
     rows.extend(_peak_enable_row(item, peak_flags))
     if immediate or mode == "charge":
         if not immediate:
-            amps = _needed_charge_amps(target_w, live)
+            amps = _needed_charge_amps(target_w, live, settings)
         if item.get("max_discharge_register") is not None:
-            rows.append((int(item["max_discharge_register"]), "Battery Max Discharging Current", MAX_DISCHARGE_AMPS))
+            rows.append(
+                (int(item["max_discharge_register"]), "Battery Max Discharging Current", discharge_cap)
+            )
         rows.append((int(current), "Battery Grid Charging Current", amps))
         rows.append((int(enable), "Battery Grid Charging", 1 if amps > 0 else 0))
         return rows, 100, 1
-    amps = _discharge_limit_amps(target_w, live)
+    amps = _discharge_limit_amps(target_w, live, settings)
     if item.get("max_discharge_register") is not None:
         rows.append((int(item["max_discharge_register"]), "Battery Max Discharging Current", amps))
     rows.append((int(current), "Battery Grid Charging Current", 0))
@@ -3035,18 +3152,23 @@ def _import_writes(
     return rows, _bms_hold_tou_soc(settings), 0
 
 
-def _needed_discharge_amps(export_w: int, live: Optional[Dict[str, Any]]) -> int:
+def _needed_discharge_amps(
+    export_w: int,
+    live: Optional[Dict[str, Any]],
+    settings: Optional[Dict[str, Any]] = None,
+) -> int:
     """Entladestrom für die Einspeisung: voll offen, die Exportgrenze 0x008F regelt.
 
     Ein knapper Entladestrom bindet, sobald im Haus ein Verbraucher anläuft, und die
     Einspeisung bricht ein, bis der 6-s-Takt mit den trägen HA-Werten nachgezogen hat.
     """
     global _discharge_amps
+    discharge_cap = _max_discharge_a(settings)
     soc = None if not live else live.get("soc_percent")
     if soc is not None and float(soc) <= SOC_EMPTY:
         _discharge_amps = 0
         return 0
-    _discharge_amps = MAX_DISCHARGE_AMPS
+    _discharge_amps = discharge_cap
     return _discharge_amps
 
 
@@ -3069,7 +3191,7 @@ def _feed_writes(
     # Export Surplus Power hält am SG04LP3 auf ±30 W genau. Jede Absenkung des Registers
     # lässt den Export für 20 s bis an den Entladestrom hochlaufen (gemessen: 3045 -> 3030 W
     # ergab 5,5 kW Einspeisung). Darum fest auf den Soll, keine Nachführung.
-    sell_w = max(0, min(SELL_POWER_MAX_W, export_w))
+    sell_w = max(0, min(_max_sell_w(settings), export_w))
     if current is not None:
         rows.append((int(current), "Battery Grid Charging Current", 0))
     if enable is not None:
@@ -3094,17 +3216,24 @@ def _feed_writes(
             (
                 int(item["max_discharge_register"]),
                 "Battery Max Discharging Current",
-                _needed_discharge_amps(export_w, live),
+                _needed_discharge_amps(export_w, live, settings),
             )
         )
     return rows, _bms_hold_tou_soc(settings), TOU_SELL_BIT
 
 
-def _tou_program_writes(item: Dict[str, Any], tou_soc: int, charging: int, with_power: bool) -> List[tuple]:
+def _tou_program_writes(
+    item: Dict[str, Any],
+    tou_soc: int,
+    charging: int,
+    with_power: bool,
+    settings: Optional[Dict[str, Any]] = None,
+) -> List[tuple]:
     if item.get("time_of_use_register") is None:
         return []
     # Kein fester 20-%-Boden mehr: der Elektriker-Sock% darf darunter liegen.
     value = max(0, min(100, int(tou_soc)))
+    # Halt schreibt 12000 W. Die Elektriker-Programmleistung ist nur die Decke darüber.
     rows: List[tuple] = []
     for index in range(6):
         if with_power:
@@ -3937,10 +4066,21 @@ def _read_peak_flags(item: Dict[str, Any], settings: Dict[str, Any], serial: int
 
 # Vom Wechselrichter zurückgelesene Haltewerte. Der SG04LP3 bestätigt Schreibbefehle auch,
 # wenn er sie bei vielen Befehlen hintereinander verwirft (gesehen bei den TOU-Programmen).
-# Darum wird jeder Wert zurückgelesen und nur Geändertes neu geschrieben.
+# Der 60-Sekunden-Merker löscht bestätigte Werte nicht mehr. Es wird nur neu geschrieben,
+# was vom Rücklesen abweicht.
 CONFIRM_REFRESH_SEC = 60
+WRITE_REGISTER_GAP_SEC = 0.05
+READBACK_WAIT_SEC = 0.2
+WRITE_ATTEMPTS = 3
 _confirmed: Dict[int, int] = {}
 _confirmed_at = 0.0
+_LEGAL_WORDS = {
+    0x008E: frozenset({0, 2}),
+    0x008D: frozenset({0, 1}),
+    0x0082: frozenset({0, 1}),
+    0x0084: frozenset({0, 1}),
+    0x0091: frozenset({0, 1}),
+}
 
 
 def _forget_confirmed() -> None:
@@ -3949,40 +4089,151 @@ def _forget_confirmed() -> None:
     _confirmed_at = 0.0
 
 
+def _word_allowed(address: int, word: int) -> bool:
+    allowed = _LEGAL_WORDS.get(int(address))
+    if allowed is not None and int(word) not in allowed:
+        return False
+    if 0x0073 <= int(address) <= 0x0075 or 0x00A6 <= int(address) <= 0x00AB:
+        return 0 <= int(word) <= 100
+    return True
+
+
+def _prepare_writes(writes: List[tuple], settings: Optional[Dict[str, Any]]) -> List[tuple]:
+    """Vor dem Senden: Adresse, 16-Bit, Elektriker-Decke, letzter Wert je Register.
+
+    Unzulässige Modi und SOC-Werte gehen nicht auf die Leitung.
+    """
+    capped = _cap_rows(writes, settings)
+    last: Dict[int, tuple] = {}
+    order: List[int] = []
+    for address, name, value in capped:
+        try:
+            addr = int(address)
+            word = _u16(value)
+        except (TypeError, ValueError):
+            continue
+        if addr < 0 or addr > 65535:
+            continue
+        if not _word_allowed(addr, word):
+            continue
+        if addr not in last:
+            order.append(addr)
+        last[addr] = (addr, str(name), word)
+    return [last[addr] for addr in order]
+
+
+def _read_on_sock(
+    sock: socket.socket,
+    host: str,
+    port: int,
+    unit: int,
+    serial: int,
+    address: int,
+    solarman: bool,
+) -> int:
+    if solarman:
+        return read_solarman_span(host, port, unit, serial, address, 1, sock=sock)[0]
+    pdu = struct.pack(">BHH", 3, int(address) & 0xFFFF, 1)
+    message = struct.pack(">HHHB", 1, 0, len(pdu) + 1, int(unit) & 0xFF) + pdu
+    sock.settimeout(3.0)
+    sock.sendall(message)
+    data = sock.recv(32)
+    if len(data) < 11 or data[7] != 3 or data[8] != 2:
+        raise OSError("Rücklesen ohne Nutzdaten")
+    return (data[9] << 8) | data[10]
+
+
+def _write_on_sock(
+    sock: socket.socket,
+    host: str,
+    port: int,
+    unit: int,
+    serial: int,
+    address: int,
+    value: int,
+    solarman: bool,
+) -> None:
+    if solarman:
+        write_solarman_multiple(host, port, unit, serial, address, value, sock=sock)
+        return
+    pdu = struct.pack(">BHH", 6, int(address) & 0xFFFF, _u16(value))
+    message = struct.pack(">HHHB", 1, 0, len(pdu) + 1, int(unit) & 0xFF) + pdu
+    sock.settimeout(3.0)
+    sock.sendall(message)
+    data = sock.recv(32)
+    if len(data) < 9:
+        raise OSError("keine vollständige Antwort")
+    function = data[7]
+    if function & 0x80:
+        code = data[8] if len(data) > 8 else 0
+        raise OSError(f"Modbus-Fehler {code}")
+    if function != 6:
+        raise OSError("unerwartete Antwort")
+
+
+def _verify_register(
+    sock: socket.socket,
+    host: str,
+    port: int,
+    unit: int,
+    serial: int,
+    address: int,
+    name: str,
+    value: int,
+    solarman: bool,
+) -> tuple:
+    """Schreiben, 0,2 s warten, lesen. Weicht es ab, noch einmal lesen, erst dann neu schreiben."""
+    wanted = _u16(value)
+    diff = _phrase(address, name, value)
+    for _attempt in range(WRITE_ATTEMPTS):
+        try:
+            _write_on_sock(sock, host, port, unit, serial, address, wanted, solarman)
+            time.sleep(READBACK_WAIT_SEC)
+            actual = _u16(_read_on_sock(sock, host, port, unit, serial, address, solarman))
+            if actual != wanted:
+                actual = _u16(_read_on_sock(sock, host, port, unit, serial, address, solarman))
+            if actual == wanted:
+                _confirmed[int(address)] = actual
+                return True, ""
+            diff = readback_diff(address, name, wanted, actual) or diff
+        except OSError:
+            diff = _phrase(address, name, value) + ", Rücklesen fehlgeschlagen"
+    _confirmed.pop(int(address), None)
+    return False, diff
+
+
 def _send_verified(settings: Dict[str, Any], serial: int, writes: List[tuple], raw: Optional[int]) -> Dict[str, Any]:
-    global _confirmed_at
-    now = time.monotonic()
-    if now - _confirmed_at > CONFIRM_REFRESH_SEC:
-        _confirmed.clear()
-        _confirmed_at = now
     host, port, unit = settings["modbus_host"], settings["modbus_port"], settings["modbus_unit"]
-    writes = _cap_rows(writes, settings)
-    pending = [row for row in writes if _confirmed.get(int(row[0])) != _u16(row[2])]
+    prepared = _prepare_writes(writes, settings)
+    pending = [row for row in prepared if _confirmed.get(int(row[0])) != _u16(row[2])]
     if not pending:
         return _write_result(True, "Alle Haltewerte bestätigt, nichts neu geschrieben.", raw)
+    block_serial = _serial_for_logger(str(host), serial, settings, refresh=False)
+    solarman = int(port) == 8899 or bool(block_serial)
+    if solarman and not block_serial:
+        return _write_result(False, "Solarman-Seriennummer fehlt. Es wurde nichts geschrieben.", raw)
     done: List[str] = []
     missed: List[str] = []
-    for address, name, value in pending:
-        wanted = _u16(value)
-        diff = ""
-        ok = False
-        for _attempt in range(2):
-            try:
-                _send_holding(host, port, unit, serial, address, value)
-                actual = read_holding(host, port, unit, serial, address)
-                diff = readback_diff(address, name, wanted, actual) or ""
-                ok = not diff
-            except OSError:
-                ok = False
-                diff = _phrase(address, name, value) + ", Rücklesen fehlgeschlagen"
+    try:
+        sock = socket.create_connection((host, int(port)), timeout=4.0)
+    except OSError as exc:
+        return _write_result(False, f"Schreiben fehlgeschlagen: {exc}.", raw)
+    try:
+        for index, (address, name, value) in enumerate(pending):
+            if index:
+                time.sleep(WRITE_REGISTER_GAP_SEC)
+            ok, diff = _verify_register(
+                sock, host, int(port), int(unit), block_serial, int(address), name, int(value), solarman
+            )
             if ok:
-                break
-        if ok:
-            _confirmed[int(address)] = wanted
-            done.append(_phrase(address, name, value))
-        else:
-            _confirmed.pop(int(address), None)
-            missed.append(diff or _phrase(address, name, value))
+                done.append(_phrase(address, name, value))
+            else:
+                missed.append(diff or _phrase(address, name, value))
+    finally:
+        try:
+            sock.close()
+        except OSError:
+            pass
     text = "Geschrieben und zurückgelesen: " + ("; ".join(done) if done else "nichts") + "."
     if missed:
         text += " Abweichung nach Rücklesen: " + "; ".join(missed) + "."
@@ -4039,7 +4290,7 @@ def apply_write(
                 return _write_result(False, "Aus. Es wird nichts geschrieben.")
             _forget_confirmed()
             result = _send_verified(settings, serial, writes, _idle_grid_w(settings))
-            _reset_hold(None)
+            _reset_hold(None, settings)
             _forget_confirmed()
             _last_write["at"] = time.monotonic()
             _last_write["signature"] = ("release",)
@@ -4093,7 +4344,7 @@ def apply_write(
         return _write_result(False, f"{register_text}. Modbus-Host fehlt, es wurde nichts geschrieben.", raw)
     serial = int(link.get("serial") or 0) if link else 0
     if target_w != _hold_target_w:
-        _reset_hold(target_w)
+        _reset_hold(target_w, settings)
     writes = [(int(item["register"]), item.get("register_name") or "Soll", int(raw))]
     peak_flags = _read_peak_flags(item, settings, serial)
     if target_w < 0:
@@ -4109,7 +4360,7 @@ def apply_write(
         )
     writes.extend(rows)
     tou_state = (tou_soc, tou_charging)
-    writes.extend(_tou_program_writes(item, tou_soc, tou_charging, with_power=True))
+    writes.extend(_tou_program_writes(item, tou_soc, tou_charging, with_power=True, settings=settings))
     signature = (
         item["id"],
         tuple((address, value) for address, _name, value in writes),
@@ -4161,18 +4412,23 @@ def _sync_ha_release(settings: Optional[Dict[str, Any]] = None) -> List[str]:
     charge_service = "turn_on" if _install_grid_charge(settings) else "turn_off"
     micro_service = "turn_on" if _install_microinverter(settings) else "turn_off"
     cutoff_service = "turn_on" if _flag_pref(settings, "install_export_cutoff", False) else "turn_off"
-    prefix = "number.192_168_1_176"
-    select = "select.192_168_1_176"
+    # Entity-IDs folgen der Logger-IP aus Energie / Netzbezug. Punkte werden Unterstriche.
+    token = _ha_entity_token(settings)
+    if not token:
+        return ["Logger-IP fehlt, Home Assistant wurde nicht gesetzt."]
+    prefix = f"number.{token}"
+    select = f"select.{token}"
+    switch = f"switch.{token}"
     wanted = [
         ("number", "set_value", f"{prefix}_zero_export_power", {"value": idle_w}),
         ("number", "set_value", f"{prefix}_grid_peak_shaving", {"value": _idle_peak_w(settings)}),
         ("number", "set_value", f"{prefix}_battery_grid_charging_current", {"value": _install_grid_charge_a(settings)}),
         ("select", "select_option", f"{select}_work_mode", {"option": work_name}),
         ("select", "select_option", f"{select}_energy_pattern", {"option": pattern_name}),
-        ("switch", charge_service, "switch.192_168_1_176_battery_grid_charging", {}),
-        ("switch", solar_service, "switch.192_168_1_176_export_surplus", {}),
-        ("switch", micro_service, "switch.192_168_1_176_microinverter", {}),
-        ("switch", cutoff_service, "switch.192_168_1_176_microinverter_export_cut_off", {}),
+        ("switch", charge_service, f"{switch}_battery_grid_charging", {}),
+        ("switch", solar_service, f"{switch}_export_surplus", {}),
+        ("switch", micro_service, f"{switch}_microinverter", {}),
+        ("switch", cutoff_service, f"{switch}_microinverter_export_cut_off", {}),
     ]
     socs = _coerce_program_list((settings or {}).get("program_soc"), highest=100)
     powers = _coerce_program_list((settings or {}).get("program_power"))
@@ -4938,10 +5194,10 @@ def _read_register_state_ha(settings: Dict[str, Any]) -> Dict[str, Any]:
         from ha_device_control import read_ha_entity_state
     except Exception:
         return {}
-    host = _host(settings.get("modbus_host") or settings.get("logger_ip"))
-    if not host:
+    token = _ha_entity_token(settings)
+    if not token:
         return {}
-    prefix = host.replace(".", "_")
+    prefix = token
     return {
         "zero_export_w": read_ha_entity_state(f"number.{prefix}_zero_export_power"),
         "work_mode": read_ha_entity_state(f"select.{prefix}_work_mode"),

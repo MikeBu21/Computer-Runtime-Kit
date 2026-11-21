@@ -1,6 +1,6 @@
 {
   "channel": "standard",
-  "created": "2026-11-20T16:12:02+0100",
+  "created": "2026-11-21T15:56:23+0100",
   "files": {
     "AGENTS.md": "80cbbeae8bec122292d37f093e879ceae5d45f6625e7582e0b4e93288a4988ce",
     "Desktop/Alles starten.desktop": "85873226fbffe9a8d4f9d3ecee426a588e89740ad2da39dd5a47651e4c7a37ca",
@@ -15,12 +15,12 @@
     "homeassistant/config/secrets.yaml": "010f52a8cd4a1307cf9096c8a1e23ffb5b93ef5ea02aadb2122e12e7948b120a",
     "homeassistant/ha-bridge/credentials.json": "87ec6a64b084e631b25854e5183e5aa3c7c6b547a511145a1e84c236e472f024",
     "homeassistant/ha_bridge_token.py": "52e6d842b198e0a91ad9f433a0c7e80216b1d21f150fa6eb9d3ecb125ec2200f",
-    "homeassistant/ha_data_bridge.py": "4055e748bc9508df4eebe425f6445828322a0bfe42b17728a7a6123ecf7a2428",
+    "homeassistant/ha_data_bridge.py": "3c8c1632786ca20d2719c435d4f6fdb85df0d74cc27c8cecaaef6b277a9ae585",
     "homeassistant/setup-hacs.py": "65cce4f2f9485b2565710507517036cf8521da06b954d49a382dd5b7f6ad12d4",
-    "miner-dashboard/backend/app.py": "3f1189f5fa45496f97b0f33facfbf5c1038ec104a3e4c5105a654d269038b416",
+    "miner-dashboard/backend/app.py": "7193d664c35c169ed2cdea972189c99aa0dd8463d938ae5b369f36e357a167a4",
     "miner-dashboard/backend/apply_automatik_app_patch.py": "363b56106cb0bb3bda7de02a32858c877522ea0cdc73424ccf93bfaaa3441cc0",
     "miner-dashboard/backend/automation_rules.py": "c6959a240882b4d899262b75dc19df50a2c1182d67eb2068840e925a4ebf7f10",
-    "miner-dashboard/backend/bms_seite.py": "b7025234e0d7c07d0377232da37f8df8b5d90a67af85c55b3b9a87d0baa41581",
+    "miner-dashboard/backend/bms_seite.py": "340d8a6b16a0a4a88becc3402fb4061868e3638d2e0c35547c3b0b008d39e36f",
     "miner-dashboard/backend/boersenhandel.py": "eb524fccc0a5bc488b6b7b3e5eb227a8aca6126dd9a8baae5bae9a480773863c",
     "miner-dashboard/backend/boot_repair_after_powerloss.py": "30b5369d1e3da27be6c5e9f561f8767a7febf4a07ad1cf453e846c9eb60ff866",
     "miner-dashboard/backend/config/energy_chat_ids.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
@@ -125,7 +125,7 @@
     "miner-dashboard/backend/grundverbrauch_rechner.py": "3711a9fb97fc2094dd0841b4caaf92b9406476dd24b13d5a5151e76ef837bc66",
     "miner-dashboard/backend/ha_device_control.py": "e1174a65d73eaff28ce75dd2d886d963ecd99cd50edb3fa48e664dfec9062635",
     "miner-dashboard/backend/ha_devices.json": "00ec972c5bf7f345c9fd2a816e7d79aea1132a26cd516a026a7e645ea1fc3b48",
-    "miner-dashboard/backend/ha_entity_mapping.py": "47ee5fed37bd3b6c0da168c71c1d55f8aa20a4c55575c632d20b34f3d1a006e2",
+    "miner-dashboard/backend/ha_entity_mapping.py": "35a76742c8e1a7b233e1b21c48bc3f6c64f4bb89d7a077df98d64bcd2227d067",
     "miner-dashboard/backend/hashrate_timeseries.py": "52d92bbe934373145180442e6439b513acc28b5261de6371e8f9a6374d951cc2",
     "miner-dashboard/backend/heizstap.py": "da30c3d97df9bed962d1b04f4b20ff98a78143acba20a8fff361988216ff8deb",
     "miner-dashboard/backend/ip_recovery.py": "26dea8b92fb219c49611fef98275aaec713a9a7c38001a3c197bbf47703b6155",
@@ -176,7 +176,7 @@
     "miner-dashboard/backend/templates/telegramm.html": "0d509d60775c1af75bb5b88d97181d8e23411d39c7fd2c3efe53ff7e9d0ec486",
     "miner-dashboard/backend/templates/updates.html": "5fbb71cd492c2325361895fcac7aa908859fbc15be63870261d6db7ab8727387",
     "miner-dashboard/backend/templates/verbrauchsdaten.html": "a1f2169da34e6c8dd099b15818fe0553f042f84439d523f975fa627bc9adf269",
-    "miner-dashboard/backend/templates/wechselrichter_bms.html": "ba0cb36cbcd842b5f52a2dbccc5179fa24a4f6bdd7d50cada01d1330d47d5e41",
+    "miner-dashboard/backend/templates/wechselrichter_bms.html": "11cc3a384166694480861bfc734ea4b31fe7cb6f8be756b6b1cba810029c5b4e",
     "miner-dashboard/backend/templates/zeitsteuerung.html": "a7ef1c812a27401bfd58c76e1e23590e312a5c9543139ab1e29ad308c6ac4bd1",
     "miner-dashboard/backend/tests/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "miner-dashboard/backend/tests/probe_feed_clamp.py": "aecdd185b43a7f2f7226d68822fbf5708e4a9f21797f468115fdf8ee185fcf52",
@@ -190,7 +190,7 @@
     "miner-dashboard/backend/tests/test_anchor_window.py": "a0028864fca391f5f1a73172cbd33b40c5c19f4f1be542abacbbca838e352c24",
     "miner-dashboard/backend/tests/test_auto_control_steering.py": "f9927a0d0a9b52488df58ebdff2dd9115a94ed27c0540f2363176aea6ee5b959",
     "miner-dashboard/backend/tests/test_battery_protection.py": "7f9a1b24e0e13738535f8eff7edc32a49394b42c4fe9fb39ee8d42a0d99581b0",
-    "miner-dashboard/backend/tests/test_bms_netzbezug.py": "ca3fbb410ddb51fc912884a1d4d94fcf540f66d483f65fa2d2bd819d0ab26b86",
+    "miner-dashboard/backend/tests/test_bms_netzbezug.py": "2a02740add9e0f70b45643502668d63ae4461bcf67b4def141749ac3f32fa7e7",
     "miner-dashboard/backend/tests/test_boersenhandel_range.py": "d86faac990ac5deea03ce19c8a43096e24ff6e5b7c9fc07c54dbef66ac0c1b87",
     "miner-dashboard/backend/tests/test_consumer_statistics.py": "5606c6ea046d84962baad442c900c7d16e009c9516e028cefbb3ca857faeec0f",
     "miner-dashboard/backend/tests/test_consumption_history.py": "01f1c8765c4f70deec06215f49f0c34a3457e2afe5ee61081f5f80bb74e05b09",
@@ -318,5 +318,5 @@
   },
   "format": 2,
   "notes": "Download nutzt den Soft-Scan: nur Token im Programmcode, und der Scan wird nach jedem Update wiederhergestellt. Der Upload-Scan bleibt streng. Standardwerte ohne persönliche Daten.",
-  "version": 66
+  "version": 67
 }
