@@ -40,6 +40,14 @@ def test_next_version_counts_past_web_and_local():
     assert pu.next_version(33, None) == 34
 
 
+def test_format_version_display_divides_by_one_hundred():
+    assert pu.format_version_display(70) == "0.70"
+    assert pu.format_version_display(100) == "1.00"
+    assert pu.format_version_display(101) == "1.01"
+    assert pu.format_version_display(0) == "0.00"
+    assert pu.format_version_display(None) == "nicht prüfbar"
+
+
 def test_standard_overlay_has_no_personal_material():
     files = pu.standard_overlay()
     miners = json.loads(files["miner-dashboard/backend/miners.json"])

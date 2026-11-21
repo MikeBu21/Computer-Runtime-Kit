@@ -1245,7 +1245,9 @@ class SocImportRampTests(unittest.TestCase):
         settings = self._settings_sockel(12000, sockel=20, target_kw=0.4)
         settings["linear_zukauf"] = True
         settings["linear_hold"] = False
-        with mock.patch.object(bms_seite, "save_settings", side_effect=self._remember(settings)) as save:
+        with mock.patch.object(bms_seite, "_grundverbrauch_floor_kw", return_value=None), mock.patch.object(
+            bms_seite, "save_settings", side_effect=self._remember(settings)
+        ) as save:
             bought = bms_seite.apply_linear_zukauf(settings, {"soc_percent": 25})
         save.assert_called_once_with({"real_mode": True, "target_grid_kw": 6.0, "linear_hold": True})
         self.assertEqual(bought["target_grid_kw"], 6.0)
@@ -1253,10 +1255,36 @@ class SocImportRampTests(unittest.TestCase):
     def test_button_on_starts_at_ten_percent_of_peak(self):
         settings = self._settings_sockel(12000, sockel=20, target_kw=0.4)
         settings["linear_zukauf"] = True
-        with mock.patch.object(bms_seite, "save_settings", side_effect=self._remember(settings)) as save:
+        with mock.patch.object(bms_seite, "_grundverbrauch_floor_kw", return_value=None), mock.patch.object(
+            bms_seite, "save_settings", side_effect=self._remember(settings)
+        ) as save:
             bought = bms_seite.apply_linear_zukauf(settings, {"soc_percent": 30})
         save.assert_called_once_with({"real_mode": True, "target_grid_kw": 1.2, "linear_hold": True})
         self.assertEqual(bought["target_grid_kw"], 1.2)
+
+    def test_linear_uses_grundverbrauch_when_ramp_is_below_the_floor(self):
+        """Sockel 20 %, nahe am oberen Rand: Gerade nur 1,2 kW, Empfehlung 2,5 kW."""
+        settings = self._settings_sockel(12000, sockel=20, target_kw=0.4)
+        settings["linear_zukauf"] = True
+        settings["linear_hold"] = False
+        with mock.patch.object(bms_seite, "_grundverbrauch_floor_kw", return_value=2.5), mock.patch.object(
+            bms_seite, "save_settings", side_effect=self._remember(settings)
+        ) as save:
+            bought = bms_seite.apply_linear_zukauf(settings, {"soc_percent": 29})
+        save.assert_called_once_with({"real_mode": True, "target_grid_kw": 2.5, "linear_hold": True})
+        self.assertEqual(bought["target_grid_kw"], 2.5)
+        self.assertEqual(bms_seite.netzbezug_soc_rampe_kw(29, 20, 12000), 1.2)
+
+    def test_linear_keeps_ramp_when_above_grundverbrauch(self):
+        settings = self._settings_sockel(12000, sockel=20, target_kw=0.4)
+        settings["linear_zukauf"] = True
+        settings["linear_hold"] = False
+        with mock.patch.object(bms_seite, "_grundverbrauch_floor_kw", return_value=1.5), mock.patch.object(
+            bms_seite, "save_settings", side_effect=self._remember(settings)
+        ) as save:
+            bought = bms_seite.apply_linear_zukauf(settings, {"soc_percent": 25})
+        save.assert_called_once_with({"real_mode": True, "target_grid_kw": 6.0, "linear_hold": True})
+        self.assertEqual(bought["target_grid_kw"], 6.0)
 
     def test_at_or_below_floor_linear_does_not_write_a_setpoint(self):
         settings = self._settings_sockel(12000, sockel=20, target_kw=6.0)

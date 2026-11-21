@@ -15,7 +15,7 @@
         {% if public_update.role == "publisher" %}Dieser Pi veröffentlicht Updates{% else %}Dieser Pi lädt Updates nur herunter{% endif %}
       </div>
       <div id="public_update_versions" style="color: var(--muted);">
-        Installiert {{ public_update.local_version }} · Öffentlich {{ public_update.remote_version if public_update.remote_version is not none else "nicht prüfbar" }}
+        Installiert {{ public_update.local_version_display }} · Öffentlich {{ public_update.remote_version_display }}
       </div>
       <div id="public_update_crypt" style="color: {% if public_update.crypt_ready %}#00c853{% else %}#ffb300{% endif %};">
         {% if public_update.crypt_state == "ready" %}Verschlüsselte Ordner bereit{% elif public_update.crypt_ready %}{{ public_update.crypt_message }}{% else %}Wartet auf Entschlüsselung – Update läuft danach automatisch weiter{% endif %}
@@ -42,7 +42,7 @@
         {% endif %}
       </button>
       {% if public_update.upload_allowed %}
-      <button type="button" class="btn-primary-custom" id="public_upload_btn">Update hochladen (Version {{ public_update.next_version }})</button>
+      <button type="button" class="btn-primary-custom" id="public_upload_btn">Update hochladen (Version {{ public_update.next_version_display }})</button>
       {% endif %}
       {% if public_update.auto_update_available %}
       <button type="button" id="auto_update_btn" aria-pressed="{{ 'true' if public_update.auto_update else 'false' }}"
@@ -112,6 +112,13 @@
         apply: 60, system: 72, admin: 78, setup: 88, rollback: 95, done: 100, error: 100,
       };
 
+      function formatVersion(value) {
+        if (value === null || value === undefined) return "nicht prüfbar";
+        const number = Number(value);
+        if (!Number.isFinite(number)) return "0.00";
+        return (number / 100).toFixed(2);
+      }
+
       function setProgress(visible, percent, label) {
         if (!progressWrap || !progressBar || !progressPct) return;
         progressWrap.hidden = !visible;
@@ -122,7 +129,7 @@
       }
 
       function uploadLabel() {
-        return "Update hochladen (Version " + nextVersion + ")";
+        return "Update hochladen (Version " + formatVersion(nextVersion) + ")";
       }
 
       function ensureUploadButton(allowed) {
@@ -159,8 +166,9 @@
       function renderInfo(data) {
         if (roleEl) roleEl.textContent = data.role === "publisher" ? "Dieser Pi veröffentlicht Updates" : "Dieser Pi lädt Updates nur herunter";
         if (versionsEl) {
-          const remote = (data.remote_version === null || data.remote_version === undefined) ? "nicht prüfbar" : data.remote_version;
-          versionsEl.textContent = "Installiert " + (data.local_version || 0) + " · Öffentlich " + remote;
+          const local = data.local_version_display || formatVersion(data.local_version || 0);
+          const remote = data.remote_version_display || formatVersion(data.remote_version);
+          versionsEl.textContent = "Installiert " + local + " · Öffentlich " + remote;
         }
         if (cryptEl) {
           if (data.crypt_state === "ready") {

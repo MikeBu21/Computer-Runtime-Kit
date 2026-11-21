@@ -452,6 +452,16 @@ def next_version(local_version: int, remote_version: Optional[int]) -> int:
     return max(int(remote_version or 0), int(local_version or 0)) + 1
 
 
+def format_version_display(version: Optional[Any]) -> str:
+    """Anzeige: ganze Versionsnummer durch 100, zwei Nachkommastellen (70 → 0.70)."""
+    if version is None:
+        return "nicht prüfbar"
+    try:
+        return f"{int(version) / 100.0:.2f}"
+    except (TypeError, ValueError):
+        return "0.00"
+
+
 def dashboard_status(*, allow_network: bool = True) -> Dict[str, Any]:
     state = load_state()
     job = _job()
@@ -468,6 +478,8 @@ def dashboard_status(*, allow_network: bool = True) -> Dict[str, Any]:
     )
     phase = str(job.get("phase") or "")
     job_message = str(job.get("message") or "").strip()
+    local_label = format_version_display(local_version)
+    remote_label = format_version_display(remote_version)
     if uploading:
         message = job_message or "Upload läuft. Der Upload-Button ist ausgeblendet."
     elif downloading:
@@ -480,11 +492,14 @@ def dashboard_status(*, allow_network: bool = True) -> Dict[str, Any]:
     elif phase == "confirm" and job_message:
         message = job_message
     elif remote_version is None:
-        message = f"Lokal Version {local_version}. Öffentliche Version gerade nicht prüfbar."
+        message = f"Lokal Version {local_label}. Öffentliche Version gerade nicht prüfbar."
     elif not is_publisher():
-        message = f"Dieser Pi lädt Updates nur herunter. Lokal Version {local_version}, öffentlich Version {remote_version}."
+        message = (
+            f"Dieser Pi lädt Updates nur herunter. Lokal Version {local_label}, "
+            f"öffentlich Version {remote_label}."
+        )
     else:
-        message = f"Lokal Version {local_version}. Öffentlich Version {remote_version}."
+        message = f"Lokal Version {local_label}. Öffentlich Version {remote_label}."
     progress_map = {
         "start": 8,
         "wait_crypt": 10,
@@ -513,13 +528,17 @@ def dashboard_status(*, allow_network: bool = True) -> Dict[str, Any]:
         pending_updates = int(remote_version) - int(local_version)
     crypt, crypt_message = crypt_state()
     publisher = is_publisher()
+    upcoming = next_version(local_version, remote_version)
     return {
         "upload_allowed": allowed,
         "uploading": uploading,
         "downloading": downloading,
         "local_version": local_version,
         "remote_version": remote_version,
-        "next_version": next_version(local_version, remote_version),
+        "local_version_display": local_label,
+        "remote_version_display": remote_label,
+        "next_version": upcoming,
+        "next_version_display": format_version_display(upcoming),
         "pending_updates": pending_updates,
         "phase": phase,
         "progress": progress,

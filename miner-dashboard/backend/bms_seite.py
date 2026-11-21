@@ -4889,6 +4889,26 @@ def netzbezug_soc_rampe_kw(
     return round(peak_w * fraction / 1000.0, 2)
 
 
+def _grundverbrauch_floor_kw() -> Optional[float]:
+    """Empfohlener Zukauf vom Grundverbrauchsrechner als Untergrenze in kW.
+
+    Fehlt der Wert, gibt es keine Untergrenze. Null ist gültig und hebt den
+    Linearzukauf nicht an.
+    """
+    try:
+        from grundverbrauch_rechner import recommended_import_kw
+
+        raw = recommended_import_kw(str(BACKEND_DIR))
+    except Exception:
+        return None
+    try:
+        if raw is None:
+            return None
+        return round(max(0.0, float(raw)), 2)
+    except (TypeError, ValueError):
+        return None
+
+
 def _other_hold_active(settings: Dict[str, Any]) -> bool:
     return bool(
         settings.get("planning_hold")
@@ -4908,6 +4928,8 @@ def apply_linear_zukauf(
     wird der Halt gelöst. Auf oder unter dem Sockel schreibt diese Funktion
     keinen Soll und schaltet den Schreibmodus nicht wieder ein. Ausschalten
     und Elektrikerwerte macht der bestehende Sockel-Stopp.
+    Der berechnete Zukauf liegt nie unter dem empfohlenen Wert vom
+    Grundverbrauchsrechner. Liegt die Gerade darunter, gilt der empfohlene Zukauf.
     """
     if settings is None:
         settings = load_settings()
@@ -4939,6 +4961,9 @@ def apply_linear_zukauf(
         if not _other_hold_active(settings):
             updates["real_mode"] = False
         return save_settings(updates)
+    floor_kw = _grundverbrauch_floor_kw()
+    if floor_kw is not None and floor_kw > kw:
+        kw = floor_kw
     if (
         holding
         and settings.get("real_mode")

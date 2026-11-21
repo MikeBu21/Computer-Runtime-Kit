@@ -1,6 +1,6 @@
 {
   "channel": "standard",
-  "created": "2026-11-21T18:20:24+0100",
+  "created": "2026-11-21T20:19:28+0100",
   "files": {
     "AGENTS.md": "80cbbeae8bec122292d37f093e879ceae5d45f6625e7582e0b4e93288a4988ce",
     "Desktop/Alles starten.desktop": "85873226fbffe9a8d4f9d3ecee426a588e89740ad2da39dd5a47651e4c7a37ca",
@@ -17,10 +17,10 @@
     "homeassistant/ha_bridge_token.py": "52e6d842b198e0a91ad9f433a0c7e80216b1d21f150fa6eb9d3ecb125ec2200f",
     "homeassistant/ha_data_bridge.py": "3c8c1632786ca20d2719c435d4f6fdb85df0d74cc27c8cecaaef6b277a9ae585",
     "homeassistant/setup-hacs.py": "65cce4f2f9485b2565710507517036cf8521da06b954d49a382dd5b7f6ad12d4",
-    "miner-dashboard/backend/app.py": "d3941e37b554c08535b72f5dfc9769746258c819fbe55db8e72a119dcf0e7356",
+    "miner-dashboard/backend/app.py": "5396bdc4d5a641739fbf0b8cb2568aba45eae888c8662f7fe9272f49fa20ac70",
     "miner-dashboard/backend/apply_automatik_app_patch.py": "363b56106cb0bb3bda7de02a32858c877522ea0cdc73424ccf93bfaaa3441cc0",
     "miner-dashboard/backend/automation_rules.py": "c6959a240882b4d899262b75dc19df50a2c1182d67eb2068840e925a4ebf7f10",
-    "miner-dashboard/backend/bms_seite.py": "870d1a92ca90f7a35b685ca1befc79f540f77b324e03210289b08fe4254dd2a4",
+    "miner-dashboard/backend/bms_seite.py": "4f45d804f64760dc9aadfa2c9ab36d4fa77ecb2948f9f987cc3d470469c50a07",
     "miner-dashboard/backend/boersenhandel.py": "eb524fccc0a5bc488b6b7b3e5eb227a8aca6126dd9a8baae5bae9a480773863c",
     "miner-dashboard/backend/boot_repair_after_powerloss.py": "30b5369d1e3da27be6c5e9f561f8767a7febf4a07ad1cf453e846c9eb60ff866",
     "miner-dashboard/backend/config/energy_chat_ids.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
@@ -139,7 +139,7 @@
     "miner-dashboard/backend/patch_flow_dashboard.py": "d21d3d499dfc6791007a3a540e24751ca8d174212392c5dd20c469a407d86a37",
     "miner-dashboard/backend/patch_flow_data_enline.py": "65610712f880a7028938109f22407355fc700762315e25167b90a6326d8c4916",
     "miner-dashboard/backend/power_outage_detect.py": "b296406d08655358b322baaf7508e37df31bb65b7bf8645bb25f0510346cd50d",
-    "miner-dashboard/backend/public_update.py": "ae30fb9d37f938363dbb16e213e9a70f3f28eca7ad1bcc6e0dc82fe1becc1c9a",
+    "miner-dashboard/backend/public_update.py": "a2c52f1d6873660d506416576c9755e94007b36c13a91bee0998b68d8297c158",
     "miner-dashboard/backend/ram_cache.py": "af50196a69ed3cb753cabc29f15ec386f15d9d31603b8af6cdc66425e276cc13",
     "miner-dashboard/backend/recommended_grid_import.py": "b19e88e9c45c1aa3994d984853688d42486b2a9f829708cd5c9e8b94382d90b5",
     "miner-dashboard/backend/replace_app_tail.py": "db03435fbbef7528e18d9a9db927a25c66579ab569f6f1cdd9acbb8d7bcc9db1",
@@ -174,7 +174,7 @@
     "miner-dashboard/backend/templates/steuerungsalgorithmus.html": "f813776c61dc3f3ccd9dcb908028b5b572b41f58595ffcd78cdc1a8fe6cd6c85",
     "miner-dashboard/backend/templates/telegrambot.html": "98d3d9b274f635c0df2784f2ad61eb3243743d42d7c2275e6b7950e7f0d3d392",
     "miner-dashboard/backend/templates/telegramm.html": "0d509d60775c1af75bb5b88d97181d8e23411d39c7fd2c3efe53ff7e9d0ec486",
-    "miner-dashboard/backend/templates/updates.html": "5fbb71cd492c2325361895fcac7aa908859fbc15be63870261d6db7ab8727387",
+    "miner-dashboard/backend/templates/updates.html": "424737f1b429c42dcd93aca1eda8531fa4dcf78f1a9e98424032baf1e7e1d090",
     "miner-dashboard/backend/templates/verbrauchsdaten.html": "a1f2169da34e6c8dd099b15818fe0553f042f84439d523f975fa627bc9adf269",
     "miner-dashboard/backend/templates/wechselrichter_bms.html": "11cc3a384166694480861bfc734ea4b31fe7cb6f8be756b6b1cba810029c5b4e",
     "miner-dashboard/backend/templates/zeitsteuerung.html": "a7ef1c812a27401bfd58c76e1e23590e312a5c9543139ab1e29ad308c6ac4bd1",
@@ -190,7 +190,7 @@
     "miner-dashboard/backend/tests/test_anchor_window.py": "a0028864fca391f5f1a73172cbd33b40c5c19f4f1be542abacbbca838e352c24",
     "miner-dashboard/backend/tests/test_auto_control_steering.py": "f9927a0d0a9b52488df58ebdff2dd9115a94ed27c0540f2363176aea6ee5b959",
     "miner-dashboard/backend/tests/test_battery_protection.py": "7f9a1b24e0e13738535f8eff7edc32a49394b42c4fe9fb39ee8d42a0d99581b0",
-    "miner-dashboard/backend/tests/test_bms_netzbezug.py": "bb10226b85652b3c86b16ee6d0a5115bba4ac5e76fdc004b84652c4824dffdc7",
+    "miner-dashboard/backend/tests/test_bms_netzbezug.py": "6abd7a6d46c5fd17cf64747decc3b27050483595d41654effb10b6845d01dc4d",
     "miner-dashboard/backend/tests/test_boersenhandel_range.py": "d86faac990ac5deea03ce19c8a43096e24ff6e5b7c9fc07c54dbef66ac0c1b87",
     "miner-dashboard/backend/tests/test_consumer_statistics.py": "5606c6ea046d84962baad442c900c7d16e009c9516e028cefbb3ca857faeec0f",
     "miner-dashboard/backend/tests/test_consumption_history.py": "01f1c8765c4f70deec06215f49f0c34a3457e2afe5ee61081f5f80bb74e05b09",
@@ -233,7 +233,7 @@
     "miner-dashboard/backend/tests/test_planning_target.py": "217f9f5020205f0b477905bc8e472703c09fda19be1de5fb9d91b801eaec7457",
     "miner-dashboard/backend/tests/test_priority_runtime.py": "b2ec83563a3d1271300fcc07dbec5d1d78b8268d004b6d74f4ff1650ad66168e",
     "miner-dashboard/backend/tests/test_proactive_raw_pv.py": "75f42c6dbfcea90157a8f4908492e6a10c332d6b0ff6d504b68491e49081dc90",
-    "miner-dashboard/backend/tests/test_public_update.py": "797a5d8f5943f1288849381e67d212b7d77e07d0e0a986b8c6bc8027842de70a",
+    "miner-dashboard/backend/tests/test_public_update.py": "5d9ddb1184c0ca90f3f6c4bfaaeebd2eb237ceb11ef9d84e76f1ad589cdd19aa",
     "miner-dashboard/backend/tests/test_pv_absorption.py": "3dd50741387fec08aaddecb612850302a5537bb27f76a4dd847c4103dbfbabf6",
     "miner-dashboard/backend/tests/test_pv_outage_learning_block.py": "3faf73b1706557ee2a0547dca685a3f369acc79d49093219b4426a65a012f492",
     "miner-dashboard/backend/tests/test_pv_pattern_estimate.py": "10620a4f435adeb98e7517746ecea0439673585cdb165d5692b9fcb44f0361d8",
@@ -318,5 +318,5 @@
   },
   "format": 2,
   "notes": "Download nutzt den Soft-Scan: nur Token im Programmcode, und der Scan wird nach jedem Update wiederhergestellt. Der Upload-Scan bleibt streng. Standardwerte ohne persönliche Daten.",
-  "version": 70
+  "version": 71
 }
