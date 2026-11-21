@@ -84,6 +84,51 @@ def test_mehrbedarf_saved_confirms_300_kw():
     assert "gefüllt bzw. bereitsteht" in text
 
 
+def test_mehrbedarf_with_future_expires_loads_value(tmp_path):
+    from datetime import datetime
+
+    from telegram_energy import load_mehrbedarf_kw, load_mehrbedarf_record, save_mehrbedarf_kw
+
+    now = datetime(2026, 11, 21, 10, 0, 0)
+    expires = datetime(2026, 11, 21, 22, 0, 0)
+    save_mehrbedarf_kw(str(tmp_path), 12.5, expires_at=expires, now=now)
+    assert load_mehrbedarf_kw(str(tmp_path), now=now) == 12.5
+    record = load_mehrbedarf_record(str(tmp_path), now=now)
+    assert record["kw"] == 12.5
+    assert record["expires_at"] == expires
+
+
+def test_mehrbedarf_with_past_expires_returns_zero(tmp_path):
+    from datetime import datetime
+
+    from telegram_energy import load_mehrbedarf_kw, load_mehrbedarf_record, save_mehrbedarf_kw
+
+    now = datetime(2026, 11, 21, 10, 0, 0)
+    expires = datetime(2026, 11, 21, 9, 0, 0)
+    save_mehrbedarf_kw(str(tmp_path), 12.5, expires_at=expires, now=now)
+    assert load_mehrbedarf_kw(str(tmp_path), now=now) == 0.0
+    record = load_mehrbedarf_record(str(tmp_path), now=now)
+    assert record["kw"] == 0.0
+    assert record["expires_at"] == expires
+
+
+def test_parse_mehrbedarf_expires_bis_clock_and_iso():
+    from datetime import datetime
+
+    from telegram_energy import parse_mehrbedarf_expires, parse_mehrbedarf_kw_and_expires
+
+    now = datetime(2026, 11, 21, 10, 0, 0)
+    assert parse_mehrbedarf_expires("bis 22:00", now=now) == datetime(2026, 11, 21, 22, 0, 0)
+    assert parse_mehrbedarf_expires("22:00", now=now) == datetime(2026, 11, 21, 22, 0, 0)
+    assert parse_mehrbedarf_expires("ohne", now=now) is None
+    assert parse_mehrbedarf_expires("2026-11-22T18:30", now=now) == datetime(
+        2026, 11, 22, 18, 30, 0
+    )
+    kw, expires = parse_mehrbedarf_kw_and_expires("10 bis 22:00", now=now)
+    assert kw == 10.0
+    assert expires == datetime(2026, 11, 21, 22, 0, 0)
+
+
 def test_today_message_includes_expected_produced_and_weather():
     text = format_today_message(67.3, 67.08, 57.41)
     assert "Erwartet: 67,3 kWh" in text

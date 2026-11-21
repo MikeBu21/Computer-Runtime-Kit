@@ -275,6 +275,9 @@ _tou_hold_applied = False
 _tou_soc_applied: Optional[tuple] = None
 _release_sent = False
 _release_attempts = 0
+# Nutzer hat „Ins Register schreiben“ bei ausgeschalteter Netzspitzen-Planung selbst eingeschaltet.
+# Der Planungs-Halt darf diesen Schalter danach nicht wieder ausmachen.
+_manual_write_hold = False
 RELEASE_ATTEMPT_LIMIT = 3
 # Nach dem Abbruch nicht sofort wieder anstoßen. Sonst schreibt der Drift-Check endlos.
 _release_cooldown_until = 0.0
@@ -2180,7 +2183,7 @@ def load_settings() -> Dict[str, Any]:
 
 
 def save_settings(updates: Dict[str, Any]) -> Dict[str, Any]:
-    global _release_sent, _release_attempts, _release_cooldown_until
+    global _release_sent, _release_attempts, _release_cooldown_until, _manual_write_hold
     data = load_settings()
     if "inverter" in updates and updates["inverter"] in INVERTERS:
         data["inverter"] = updates["inverter"]
@@ -2205,6 +2208,10 @@ def save_settings(updates: Dict[str, Any]) -> Dict[str, Any]:
             elif not sock.get("ok"):
                 wanted = False
         data["real_mode"] = wanted
+        if wanted and not data.get("manual_off") and not _planning_enabled():
+            _manual_write_hold = True
+        else:
+            _manual_write_hold = False
     if "soc_stop" in updates:
         data["soc_stop"] = bool(updates["soc_stop"])
     if "install_captured" in updates:
@@ -2228,6 +2235,9 @@ def save_settings(updates: Dict[str, Any]) -> Dict[str, Any]:
         data["target_grid_kw"] = _kw(updates["target_grid_kw"], data["target_grid_kw"], lowest=-100.0)
     if "planning_hold" in updates:
         data["planning_hold"] = bool(updates["planning_hold"])
+    if _manual_write_hold and data.get("real_mode") and not _planning_enabled():
+        # Manuell eingeschaltet, Planung aus: der Planungs-Halt darf den Schalter nicht löschen.
+        data["planning_hold"] = False
     if "community_hold" in updates:
         data["community_hold"] = bool(updates["community_hold"])
     if "exchange_hold" in updates:
@@ -3408,7 +3418,11 @@ def _normalbetrieb_drift(
 
 
 def _queue_release_if_drift(settings: Dict[str, Any]) -> bool:
-    """Einmalig Freigabe anstoßen, wenn Solar Sell oder Spitze nicht zum Elektriker-Soll passen."""
+    """Einmalig Freigabe anstoßen, wenn Solar Sell oder Spitze nicht zum Elektriker-Soll passen.
+
+    Der Hintergrundlauf ruft das nur, solange eine Freigabe offen ist. Nach erfolgreicher
+    Verifikation bleibt es still, damit ein späterer Zwangslademodus nicht überschrieben wird.
+    """
     global _last_drift_release, _last_drift_check, _release_sent
     if settings.get("real_mode") or settings.get("release_pending"):
         return False
@@ -4264,10 +4278,10 @@ def apply_write(
     item = _control_item(base, link)
     register_text = _register_text(item)
     if not settings.get("real_mode"):
-        # BMS aus: nichts halten, nur ggf. Elektrikerwerte freigeben. Kein Soll-Schreiben.
+        # BMS aus: nichts halten, nur die offene Freigabe zu Ende prüfen.
         # release_pending nicht bei jedem Tick zurücksetzen: das hat die Freigabe endlos neu geschrieben.
-        if not _release_due(settings):
-            _queue_release_if_drift(settings)
+        # Nach erfolgreicher Verifikation kein Drift-Abgleich mehr. Drei Versuche liegen
+        # im bestehenden Schreib-Takt, nicht in einer zusätzlichen Wartezeit.
         if not _release_due(settings):
             return _write_result(False, "Aus. Es wird nichts geschrieben.")
         if _release_sent:
@@ -4571,6 +4585,7 @@ def apply_planning_hold(
     live: Optional[Dict[str, Any]] = None,
     now: Optional[datetime] = None,
 ) -> Dict[str, Any]:
+    global _manual_write_hold
     """Planung, keine Netzspitzen: angezeigter Zukauf ab 0,2 kW ins BMS-Register.
 
     Nur bei eingeschaltetem Schalter. Aus schreibt keinen Zukauf. Hielt die Planung
@@ -4593,10 +4608,16 @@ def apply_planning_hold(
         return settings
     holding = bool(settings.get("planning_hold"))
     if not planning_on:
+        if _manual_write_hold and settings.get("real_mode") and not settings.get("manual_off"):
+            # Nutzer hat Schreiben selbst eingeschaltet. Planung aus lässt den Schalter stehen.
+            if holding:
+                return save_settings({"planning_hold": False})
+            return settings
         if holding:
             # Planung aus: Registerschreiben aus, Freigabe schreibt die gespeicherten Elektrikerwerte zurück.
             return save_settings({"real_mode": False, "planning_hold": False})
         return settings
+    _manual_write_hold = False
     try:
         from grundverbrauch_rechner import recommended_import_kw
 

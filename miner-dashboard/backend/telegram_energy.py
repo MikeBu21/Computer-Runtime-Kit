@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import math
 import re
-from datetime import date
+from datetime import date, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -38,9 +38,17 @@ MEHRBEDARF_INFO_TEXT = (
 MEHRBEDARF_PROMPT_TEXT = (
     MEHRBEDARF_INFO_TEXT
     + "\n\nBitte antworte mit einer Zahl in kW, zum Beispiel 10 oder 2,5. "
-    "Zum Abbrechen /cancel."
+    "Optional mit Ablauf, zum Beispiel 10 bis 22:00. Zum Abbrechen /cancel."
+)
+MEHRBEDARF_EXPIRES_PROMPT_TEXT = (
+    "Bis wann gilt der Mehrbedarf?\n"
+    "Zum Beispiel 22:00, bis 22:00 oder 2026-11-22 22:00.\n"
+    "Ohne Ablaufzeit antworte mit ohne oder -. Zum Abbrechen /cancel."
 )
 MEHRBEDARF_FILE = "mehrbedarf_morgen.json"
+_MEHRBEDARF_NO_EXPIRES = frozenset(
+    {"", "-", "ohne", "kein", "keine", "nein", "none", "null", "n/a"}
+)
 
 
 def format_mehrbedarf_info_message() -> str:
@@ -56,6 +64,11 @@ def format_mehrbedarf_prompt_message(current_kw: Optional[float] = None) -> str:
     return text
 
 
+def format_mehrbedarf_expires_prompt_message() -> str:
+    """Zweite Dialogfrage: Ablaufzeit für den gespeicherten Mehrbedarf."""
+    return MEHRBEDARF_EXPIRES_PROMPT_TEXT
+
+
 def format_kw(value: Optional[float]) -> str:
     if value is None:
         return "nicht gesetzt"
@@ -63,10 +76,22 @@ def format_kw(value: Optional[float]) -> str:
     return text.replace(".", ",") + " kW"
 
 
-def format_mehrbedarf_saved_message(kw: float) -> str:
+def format_mehrbedarf_expires(expires_at: Optional[datetime]) -> str:
+    if expires_at is None:
+        return "ohne Ablauf"
+    return expires_at.strftime("%d.%m.%Y %H:%M")
+
+
+def format_mehrbedarf_saved_message(
+    kw: float,
+    expires_at: Optional[datetime] = None,
+) -> str:
     """Kurze Bestätigung, nachdem eine kW-Zahl übernommen wurde."""
+    expiry = ""
+    if expires_at is not None:
+        expiry = f" Gültig bis {format_mehrbedarf_expires(expires_at)}."
     return (
-        f"Danke für die Übernahme. {format_kw(kw)} sind notiert. "
+        f"Danke für die Übernahme. {format_kw(kw)} sind notiert.{expiry} "
         "Wir werden uns drum kümmern, dass der Speicher morgen gefüllt bzw. bereitsteht."
     )
 
@@ -75,9 +100,20 @@ def _mehrbedarf_path(base_dir: str) -> Path:
     return Path(base_dir) / "energy_monitor" / MEHRBEDARF_FILE
 
 
-def load_mehrbedarf_record(base_dir: str) -> Dict[str, Optional[float]]:
+def mehrbedarf_expires_iso(expires_at: Optional[datetime]) -> Optional[str]:
+    if expires_at is None:
+        return None
+    return expires_at.replace(second=0, microsecond=0).isoformat(timespec="minutes")
+
+
+def load_mehrbedarf_record(
+    base_dir: str,
+    *,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Gespeicherter Mehrbedarf. Nach Ablaufzeit gilt kw als 0."""
+    empty: Dict[str, Any] = {"kw": None, "override_kw": None, "expires_at": None}
     path = _mehrbedarf_path(base_dir)
-    empty: Dict[str, Optional[float]] = {"kw": None, "override_kw": None}
     if not path.is_file():
         return empty
     try:
@@ -86,14 +122,23 @@ def load_mehrbedarf_record(base_dir: str) -> Dict[str, Optional[float]]:
         return empty
     if not isinstance(raw, dict):
         return empty
+    expires_at = parse_mehrbedarf_expires(raw.get("expires_at"), now=now)
+    clock = now or datetime.now()
+    if expires_at is not None and clock > expires_at:
+        return {"kw": 0.0, "override_kw": None, "expires_at": expires_at}
     return {
         "kw": parse_mehrbedarf_kw(raw.get("kw")),
         "override_kw": parse_mehrbedarf_kw(raw.get("override_kw")),
+        "expires_at": expires_at,
     }
 
 
-def load_mehrbedarf_kw(base_dir: str) -> Optional[float]:
-    return load_mehrbedarf_record(base_dir).get("kw")
+def load_mehrbedarf_kw(
+    base_dir: str,
+    *,
+    now: Optional[datetime] = None,
+) -> Optional[float]:
+    return load_mehrbedarf_record(base_dir, now=now).get("kw")
 
 
 def save_mehrbedarf_kw(
@@ -102,12 +147,23 @@ def save_mehrbedarf_kw(
     override_kw: Any = None,
     *,
     set_override: bool = False,
+    expires_at: Any = None,
+    now: Optional[datetime] = None,
 ) -> float:
     value = parse_mehrbedarf_kw(kw)
     if value is None:
         raise ValueError("Ungültiger Mehrbedarf.")
-    current = load_mehrbedarf_record(base_dir)
-    override = current.get("override_kw")
+    # Raw-Datei lesen, damit ein abgelaufener Override nicht still verworfen wird.
+    path = _mehrbedarf_path(base_dir)
+    current_override: Optional[float] = None
+    if path.is_file():
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            raw = {}
+        if isinstance(raw, dict):
+            current_override = parse_mehrbedarf_kw(raw.get("override_kw"))
+    override = current_override
     if set_override:
         if override_kw in (None, "", "nein", "none"):
             override = None
@@ -115,11 +171,15 @@ def save_mehrbedarf_kw(
             override = parse_mehrbedarf_kw(override_kw)
             if override is None:
                 raise ValueError("Ungültige Übersteuerung.")
-    path = _mehrbedarf_path(base_dir)
+    expires = parse_mehrbedarf_expires(expires_at, now=now)
+    if expires_at not in (None, "") and str(expires_at).strip().lower() not in _MEHRBEDARF_NO_EXPIRES:
+        if expires is None:
+            raise ValueError("Ungültige Ablaufzeit.")
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "kw": value,
         "override_kw": override,
+        "expires_at": mehrbedarf_expires_iso(expires),
         "updated_at": date.today().isoformat(),
     }
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -135,12 +195,26 @@ def parse_mehrbedarf_kw(raw: Any) -> Optional[float]:
 
     Komma oder Punkt, nicht negativ, höchstens 1000. Ein neuer Aufruf ersetzt
     den vorherigen Wert, es bleibt kein älterer Mehrbedarf stehen.
+    Ablaufteile wie „bis 22:00“ werden vor dem Parsen entfernt.
     """
     if raw is None or raw is False:
         return None
     text = str(raw).strip().lower()
     if not text:
         return None
+    text = re.sub(
+        r"\bbis\s+\d{1,2}[:.]\d{2}(?:\s*(?:uhr)?)?\b",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"\b\d{4}-\d{2}-\d{2}[ t]\d{1,2}:\d{2}(?::\d{2})?\b",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"\s+", " ", text).strip()
     compact = text.replace("kilowatt", "").replace("kw", "").replace(" ", "").replace(",", ".")
     try:
         value = float(compact)
@@ -159,12 +233,90 @@ def parse_mehrbedarf_kw(raw: Any) -> Optional[float]:
     return round(value, 2)
 
 
+def parse_mehrbedarf_expires(
+    raw: Any,
+    *,
+    now: Optional[datetime] = None,
+) -> Optional[datetime]:
+    """Ablaufzeit aus ISO, datetime-local, „22:00“ oder „bis 22:00“.
+
+    Nur Uhrzeit: heute zu dieser Stunde, oder morgen wenn die Uhrzeit schon vorbei ist.
+    „ohne“ / „-“ / leer → kein Ablauf.
+    """
+    if raw is None or raw is False:
+        return None
+    if isinstance(raw, datetime):
+        return raw.replace(second=0, microsecond=0)
+    text = str(raw).strip()
+    if not text or text.lower() in _MEHRBEDARF_NO_EXPIRES:
+        return None
+    clock = now or datetime.now()
+    cleaned = re.sub(r"(?i)^\s*bis\s+", "", text).strip()
+    cleaned = cleaned.replace(",", " ")
+    cleaned = re.sub(r"(?i)\s*uhr\s*$", "", cleaned).strip()
+    cleaned = cleaned.replace("T", " ")
+    # 22:00 / 9:30
+    time_only = re.fullmatch(r"(\d{1,2})[:.](\d{2})(?::(\d{2}))?", cleaned)
+    if time_only:
+        hour = int(time_only.group(1))
+        minute = int(time_only.group(2))
+        if hour > 23 or minute > 59:
+            return None
+        candidate = clock.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if candidate <= clock:
+            candidate += timedelta(days=1)
+        return candidate
+    normalized = cleaned
+    for fmt in (
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%d.%m.%Y %H:%M",
+        "%d.%m.%Y %H:%M:%S",
+        "%d/%m/%Y %H:%M",
+    ):
+        try:
+            return datetime.strptime(normalized, fmt).replace(second=0, microsecond=0)
+        except ValueError:
+            continue
+    return None
+
+
+def parse_mehrbedarf_kw_and_expires(
+    raw: Any,
+    *,
+    now: Optional[datetime] = None,
+) -> Tuple[Optional[float], Optional[datetime]]:
+    """kW und optionale Ablaufzeit aus einer Antwort (z. B. „10 bis 22:00“)."""
+    text = "" if raw is None else str(raw).strip()
+    expires = None
+    if text:
+        bis_match = re.search(
+            r"(?i)\bbis\s+(\d{1,2}[:.]\d{2}(?:\s*(?:uhr)?)?|\d{4}-\d{2}-\d{2}[ t]\d{1,2}:\d{2}(?::\d{2})?|\d{1,2}\.\d{1,2}\.\d{4}\s+\d{1,2}[:.]\d{2})",
+            text,
+        )
+        if bis_match:
+            expires = parse_mehrbedarf_expires(bis_match.group(0), now=now)
+        else:
+            # Trailing datetime / time after the kW number
+            trail = re.search(
+                r"(?i)(?:^|\s)(\d{4}-\d{2}-\d{2}[ t]\d{1,2}:\d{2}(?::\d{2})?|\d{1,2}\.\d{1,2}\.\d{4}\s+\d{1,2}[:.]\d{2}|\d{1,2}[:.]\d{2}(?:\s*uhr)?)\s*$",
+                text,
+            )
+            if trail and not re.fullmatch(
+                r"\d+(?:[.,]\d+)?(?:\s*k(?:ilo)?w(?:att)?)?",
+                text,
+                flags=re.IGNORECASE,
+            ):
+                expires = parse_mehrbedarf_expires(trail.group(1), now=now)
+    return parse_mehrbedarf_kw(raw), expires
+
+
 def record_latest_mehrbedarf(base_dir: str, text: Any) -> Optional[float]:
     """Übernimmt nur die jüngste kW-Angabe und verwirft die davor gespeicherte."""
-    value = parse_mehrbedarf_kw(text)
+    value, expires = parse_mehrbedarf_kw_and_expires(text)
     if value is None:
         return None
-    return save_mehrbedarf_kw(base_dir, value)
+    return save_mehrbedarf_kw(base_dir, value, expires_at=expires)
 
 
 def classify_energy_command(text: str) -> Optional[str]:

@@ -356,13 +356,15 @@ def archive_day_from_timeseries(
 def maybe_archive_timeseries_on_rollover(base_dir: str, prev_date: str) -> None:
     """Fallback-Archivierung beim Stats-Rollover."""
     try:
-        from energy_timeseries_24h import load_timeseries_state
+        from energy_timeseries_24h import archive_timeseries_day, load_timeseries_state
 
         ts = load_timeseries_state(base_dir)
         if ts.get("date") == prev_date and ts.get("samples"):
+            samples = ts.get("samples") or []
+            archive_timeseries_day(base_dir, str(prev_date), samples)
             maybe_archive_daily_consumption(
                 base_dir,
-                samples=ts.get("samples") or [],
+                samples=samples,
                 day_str=str(prev_date),
             )
     except Exception:

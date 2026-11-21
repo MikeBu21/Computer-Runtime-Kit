@@ -23,6 +23,8 @@ _lock = threading.Lock()
 SAMPLE_INTERVAL_SEC = 60
 MINUTES_PER_DAY = 24 * 60
 MAX_SAMPLES = MINUTES_PER_DAY + 5
+# Abgeschlossene Tageskurven für Dashboard-Blättern (gestern, vorgestern, …).
+MAX_DAY_ARCHIVES = 60
 _last_record_monotonic = 0.0
 
 
@@ -33,6 +35,14 @@ def _path(base_dir: str) -> Path:
         return timeseries_path(base_dir, "energy_timeseries_24h.json")
     except Exception:
         return Path(base_dir) / "energy_monitor" / "energy_timeseries_24h.json"
+
+
+def _archive_dir(base_dir: str) -> Path:
+    return Path(base_dir) / "energy_monitor" / "energy_timeseries_days"
+
+
+def _day_archive_path(base_dir: str, day: str) -> Path:
+    return _archive_dir(base_dir) / f"{day}.json"
 
 
 def load_timeseries_state(base_dir: str) -> Dict[str, Any]:
@@ -113,7 +123,85 @@ def _enline_kw_from_files(base_dir: str, json_key: str, txt_names: list) -> floa
     return 0.0
 
 
-def _load_state(path: Path) -> Dict[str, Any]:
+def _trim_day_archives(base_dir: str, keep: int = MAX_DAY_ARCHIVES) -> None:
+    folder = _archive_dir(base_dir)
+    if not folder.is_dir():
+        return
+    files = sorted(folder.glob("????-??-??.json"))
+    if len(files) <= keep:
+        return
+    for path in files[: max(0, len(files) - keep)]:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+
+def archive_timeseries_day(
+    base_dir: str,
+    day: str,
+    samples: Optional[List[Dict[str, Any]]] = None,
+) -> bool:
+    """Speichert eine abgeschlossene Tageskurve. Vorhandene Dateien bleiben unangetastet."""
+    day = str(day or "").strip()
+    if not day or len(samples or []) < 2:
+        return False
+    today = date.today().isoformat()
+    if day >= today:
+        return False
+    path = _day_archive_path(base_dir, day)
+    if path.is_file():
+        return False
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"date": day, "samples": list(samples or [])}, indent=0),
+            encoding="utf-8",
+        )
+        _trim_day_archives(base_dir)
+        return True
+    except OSError:
+        return False
+
+
+def list_timeseries_dates(base_dir: str) -> List[str]:
+    """Verfügbare Tage (Archiv + heute), aufsteigend."""
+    today = date.today().isoformat()
+    dates = {today}
+    folder = _archive_dir(base_dir)
+    if folder.is_dir():
+        for path in folder.glob("????-??-??.json"):
+            dates.add(path.stem)
+    # Live-Datei zählt als heute, auch wenn noch leer.
+    try:
+        live = _path(base_dir)
+        if live.is_file():
+            raw = json.loads(live.read_text(encoding="utf-8"))
+            day = str((raw or {}).get("date") or "")
+            if day:
+                dates.add(day)
+    except Exception:
+        pass
+    return sorted(dates)
+
+
+def _load_archived_day(base_dir: str, day: str) -> Optional[Dict[str, Any]]:
+    path = _day_archive_path(base_dir, day)
+    if not path.is_file():
+        return None
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(state, dict):
+        return None
+    samples = state.get("samples") or []
+    if not isinstance(samples, list):
+        samples = []
+    return {"date": str(state.get("date") or day), "samples": samples}
+
+
+def _load_state(path: Path, base_dir: Optional[str] = None) -> Dict[str, Any]:
     today = date.today().isoformat()
     if not path.is_file():
         return _empty_state(today)
@@ -121,9 +209,16 @@ def _load_state(path: Path) -> Dict[str, Any]:
         state = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return _empty_state(today)
-    if state.get("date") != today:
+    if not isinstance(state, dict):
         return _empty_state(today)
     state.setdefault("samples", [])
+    day = str(state.get("date") or "")
+    if day and day != today:
+        if base_dir:
+            archive_timeseries_day(base_dir, day, state.get("samples") or [])
+        return _empty_state(today)
+    if day != today:
+        return _empty_state(today)
     return state
 
 
@@ -242,7 +337,7 @@ def record_sample(base_dir: str, force: bool = False) -> None:
         point.setdefault("miner_kw", 0.0)
 
     with _lock:
-        state = _load_state(path)
+        state = _load_state(path, base_dir)
         if state.get("date") != today:
             state = _empty_state(today)
         samples: List[Dict[str, Any]] = state["samples"]
@@ -284,22 +379,17 @@ def _bucket_by_minute(samples: List[Dict[str, Any]]) -> Dict[int, Dict[str, Any]
     return buckets
 
 
-def get_timeseries_24h(base_dir: str) -> Dict[str, Any]:
-    """Liefert Tageskurve auf fester 24h-Achse (00:00 … jetzt), 1 Punkt pro Minute."""
-    from dashboard_config import enabled_line_series, load_config as load_dash_config
-
-    path = _path(base_dir)
-    now = datetime.now()
-    now_m = int(_minutes_since_midnight(now))
-
-    with _lock:
-        state = _load_state(path)
-
-    dash_cfg = load_dash_config()
-    series_cfg = enabled_line_series(dash_cfg)
-
+def _build_timeseries_payload(
+    state: Dict[str, Any],
+    *,
+    series_cfg: List[Dict[str, Any]],
+    end_m: int,
+    now_m: int,
+    is_today: bool,
+    available_dates: List[str],
+) -> Dict[str, Any]:
     buckets = _bucket_by_minute(state.get("samples", []))
-    end_m = min(now_m, MINUTES_PER_DAY - 1)
+    end_m = max(0, min(int(end_m), MINUTES_PER_DAY - 1))
 
     labels: List[str] = []
     minutes: List[int] = []
@@ -318,6 +408,11 @@ def get_timeseries_24h(base_dir: str) -> Dict[str, Any]:
         if s:
             for ser in series_cfg:
                 v = s.get(ser["id"])
+                if v is None or v == "":
+                    # Archiv/Legacy: konfigurierte line_* oft als Basisname gespeichert.
+                    sid = str(ser["id"] or "")
+                    if sid.startswith("line_"):
+                        v = s.get(sid[5:])
                 series_data[ser["id"]].append(
                     float(v) if v is not None and v != "" else None
                 )
@@ -328,6 +423,8 @@ def get_timeseries_24h(base_dir: str) -> Dict[str, Any]:
                 ("soc", soc),
             ):
                 v = s.get(key)
+                if v is None or v == "":
+                    v = s.get("line_" + key) if key != "betrieb" else s.get("line_verbrauch")
                 arr.append(float(v) if v is not None and v != "" else None)
         else:
             for ser in series_cfg:
@@ -350,11 +447,28 @@ def get_timeseries_24h(base_dir: str) -> Dict[str, Any]:
             }
         )
 
+    day = str(state.get("date") or "")
+    prev_date = None
+    next_date = None
+    if day and available_dates:
+        try:
+            idx = available_dates.index(day)
+        except ValueError:
+            idx = -1
+        if idx > 0:
+            prev_date = available_dates[idx - 1]
+        if 0 <= idx < len(available_dates) - 1:
+            next_date = available_dates[idx + 1]
+
     return {
-        "date": state.get("date"),
+        "date": day,
+        "is_today": bool(is_today),
+        "prev_date": prev_date,
+        "next_date": next_date,
+        "available_dates": available_dates,
         "unit_kw": "kW",
         "unit_soc": "%",
-        "now_minutes": now_m,
+        "now_minutes": now_m if is_today else end_m,
         "sample_interval_sec": SAMPLE_INTERVAL_SEC,
         "labels": labels,
         "minutes": minutes,
@@ -364,3 +478,66 @@ def get_timeseries_24h(base_dir: str) -> Dict[str, Any]:
         "betrieb": betrieb,
         "soc": soc,
     }
+
+
+def get_timeseries_24h(base_dir: str, day: Optional[str] = None) -> Dict[str, Any]:
+    """Liefert Tageskurve (heute live, ältere Tage aus dem Archiv), 1 Punkt/Minute."""
+    from dashboard_config import enabled_line_series, load_config as load_dash_config
+
+    path = _path(base_dir)
+    now = datetime.now()
+    today = date.today().isoformat()
+    now_m = int(_minutes_since_midnight(now))
+    wanted = str(day or "").strip() or today
+
+    with _lock:
+        live = _load_state(path, base_dir)
+
+    dash_cfg = load_dash_config()
+    series_cfg = enabled_line_series(dash_cfg)
+    available = list_timeseries_dates(base_dir)
+    if today not in available:
+        available = sorted(set(available) | {today})
+
+    if wanted == today or wanted == str(live.get("date") or ""):
+        state = live if str(live.get("date") or "") == today else _empty_state(today)
+        end_m = min(now_m, MINUTES_PER_DAY - 1)
+        return _build_timeseries_payload(
+            state,
+            series_cfg=series_cfg,
+            end_m=end_m,
+            now_m=now_m,
+            is_today=True,
+            available_dates=available,
+        )
+
+    archived = _load_archived_day(base_dir, wanted)
+    if archived is None:
+        # Unbekanntes Datum: auf heute fallen und Navigation mitliefern.
+        state = live if str(live.get("date") or "") == today else _empty_state(today)
+        end_m = min(now_m, MINUTES_PER_DAY - 1)
+        payload = _build_timeseries_payload(
+            state,
+            series_cfg=series_cfg,
+            end_m=end_m,
+            now_m=now_m,
+            is_today=True,
+            available_dates=available,
+        )
+        payload["requested_date"] = wanted
+        payload["date_missing"] = True
+        return payload
+
+    buckets = _bucket_by_minute(archived.get("samples") or [])
+    end_m = max(buckets.keys()) if buckets else (MINUTES_PER_DAY - 1)
+    end_m = min(max(end_m, 0), MINUTES_PER_DAY - 1)
+    if wanted not in available:
+        available = sorted(set(available) | {wanted})
+    return _build_timeseries_payload(
+        archived,
+        series_cfg=series_cfg,
+        end_m=end_m,
+        now_m=now_m,
+        is_today=False,
+        available_dates=available,
+    )

@@ -1823,27 +1823,42 @@ def api_mehrbedarf_morgen():
         return jsonify({"ok": False, "message": "nicht angemeldet"}), 401
     from telegram_energy import (
         format_mehrbedarf_saved_message,
-        load_mehrbedarf_kw,
+        load_mehrbedarf_record,
+        mehrbedarf_expires_iso,
         parse_mehrbedarf_kw,
         save_mehrbedarf_kw,
     )
 
     base = os.path.dirname(__file__)
     if request.method == 'GET':
-        kw = load_mehrbedarf_kw(base)
-        return jsonify({"ok": True, "kw": kw})
+        record = load_mehrbedarf_record(base)
+        return jsonify({
+            "ok": True,
+            "kw": record.get("kw"),
+            "expires_at": mehrbedarf_expires_iso(record.get("expires_at")),
+        })
     payload = request.get_json(silent=True) or {}
     raw = request.form.get("kw")
     if raw in (None, "") and isinstance(payload, dict):
         raw = payload.get("kw")
+    expires_raw = request.form.get("expires_at")
+    if expires_raw in (None, "") and isinstance(payload, dict):
+        expires_raw = payload.get("expires_at")
     value = parse_mehrbedarf_kw(raw)
     if value is None:
         return jsonify({"ok": False, "message": "Bitte eine gültige kW-Zahl eingeben, zum Beispiel 10."}), 400
     try:
-        saved = save_mehrbedarf_kw(base, value)
+        saved = save_mehrbedarf_kw(base, value, expires_at=expires_raw)
     except ValueError as exc:
         return jsonify({"ok": False, "message": str(exc)}), 400
-    return jsonify({"ok": True, "kw": saved, "message": format_mehrbedarf_saved_message(saved)})
+    record = load_mehrbedarf_record(base)
+    expires = record.get("expires_at")
+    return jsonify({
+        "ok": True,
+        "kw": saved,
+        "expires_at": mehrbedarf_expires_iso(expires),
+        "message": format_mehrbedarf_saved_message(saved, expires),
+    })
 
 
 @app.route('/api/grundverbrauch/annahmen', methods=['POST'])
@@ -2323,7 +2338,8 @@ def energy_stats_24h():
 
 @app.route('/energy_timeseries_24h')
 def energy_timeseries_24h():
-    return jsonify(get_timeseries_24h(os.path.dirname(__file__)))
+    day = (request.args.get("date") or "").strip() or None
+    return jsonify(get_timeseries_24h(os.path.dirname(__file__), day=day))
 
 
 @app.route('/energy_stats_30d')

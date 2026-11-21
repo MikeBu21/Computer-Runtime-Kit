@@ -43,6 +43,7 @@ CONFIG_PATH = BASE_DIR / 'telegram_config.json'
 DEFAULT_FEED_IN_ALARM_KW = -95.0
 DEFAULT_HIGH_USAGE_ALARM_KW = 50.0
 ASK_MEHRBEDARF_KW = 1
+ASK_MEHRBEDARF_EXPIRES = 2
 LAST_ALARM_STATE = {
     "feed_in": False,
     "high_usage": False,
@@ -698,50 +699,101 @@ async def mehrbedarf_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
     if message is None:
         return ConversationHandler.END
+    context.user_data.pop("mehrbedarf_kw", None)
     current = load_mehrbedarf_kw(str(BASE_DIR))
     await message.reply_text(
         format_mehrbedarf_prompt_message(current),
-        reply_markup=ForceReply(selective=True, input_field_placeholder="z. B. 10"),
+        reply_markup=ForceReply(selective=True, input_field_placeholder="z. B. 10 oder 10 bis 22:00"),
     )
     return ASK_MEHRBEDARF_KW
 
 
+async def _mehrbedarf_persist(update: Update, context: ContextTypes.DEFAULT_TYPE, value: float, expires_at):
+    from telegram_energy import format_mehrbedarf_saved_message, save_mehrbedarf_kw
+
+    message = update.effective_message
+    try:
+        saved = save_mehrbedarf_kw(str(BASE_DIR), value, expires_at=expires_at)
+    except Exception as exc:
+        if message is not None:
+            await message.reply_text(
+                f"Speichern fehlgeschlagen ({exc}).",
+                reply_markup=energy_reply_markup(),
+            )
+        context.user_data.pop("mehrbedarf_kw", None)
+        return ConversationHandler.END
+    from telegram_energy import parse_mehrbedarf_expires
+
+    expires = parse_mehrbedarf_expires(expires_at)
+    if message is not None:
+        await message.reply_text(
+            format_mehrbedarf_saved_message(saved, expires),
+            reply_markup=energy_reply_markup(),
+        )
+    context.user_data.pop("mehrbedarf_kw", None)
+    return ConversationHandler.END
+
+
 async def mehrbedarf_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Erste Antwort: kW, optional schon mit Ablaufzeit („10 bis 22:00“)."""
     from telegram_energy import (
+        format_mehrbedarf_expires_prompt_message,
         format_mehrbedarf_prompt_message,
-        format_mehrbedarf_saved_message,
-        parse_mehrbedarf_kw,
-        save_mehrbedarf_kw,
+        parse_mehrbedarf_kw_and_expires,
     )
 
     message = update.effective_message
     if message is None:
         return ConversationHandler.END
-    value = parse_mehrbedarf_kw(message.text or "")
+    value, expires = parse_mehrbedarf_kw_and_expires(message.text or "")
     if value is None:
         await message.reply_text(
             "Das war keine gültige kW-Zahl.\n\n" + format_mehrbedarf_prompt_message(),
-            reply_markup=ForceReply(selective=True, input_field_placeholder="z. B. 10"),
+            reply_markup=ForceReply(selective=True, input_field_placeholder="z. B. 10 oder 10 bis 22:00"),
         )
         return ASK_MEHRBEDARF_KW
-    try:
-        saved = save_mehrbedarf_kw(str(BASE_DIR), value)
-    except Exception as exc:
-        await message.reply_text(
-            f"Speichern fehlgeschlagen ({exc}).",
-            reply_markup=energy_reply_markup(),
-        )
-        return ConversationHandler.END
+    if expires is not None:
+        return await _mehrbedarf_persist(update, context, value, expires)
+    context.user_data["mehrbedarf_kw"] = value
     await message.reply_text(
-        format_mehrbedarf_saved_message(saved),
-        reply_markup=energy_reply_markup(),
+        format_mehrbedarf_expires_prompt_message(),
+        reply_markup=ForceReply(selective=True, input_field_placeholder="z. B. 22:00 oder ohne"),
     )
-    return ConversationHandler.END
+    return ASK_MEHRBEDARF_EXPIRES
+
+
+async def mehrbedarf_expires_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Zweite Antwort: Ablaufzeit oder ohne."""
+    from telegram_energy import (
+        format_mehrbedarf_expires_prompt_message,
+        parse_mehrbedarf_expires,
+    )
+
+    message = update.effective_message
+    if message is None:
+        return ConversationHandler.END
+    value = context.user_data.get("mehrbedarf_kw")
+    if value is None:
+        return await mehrbedarf_start(update, context)
+    raw = (message.text or "").strip()
+    expires = parse_mehrbedarf_expires(raw)
+    no_expiry = raw.lower() in {"", "-", "ohne", "kein", "keine", "nein", "none"}
+    if expires is None and not no_expiry:
+        await message.reply_text(
+            "Das war keine gültige Ablaufzeit.\n\n" + format_mehrbedarf_expires_prompt_message(),
+            reply_markup=ForceReply(selective=True, input_field_placeholder="z. B. 22:00 oder ohne"),
+        )
+        return ASK_MEHRBEDARF_EXPIRES
+    return await _mehrbedarf_persist(update, context, float(value), None if no_expiry else expires)
 
 
 async def mehrbedarf_latest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Spätere freie Angabe ersetzt den gespeicherten Mehrbedarf."""
-    from telegram_energy import format_mehrbedarf_saved_message, record_latest_mehrbedarf
+    from telegram_energy import (
+        format_mehrbedarf_saved_message,
+        load_mehrbedarf_record,
+        record_latest_mehrbedarf,
+    )
 
     message = update.effective_message
     if message is None:
@@ -756,8 +808,9 @@ async def mehrbedarf_latest(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if saved is None:
         return
+    expires = load_mehrbedarf_record(str(BASE_DIR)).get("expires_at")
     await message.reply_text(
-        format_mehrbedarf_saved_message(saved),
+        format_mehrbedarf_saved_message(saved, expires),
         reply_markup=energy_reply_markup(),
     )
 
@@ -1287,6 +1340,9 @@ def _build_application(token: str) -> Application:
         states={
             ASK_MEHRBEDARF_KW: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, mehrbedarf_save),
+            ],
+            ASK_MEHRBEDARF_EXPIRES: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, mehrbedarf_expires_save),
             ],
         },
         fallbacks=[

@@ -712,25 +712,75 @@
       min-height: 260px;
       margin-top: 0.5rem;
     }
+    .energy-line-nav {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      margin-left: auto;
+    }
+    .energy-line-nav button {
+      width: 2rem;
+      height: 2rem;
+      border-radius: 999px;
+      border: 1px solid rgba(144, 202, 249, 0.28);
+      background: rgba(8, 14, 24, 0.82);
+      color: #cfd8dc;
+      font-size: 1.15rem;
+      line-height: 1;
+      cursor: pointer;
+      padding: 0;
+    }
+    .energy-line-nav button:disabled {
+      opacity: 0.35;
+      cursor: default;
+    }
+    .energy-line-nav button:not(:disabled):hover {
+      border-color: rgba(144, 202, 249, 0.55);
+      color: #fff;
+    }
+    .energy-line-nav-label {
+      min-width: 7.5rem;
+      text-align: center;
+      font-size: 0.78rem;
+      font-weight: 650;
+      color: #cfd8dc;
+    }
     .energy-line-legend {
       display: flex;
       flex-wrap: wrap;
       justify-content: center;
-      gap: 0.5rem 1.1rem;
+      gap: 0.45rem;
       margin-top: 0.75rem;
       font-size: 0.72rem;
       color: var(--muted);
     }
-    .energy-line-legend span {
+    .energy-line-key {
       display: inline-flex;
       align-items: center;
-      gap: 0.35rem;
+      gap: 0.38rem;
+      border-radius: 999px;
+      border: 1px solid rgba(144, 202, 249, 0.28);
+      background: rgba(8, 14, 24, 0.82);
+      padding: 0.28rem 0.62rem 0.28rem 0.48rem;
+      cursor: pointer;
+      text-align: left;
+      opacity: 0.42;
+      transition: opacity 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+      font-size: 0.72rem;
+      font-weight: 650;
+      color: #cfd8dc;
+      white-space: nowrap;
     }
-    .energy-line-legend i {
-      display: inline-block;
-      width: 14px;
-      height: 3px;
-      border-radius: 2px;
+    .energy-line-key.on {
+      opacity: 1;
+      border-color: rgba(144, 202, 249, 0.52);
+      box-shadow: 0 0 0 1px rgba(144, 202, 249, 0.12);
+    }
+    .energy-line-key-dot {
+      flex: 0 0 9px;
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
     }
     .chart-legend-dot {
       width: 8px;
@@ -1096,6 +1146,10 @@
       font-size: 1rem;
       font-variant-numeric: tabular-nums;
     }
+    .mehrbedarf-field input[type="datetime-local"] {
+      width: 14.5rem;
+      color-scheme: dark;
+    }
     .mehrbedarf-field input:focus {
       outline: 2px solid rgba(100, 181, 246, 0.55);
       outline-offset: 1px;
@@ -1171,6 +1225,10 @@
           <label for="mehrbedarf_kw">Zusätzlich morgen (kW)</label>
           <input id="mehrbedarf_kw" name="kw" type="number" inputmode="decimal" min="0" max="1000" step="0.1" placeholder="z. B. 10" required>
         </div>
+        <div class="mehrbedarf-field">
+          <label for="mehrbedarf_expires">Gültig bis</label>
+          <input id="mehrbedarf_expires" name="expires_at" type="datetime-local" step="60">
+        </div>
         <button type="submit" class="mehrbedarf-save" id="mehrbedarf_save">Übernehmen</button>
       </form>
     </div>
@@ -1213,17 +1271,22 @@
   <div class="panel energy-line-panel">
     <div class="panel-title-row">
       <h5 class="panel-title" style="margin:0">📉 Tagesverlauf 24 Stunden</h5>
+      <div class="energy-line-nav" id="energy_line_nav" role="group" aria-label="Tag blättern">
+        <button type="button" id="energy_line_prev" aria-label="Vorheriger Tag">‹</button>
+        <span class="energy-line-nav-label" id="energy_line_nav_label">Heute</span>
+        <button type="button" id="energy_line_next" aria-label="Nächster Tag">›</button>
+      </div>
       <a href="/statistik-konfigurieren#line" class="chart-config-link">⚙ Liniendiagramm konfigurieren</a>
     </div>
     <p class="energy-stats-sub" id="energy_line_date">Live · 1 Messpunkt pro Minute · Reset täglich 0:00 Uhr</p>
     <div class="energy-line-chart-wrap">
       <canvas id="chart_energy_line"></canvas>
     </div>
-    <div class="energy-line-legend" id="energy_line_legend">
-      <span><i style="background:#00ff41"></i> Erzeugung (06 PV + 05 Wasser)</span>
-      <span><i style="background:#ffea00"></i> Verbrauch gesamt</span>
-      <span><i style="background:#42a5f5"></i> Batteriestand %</span>
-      <span><i style="background:#ce93d8"></i> Netz (+ Bezug / − Einspeisung)</span>
+    <div class="energy-line-legend" id="energy_line_legend" role="group" aria-label="Serien ein- und ausblenden">
+      <button type="button" class="energy-line-key on" data-series="erzeugung"><span class="energy-line-key-dot" style="background:#00ff41"></span> Erzeugung</button>
+      <button type="button" class="energy-line-key on" data-series="betrieb"><span class="energy-line-key-dot" style="background:#ffea00"></span> Verbrauch</button>
+      <button type="button" class="energy-line-key on" data-series="batterie"><span class="energy-line-key-dot" style="background:#42a5f5"></span> Batterie %</button>
+      <button type="button" class="energy-line-key on" data-series="netz"><span class="energy-line-key-dot" style="background:#ce93d8"></span> Netz</button>
     </div>
   </div>
 
@@ -1617,6 +1680,12 @@
     let energyLineChart = null;
     let hashrateLineChart = null;
     const chartInstances = {};
+    let energyLineSelectedDate = null; // null = heute
+    let energyLinePrevDate = null;
+    let energyLineNextDate = null;
+    let energyLineIsToday = true;
+    const energyLineVis = {};
+    let energyLineLegendBound = false;
 
     function formatDateDe(iso) {
       if (!iso) return "";
@@ -1894,13 +1963,98 @@
       return "rgba(" + r + "," + g + "," + b + "," + alpha + ")";
     }
 
+    function seriesVisible(key) {
+      if (!(key in energyLineVis)) energyLineVis[key] = true;
+      return !!energyLineVis[key];
+    }
+
+    function renderEnergyLineLegend(items) {
+      const legendEl = document.getElementById("energy_line_legend");
+      if (!legendEl) return;
+      legendEl.innerHTML = (items || []).map((ser) => {
+        const key = ser.id || ser.key;
+        const on = seriesVisible(key) ? " on" : "";
+        const color = ser.color || "#888";
+        return '<button type="button" class="energy-line-key' + on + '" data-series="' +
+          String(key).replace(/"/g, "") + '" title="Ein-/ausblenden">' +
+          '<span class="energy-line-key-dot" style="background:' + color + ';box-shadow:0 0 6px ' +
+          hexToRgba(color, 0.55) + '"></span> ' +
+          (ser.label || key) + '</button>';
+      }).join("");
+      bindEnergyLineLegend();
+    }
+
+    function applyEnergyLineVisibility() {
+      if (!energyLineChart) return;
+      (energyLineChart.data.datasets || []).forEach((ds, idx) => {
+        const key = ds.seriesId || ds.label;
+        const meta = energyLineChart.getDatasetMeta(idx);
+        if (meta) meta.hidden = !seriesVisible(key);
+      });
+      energyLineChart.update("none");
+    }
+
+    function bindEnergyLineLegend() {
+      const wrap = document.getElementById("energy_line_legend");
+      if (!wrap || wrap.dataset.bound === "1") return;
+      wrap.dataset.bound = "1";
+      wrap.addEventListener("click", function (ev) {
+        const btn = ev.target.closest("[data-series]");
+        if (!btn) return;
+        const key = btn.getAttribute("data-series");
+        if (!key) return;
+        energyLineVis[key] = !seriesVisible(key);
+        btn.classList.toggle("on", energyLineVis[key]);
+        applyEnergyLineVisibility();
+      });
+      energyLineLegendBound = true;
+    }
+
+    function updateEnergyLineNav(data) {
+      energyLineIsToday = !!data.is_today || !data.date;
+      energyLinePrevDate = data.prev_date || null;
+      energyLineNextDate = data.next_date || null;
+      if (data.date) energyLineSelectedDate = data.is_today ? null : data.date;
+      const labelEl = document.getElementById("energy_line_nav_label");
+      const prevBtn = document.getElementById("energy_line_prev");
+      const nextBtn = document.getElementById("energy_line_next");
+      if (labelEl) {
+        labelEl.textContent = data.is_today
+          ? "Heute"
+          : (formatDateDe(data.date) || data.date || "–");
+      }
+      if (prevBtn) prevBtn.disabled = !energyLinePrevDate;
+      if (nextBtn) nextBtn.disabled = !energyLineNextDate;
+    }
+
+    function bindEnergyLineNav() {
+      const prevBtn = document.getElementById("energy_line_prev");
+      const nextBtn = document.getElementById("energy_line_next");
+      if (prevBtn && prevBtn.dataset.bound !== "1") {
+        prevBtn.dataset.bound = "1";
+        prevBtn.addEventListener("click", function () {
+          if (!energyLinePrevDate) return;
+          energyLineSelectedDate = energyLinePrevDate;
+          updateEnergyLineChart();
+        });
+      }
+      if (nextBtn && nextBtn.dataset.bound !== "1") {
+        nextBtn.dataset.bound = "1";
+        nextBtn.addEventListener("click", function () {
+          if (!energyLineNextDate) return;
+          energyLineSelectedDate = energyLineNextDate;
+          updateEnergyLineChart();
+        });
+      }
+    }
+
     function buildEnergyLineChart(data) {
       const canvas = document.getElementById("chart_energy_line");
       if (!canvas || typeof Chart === "undefined") return;
 
       const labels = data.labels || [];
-      const hasData = labels.length > 0;
       const nowM = data.now_minutes || 0;
+      const showNow = !!data.is_today;
 
       const pointRadius = labels.length > 120 ? 0 : labels.length > 40 ? 1 : 2;
 
@@ -1909,7 +2063,9 @@
       if (configured.length) {
         configured.forEach((ser, idx) => {
           const isPercent = ser.y_axis === "percent";
+          const key = ser.id || ("ser_" + idx);
           datasets.push({
+            seriesId: key,
             label: ser.label || ser.id,
             data: ser.data || [],
             borderColor: ser.color || "#42a5f5",
@@ -1921,18 +2077,18 @@
             borderWidth: isPercent ? 2.5 : 2,
             yAxisID: isPercent ? "y1" : "y",
             order: isPercent ? 1 : idx + 2,
+            hidden: !seriesVisible(key),
           });
         });
-        const legendEl = document.getElementById("energy_line_legend");
-        if (legendEl) {
-          legendEl.innerHTML = configured.map(ser =>
-            '<span><i style="background:' + (ser.color || "#888") + '"></i> ' +
-            (ser.label || ser.id) + '</span>'
-          ).join("");
-        }
+        renderEnergyLineLegend(configured.map((ser) => ({
+          id: ser.id,
+          label: ser.label || ser.id,
+          color: ser.color || "#888",
+        })));
       } else {
-        datasets = [
+        const legacy = [
           {
+            seriesId: "erzeugung",
             label: "Erzeugung",
             data: data.erzeugung || [],
             borderColor: LINE_CHART_COLORS.erzeugung,
@@ -1945,6 +2101,7 @@
             order: 2,
           },
           {
+            seriesId: "betrieb",
             label: "Aktueller Verbrauch",
             data: data.betrieb || [],
             borderColor: LINE_CHART_COLORS.betrieb,
@@ -1956,6 +2113,7 @@
             order: 3,
           },
           {
+            seriesId: "netz",
             label: "Netz",
             data: data.netz || [],
             borderColor: LINE_CHART_COLORS.netz,
@@ -1967,6 +2125,7 @@
             order: 4,
           },
           {
+            seriesId: "batterie",
             label: "Batterie %",
             data: data.soc || [],
             borderColor: LINE_CHART_COLORS.batterie,
@@ -1979,6 +2138,14 @@
             order: 1,
           },
         ];
+        datasets = legacy.map((ds) => Object.assign({}, ds, {
+          hidden: !seriesVisible(ds.seriesId),
+        }));
+        renderEnergyLineLegend(legacy.map((ds) => ({
+          id: ds.seriesId,
+          label: ds.label,
+          color: ds.borderColor,
+        })));
       }
 
       const options = {
@@ -2038,14 +2205,14 @@
       };
 
       const chartData = { labels, datasets };
-
-      const meta = { nowM, minutes: data.minutes || [] };
+      const meta = { nowM, minutes: data.minutes || [], showNow };
 
       if (energyLineChart) {
         energyLineChart.data = chartData;
         energyLineChart.options = options;
         energyLineChart.$lineMeta = meta;
         energyLineChart.update("none");
+        applyEnergyLineVisibility();
         return;
       }
 
@@ -2055,7 +2222,7 @@
           const m = chart.$lineMeta;
           const xs = chart.scales.x;
           const ys = chart.scales.y;
-          if (!m || !xs || !ys) return;
+          if (!m || !m.showNow || !xs || !ys) return;
           const idx = Math.min(Math.max(0, Math.round(m.nowM)), (m.minutes.length || 1) - 1);
           const x = xs.getPixelForValue(idx);
           const ctx = chart.ctx;
@@ -2078,19 +2245,30 @@
         plugins: [nowLinePlugin],
       });
       energyLineChart.$lineMeta = meta;
+      applyEnergyLineVisibility();
     }
 
     function updateEnergyLineChart() {
-      fetch('/energy_timeseries_24h')
+      const q = energyLineSelectedDate
+        ? ("?date=" + encodeURIComponent(energyLineSelectedDate))
+        : "";
+      fetch("/energy_timeseries_24h" + q)
         .then((r) => r.json())
         .then((data) => {
           buildEnergyLineChart(data);
+          updateEnergyLineNav(data);
           const el = document.getElementById("energy_line_date");
           if (el && data.date) {
             const label = formatDateDe(data.date);
             const n = (data.labels || []).length;
-            el.textContent =
-              "Live · " + n + " Minuten (00:00–jetzt) · Stand " + label + " · Reset täglich 0:00 Uhr";
+            if (data.is_today) {
+              el.textContent =
+                "Live · " + n + " Minuten (00:00–jetzt) · Stand " + label + " · Reset täglich 0:00 Uhr";
+            } else {
+              el.textContent =
+                "Archiv · " + n + " Minuten · " + label +
+                (data.date_missing ? " · kein Verlauf für dieses Datum" : "");
+            }
           }
         })
         .catch(() => {});
@@ -3619,6 +3797,7 @@
     function initMehrbedarfPanel() {
       const form = document.getElementById("mehrbedarf_form");
       const input = document.getElementById("mehrbedarf_kw");
+      const expiresInput = document.getElementById("mehrbedarf_expires");
       const hint = document.getElementById("mehrbedarf_hint");
       if (!form || !input || !hint) return;
 
@@ -3628,13 +3807,35 @@
         if (kind) hint.classList.add(kind);
       }
 
+      function toLocalInputValue(iso) {
+        if (!iso) return "";
+        const text = String(iso).trim();
+        if (!text) return "";
+        return text.length >= 16 ? text.slice(0, 16) : text;
+      }
+
+      function hintFor(data) {
+        if (data.kw == null || Number.isNaN(Number(data.kw))) {
+          return "Noch kein Mehrbedarf hinterlegt.";
+        }
+        let text = "Gespeichert: " + Number(data.kw).toLocaleString("de-DE", { maximumFractionDigits: 2 }) + " kW";
+        if (data.expires_at) {
+          const stamp = new Date(data.expires_at);
+          if (!Number.isNaN(stamp.getTime())) {
+            text += " · bis " + stamp.toLocaleString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
+          }
+        }
+        return text;
+      }
+
       fetch("/api/mehrbedarf-morgen", { credentials: "same-origin" })
         .then(function (response) { return response.json(); })
         .then(function (data) {
           if (!data || !data.ok) return;
           if (data.kw != null && !Number.isNaN(Number(data.kw))) {
             input.value = String(data.kw);
-            paintHint("Gespeichert: " + Number(data.kw).toLocaleString("de-DE", { maximumFractionDigits: 2 }) + " kW", "ok");
+            if (expiresInput) expiresInput.value = toLocalInputValue(data.expires_at);
+            paintHint(hintFor(data), Number(data.kw) > 0 ? "ok" : "");
           } else {
             paintHint("Noch kein Mehrbedarf hinterlegt.", "");
           }
@@ -3645,6 +3846,7 @@
         event.preventDefault();
         const body = new FormData();
         body.set("kw", input.value);
+        if (expiresInput) body.set("expires_at", expiresInput.value || "");
         paintHint("Wird gespeichert…", "");
         fetch("/api/mehrbedarf-morgen", {
           method: "POST",
@@ -3659,7 +3861,8 @@
               return;
             }
             if (data.kw != null) input.value = String(data.kw);
-            paintHint(data.message || "Gespeichert.", "ok");
+            if (expiresInput) expiresInput.value = toLocalInputValue(data.expires_at);
+            paintHint(data.message || hintFor(data), "ok");
           })
           .catch(function () {
             paintHint("Speichern fehlgeschlagen.", "err");
@@ -3698,7 +3901,11 @@
 
     setInterval(updateFlowValues, 5000);
     setInterval(updateEnergyStats24h, 5000);
-    setInterval(updateEnergyLineChart, 30000);
+    setInterval(function () {
+      // Historische Tage nicht per Live-Poll überschreiben.
+      if (energyLineSelectedDate && !energyLineIsToday) return;
+      updateEnergyLineChart();
+    }, 30000);
     setInterval(updateEnergyStats30d, 5000);
     setInterval(updateEnergyStatsYear, 5000);
     setInterval(updateMinerStatus, 5000);
@@ -3709,6 +3916,8 @@
       initFlowConfigUi();
       initMehrbedarfPanel();
       initRecoveryButtons();
+      bindEnergyLineNav();
+      bindEnergyLineLegend();
       loadCustomFlowMeta().then(() => updateFlowValues());
       updateFlowValues();
       updateEnergyStats24h();
