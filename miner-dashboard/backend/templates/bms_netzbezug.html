@@ -4,6 +4,7 @@
 
 {% block extra_head %}
 <style>
+  .switch-row { display:flex; flex-wrap:wrap; align-items:flex-start; gap:1.5rem 2.5rem; }
   .write-switch { display:inline-flex; align-items:center; gap:0.8rem; padding:0.35rem 0; cursor:pointer; user-select:none; margin-bottom:1.1rem; }
   .write-switch input { position:absolute; opacity:0; width:0; height:0; }
   .write-switch .track { position:relative; flex:0 0 auto; width:64px; height:32px; border-radius:16px; background:#555; transition:background 0.2s; }
@@ -48,14 +49,24 @@
   </div>
 
   <div class="panel" style="max-width: none;">
-    <label class="write-switch" for="real_mode">
-      <input id="real_mode" type="checkbox" role="switch" {% if settings.real_mode %}checked{% endif %}>
-      <span class="track"><span class="knob"></span></span>
-      <span>
-        <span class="switch-title">Ins Register schreiben</span><br>
-        <span id="real_mode_state" class="switch-state">{% if settings.real_mode %}Ein: Soll wird gehalten.{% else %}Aus: Normalbetrieb mit Elektriker-Werten.{% endif %}</span>
-      </span>
-    </label>
+    <div class="switch-row">
+      <label class="write-switch" for="real_mode">
+        <input id="real_mode" type="checkbox" role="switch" {% if settings.real_mode %}checked{% endif %}>
+        <span class="track"><span class="knob"></span></span>
+        <span>
+          <span class="switch-title">Ins Register schreiben</span><br>
+          <span id="real_mode_state" class="switch-state">{% if settings.real_mode %}Ein: Soll wird gehalten.{% else %}Aus: Normalbetrieb mit Elektriker-Werten.{% endif %}</span>
+        </span>
+      </label>
+      <label class="write-switch" for="linear_zukauf">
+        <input id="linear_zukauf" type="checkbox" role="switch" {% if settings.linear_zukauf %}checked{% endif %}>
+        <span class="track"><span class="knob"></span></span>
+        <span>
+          <span class="switch-title">Linearzukauf ab 10 Prozent</span><br>
+          <span id="linear_zukauf_state" class="switch-state">{% if settings.linear_zukauf %}Ein: Zukauf steigt bis zum Max. Netzbezug, bis der BMS-Ausschaltwert erreicht ist.{% else %}Aus: kein linearer Zukauf.{% endif %}</span>
+        </span>
+      </label>
+    </div>
     <form id="bms_form" class="field-grid">
       <div>
         <label class="form-label" for="inverter">Wechselrichtertyp</label>
@@ -312,6 +323,10 @@
       writeSwitch.checked = data.settings.real_mode;
       paintSwitch();
     }
+    if (data.settings && typeof data.settings.linear_zukauf === "boolean" && linearSwitch.checked !== data.settings.linear_zukauf) {
+      linearSwitch.checked = data.settings.linear_zukauf;
+      paintLinear();
+    }
     const write = document.getElementById("write_text");
     write.textContent = plan.write_text || "";
     write.style.color = plan.command_sent ? "var(--accent)" : "var(--muted)";
@@ -399,6 +414,24 @@
         if (input && value != null) input.value = value;
       });
     });
+  });
+
+  const linearSwitch = document.getElementById("linear_zukauf");
+  const linearState = document.getElementById("linear_zukauf_state");
+  function paintLinear() {
+    linearState.textContent = linearSwitch.checked
+      ? "Ein: Zukauf steigt bis zum Max. Netzbezug, bis der BMS-Ausschaltwert erreicht ist."
+      : "Aus: kein linearer Zukauf.";
+  }
+  linearSwitch.addEventListener("change", async function () {
+    paintLinear();
+    const body = new FormData();
+    body.set("linear_zukauf", linearSwitch.checked ? "1" : "0");
+    const data = await post(body, hint);
+    if (!data.ok) {
+      linearSwitch.checked = !linearSwitch.checked;
+      paintLinear();
+    }
   });
 
   const writeSwitch = document.getElementById("real_mode");

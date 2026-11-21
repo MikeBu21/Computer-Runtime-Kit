@@ -1117,22 +1117,20 @@ class SocImportRampTests(unittest.TestCase):
             40,
         )
 
-    def test_ramp_never_raises_import_at_any_soc(self):
-        """Fall unter Sockel+10 erzeugt keine lineare Leistung mehr, auch nicht bis 12 kW."""
-        for soc, sockel, watts in (
-            (30, 20, 12000),
-            (29, 20, 12000),
-            (25, 20, 12000),
-            (22, 20, 8000),
-            (22, 20, 3000),
-            (40, 30, 12000),
-            (35, 30, 12000),
-            (45, 35, 8000),
-            (39, 30, 8000),
-            (21, 20, 12000),
-        ):
-            self._enter_falling(sockel, watts)
-            self.assertIsNone(bms_seite.netzbezug_soc_rampe_kw(soc, sockel, watts))
+    def test_ramp_scales_with_the_saved_peak_inside_the_window(self):
+        """10 % am oberen Rand, 50 % in der Mitte, nichts auf oder unter dem Sockel."""
+        self.assertEqual(bms_seite.netzbezug_soc_rampe_kw(30, 20, 12000), 1.2)
+        self.assertEqual(bms_seite.netzbezug_soc_rampe_kw(25, 20, 12000), 6.0)
+        self.assertEqual(bms_seite.netzbezug_soc_rampe_kw(21, 20, 12000), 10.8)
+        self.assertEqual(bms_seite.netzbezug_soc_rampe_kw(22, 20, 8000), 6.4)
+        self.assertEqual(bms_seite.netzbezug_soc_rampe_kw(22, 20, 3000), 2.4)
+        self.assertEqual(bms_seite.netzbezug_soc_rampe_kw(40, 30, 12000), 1.2)
+        self.assertEqual(bms_seite.netzbezug_soc_rampe_kw(35, 30, 12000), 6.0)
+        self.assertEqual(bms_seite.netzbezug_soc_rampe_kw(45, 35, 8000), 0.8)
+        self.assertIsNone(bms_seite.netzbezug_soc_rampe_kw(20, 20, 12000))
+        self.assertIsNone(bms_seite.netzbezug_soc_rampe_kw(19, 20, 12000))
+        self.assertIsNone(bms_seite.netzbezug_soc_rampe_kw(31, 20, 12000))
+        self.assertIsNone(bms_seite.netzbezug_soc_rampe_kw(46, 35, 8000))
 
     def test_planner_stays_the_only_setpoint_inside_the_old_ramp_window(self):
         morning = bms_seite.datetime(2026, 11, 14, 10, 0, tzinfo=bms_seite.TZ)
@@ -1224,6 +1222,65 @@ class SocImportRampTests(unittest.TestCase):
         self.assertTrue(started["real_mode"])
         self.assertTrue(started["planning_hold"])
         self.assertEqual(started["target_grid_kw"], 1.5)
+
+    def _remember(self, settings):
+        def remember(updates):
+            merged = dict(settings)
+            merged.update(updates)
+            settings.update(merged)
+            return merged
+
+        return remember
+
+    def test_button_off_does_not_buy(self):
+        settings = self._settings_sockel(12000, sockel=20, target_kw=0.4)
+        settings["linear_zukauf"] = False
+        settings["linear_hold"] = False
+        with mock.patch.object(bms_seite, "save_settings") as save:
+            stayed = bms_seite.apply_linear_zukauf(settings, {"soc_percent": 25})
+        save.assert_not_called()
+        self.assertEqual(stayed["target_grid_kw"], 0.4)
+
+    def test_button_on_buys_half_peak_at_the_midpoint(self):
+        settings = self._settings_sockel(12000, sockel=20, target_kw=0.4)
+        settings["linear_zukauf"] = True
+        settings["linear_hold"] = False
+        with mock.patch.object(bms_seite, "save_settings", side_effect=self._remember(settings)) as save:
+            bought = bms_seite.apply_linear_zukauf(settings, {"soc_percent": 25})
+        save.assert_called_once_with({"real_mode": True, "target_grid_kw": 6.0, "linear_hold": True})
+        self.assertEqual(bought["target_grid_kw"], 6.0)
+
+    def test_button_on_starts_at_ten_percent_of_peak(self):
+        settings = self._settings_sockel(12000, sockel=20, target_kw=0.4)
+        settings["linear_zukauf"] = True
+        with mock.patch.object(bms_seite, "save_settings", side_effect=self._remember(settings)) as save:
+            bought = bms_seite.apply_linear_zukauf(settings, {"soc_percent": 30})
+        save.assert_called_once_with({"real_mode": True, "target_grid_kw": 1.2, "linear_hold": True})
+        self.assertEqual(bought["target_grid_kw"], 1.2)
+
+    def test_at_or_below_floor_linear_does_not_write_a_setpoint(self):
+        settings = self._settings_sockel(12000, sockel=20, target_kw=6.0)
+        settings["linear_zukauf"] = True
+        settings["linear_hold"] = True
+        settings["real_mode"] = True
+        with mock.patch.object(bms_seite, "save_settings", side_effect=self._remember(settings)) as save:
+            stopped = bms_seite.apply_linear_zukauf(settings, {"soc_percent": 20})
+        save.assert_called_once_with({"linear_hold": False})
+        self.assertNotIn("target_grid_kw", save.call_args.args[0])
+        self.assertTrue(stopped["real_mode"])
+        self.assertNotEqual(stopped["target_grid_kw"], 12.0)
+
+    def test_soc_gate_still_stops_when_linear_button_is_on(self):
+        settings = self._settings_sockel(12000, sockel=20, target_kw=6.0)
+        settings["linear_zukauf"] = True
+        settings["linear_hold"] = True
+        settings["real_mode"] = True
+        settings["soc_stop"] = False
+        with mock.patch.object(bms_seite, "save_settings", side_effect=self._remember(settings)) as save:
+            stopped = bms_seite.apply_soc_gate(settings, {"soc_percent": 19})
+        save.assert_called_once_with({"real_mode": False, "soc_stop": True})
+        self.assertFalse(stopped["real_mode"])
+        self.assertTrue(stopped["soc_stop"])
 
 
 class ReleaseLoopAndTrackerTests(unittest.TestCase):
@@ -1357,6 +1414,7 @@ class ReleaseLoopAndTrackerTests(unittest.TestCase):
         data["planning_hold"] = True
         data["community_hold"] = True
         data["exchange_hold"] = True
+        data["linear_hold"] = True
         data["modbus_host"] = ""
         with mock.patch.object(bms_seite, "load_settings", return_value=data), mock.patch.object(
             bms_seite, "_persist_settings"
@@ -1367,6 +1425,7 @@ class ReleaseLoopAndTrackerTests(unittest.TestCase):
         self.assertFalse(saved["planning_hold"])
         self.assertFalse(saved["community_hold"])
         self.assertFalse(saved["exchange_hold"])
+        self.assertFalse(saved["linear_hold"])
 
     def test_drift_does_not_read_registers_every_tick(self):
         bms_seite._release_cooldown_until = 0.0
@@ -1398,6 +1457,7 @@ class ReleaseLoopAndTrackerTests(unittest.TestCase):
                 "planning_hold": False,
                 "community_hold": False,
                 "exchange_hold": False,
+                "linear_hold": False,
             }
         )
         self.assertFalse(result["real_mode"])

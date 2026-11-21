@@ -402,6 +402,13 @@ def _flag_pref(settings: Optional[Dict[str, Any]], key: str, default: bool) -> b
         return default
 
 
+def _flag_on(raw: Any) -> bool:
+    """Schalter aus Formular oder JSON. Die Zeichenkette „0“ bleibt aus."""
+    if isinstance(raw, str):
+        return raw.strip().lower() in ("1", "true", "on", "yes")
+    return bool(raw)
+
+
 def _ui_modbus_defaults(inverter_id: str) -> Dict[str, int]:
     """Vorschläge für Port/Unit im Formular. Deye läuft über Solarman (8899), sonst Modbus TCP 502."""
     family = _family(inverter_id)
@@ -481,6 +488,8 @@ def default_settings() -> Dict[str, Any]:
         "planning_hold": False,
         "community_hold": False,
         "exchange_hold": False,
+        "linear_zukauf": False,
+        "linear_hold": False,
         "install_captured": False,
         "install_captured_serial": 0,
         "program_soc": [],
@@ -2039,6 +2048,8 @@ def _persist_settings(data: Dict[str, Any]) -> None:
         "planning_hold": bool(data.get("planning_hold")),
         "community_hold": bool(data.get("community_hold")),
         "exchange_hold": bool(data.get("exchange_hold")),
+        "linear_zukauf": bool(data.get("linear_zukauf")),
+        "linear_hold": bool(data.get("linear_hold")),
         "install_captured": bool(data.get("install_captured")),
         "install_captured_serial": int(data.get("install_captured_serial") or 0),
         "program_soc": list(data.get("program_soc") or []),
@@ -2171,6 +2182,8 @@ def load_settings() -> Dict[str, Any]:
     data["planning_hold"] = bool(data.get("planning_hold"))
     data["community_hold"] = bool(data.get("community_hold"))
     data["exchange_hold"] = bool(data.get("exchange_hold"))
+    data["linear_zukauf"] = _flag_on(data.get("linear_zukauf"))
+    data["linear_hold"] = bool(data.get("linear_hold"))
     data["install_captured"] = bool(data.get("install_captured"))
     try:
         data["install_captured_serial"] = int(data.get("install_captured_serial") or 0)
@@ -2268,12 +2281,17 @@ def save_settings(updates: Dict[str, Any]) -> Dict[str, Any]:
         data["community_hold"] = bool(updates["community_hold"])
     if "exchange_hold" in updates:
         data["exchange_hold"] = bool(updates["exchange_hold"])
+    if "linear_zukauf" in updates:
+        data["linear_zukauf"] = _flag_on(updates.get("linear_zukauf"))
+    if "linear_hold" in updates:
+        data["linear_hold"] = bool(updates["linear_hold"])
     if data.get("manual_off"):
         # Manuell aus: die Planung darf den Schreibmodus nicht wieder einschalten.
         data["real_mode"] = False
         data["planning_hold"] = False
         data["community_hold"] = False
         data["exchange_hold"] = False
+        data["linear_hold"] = False
     if "idle_grid_w" in updates:
         data["idle_grid_w"] = _idle_grid_w({"idle_grid_w": updates["idle_grid_w"]})
     if "idle_work_mode" in updates:
@@ -4599,7 +4617,7 @@ def _bms_is_writing(settings: Dict[str, Any]) -> bool:
 
 
 def _auto_hold_blocked(settings: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Manuell aus: Planung, Gemeinschaft und Börse schalten den Schreibmodus nicht wieder ein."""
+    """Manuell aus: Planung, Gemeinschaft, Börse und Linearzukauf schalten nicht wieder ein."""
     if not settings.get("manual_off"):
         return None
     if (
@@ -4607,6 +4625,7 @@ def _auto_hold_blocked(settings: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         or settings.get("planning_hold")
         or settings.get("community_hold")
         or settings.get("exchange_hold")
+        or settings.get("linear_hold")
     ):
         return save_settings(
             {
@@ -4614,6 +4633,7 @@ def _auto_hold_blocked(settings: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                 "planning_hold": False,
                 "community_hold": False,
                 "exchange_hold": False,
+                "linear_hold": False,
             }
         )
     return settings
@@ -4796,16 +4816,18 @@ def apply_exchange_hold(settings: Optional[Dict[str, Any]] = None) -> Dict[str, 
     return save_settings({"real_mode": True, "target_grid_kw": kw, "exchange_hold": True})
 
 
-# Die SoC-Fall-Rampe (linear bis zum maximalen Netzbezug, typisch 12 kW) ist entfernt.
-# Der Zukauf ist allein der Planungswert aus dem Grundverbrauchsrechner.
-# Schwelle bleibt nur als Bezeichnung Sockel+10, sie steuert keine Leistung mehr.
+# Linearer Zukauf nur mit gespeichertem Schalter linear_zukauf.
+# Fenster: zehn Prozentpunkte über dem BMS-Sockel bis knapp darüber.
+# Auf oder unter dem Sockel bleibt der bestehende Sockel-Stopp.
 SOC_RAMP_MARGIN = 10
 # Nur Fallback, wenn kein Elektriker-Sockel (program_soc) lesbar ist.
 SOC_RAMP_DEFAULT_SOCKEL = 20
+# Am oberen Rand des Fensters, bevor die Gerade darüber liegt.
+SOC_RAMP_START_FRACTION = 0.1
 
 
 def reset_netzbezug_ramp_state() -> None:
-    """Früherer Rampen-Zustand. Die Rampe rechnet keine Leistung mehr."""
+    """Kein Prozesszustand. An/Aus steht in den Einstellungen."""
     return None
 
 
@@ -4843,13 +4865,87 @@ def netzbezug_soc_rampe_kw(
     sockel_soc: Optional[float],
     max_import_w: float,
 ) -> Optional[float]:
-    """Keine SoC-Rampe mehr. Früher linear bis zum maximalen Netzbezug, typisch 12 kW.
+    """Linearer Zukauf im Fenster Sockel+10 bis über dem Sockel, in kW.
 
-    Der Zukauf kommt allein aus dem Grundverbrauchsrechner über target_grid_kw.
-    Diese Funktion schreibt nichts.
+    Spitzenleistung ist der gespeicherte Max. Netzbezug, bei jeder Steuerung ein
+    anderer Wert. Am oberen Rand 10 % davon, auf halbem Weg 50 %, am Sockel 100 %.
+    Auf oder unter dem Sockel None: dort schreibt diese Rechnung nichts.
     """
-    del soc, sockel_soc, max_import_w
-    return None
+    if soc is None:
+        return None
+    try:
+        soc_f = float(soc)
+        peak_w = float(max_import_w)
+    except (TypeError, ValueError):
+        return None
+    if peak_w <= 0:
+        return None
+    floor = _netzbezug_sockel_soc(sockel_soc)
+    upper = floor + SOC_RAMP_MARGIN
+    if soc_f <= floor or soc_f > upper:
+        return None
+    fraction = (upper - soc_f) / float(SOC_RAMP_MARGIN)
+    fraction = min(1.0, max(SOC_RAMP_START_FRACTION, fraction))
+    return round(peak_w * fraction / 1000.0, 2)
+
+
+def _other_hold_active(settings: Dict[str, Any]) -> bool:
+    return bool(
+        settings.get("planning_hold")
+        or settings.get("community_hold")
+        or settings.get("exchange_hold")
+    )
+
+
+def apply_linear_zukauf(
+    settings: Optional[Dict[str, Any]] = None,
+    live: Optional[Dict[str, Any]] = None,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Schalter „Linearzukauf ab 10 Prozent“: Soll nur im Fenster über dem Sockel.
+
+    Aus, oder Ladestand über dem Fenster: kein linearer Zukauf. Lief er vorher,
+    wird der Halt gelöst. Auf oder unter dem Sockel schreibt diese Funktion
+    keinen Soll und schaltet den Schreibmodus nicht wieder ein. Ausschalten
+    und Elektrikerwerte macht der bestehende Sockel-Stopp.
+    """
+    if settings is None:
+        settings = load_settings()
+    blocked = _auto_hold_blocked(settings)
+    if blocked is not None:
+        return blocked
+    enabled = _flag_on(settings.get("linear_zukauf"))
+    holding = bool(settings.get("linear_hold"))
+    if not enabled:
+        if not holding:
+            return settings
+        updates: Dict[str, Any] = {"linear_hold": False}
+        if not _other_hold_active(settings):
+            updates["real_mode"] = False
+        return save_settings(updates)
+    if _soc_limit_blocks(settings, live, now):
+        if holding:
+            return save_settings({"linear_hold": False})
+        return settings
+    floor = _electrician_soc_limit(settings, now)
+    soc = _live_soc(live)
+    if floor is None or soc is None:
+        return settings
+    kw = netzbezug_soc_rampe_kw(soc, floor, _gespeicherter_max_import_w(settings))
+    if kw is None:
+        if not holding:
+            return settings
+        updates = {"linear_hold": False}
+        if not _other_hold_active(settings):
+            updates["real_mode"] = False
+        return save_settings(updates)
+    if (
+        holding
+        and settings.get("real_mode")
+        and abs(float(settings.get("target_grid_kw") or 0) - kw) < 0.01
+    ):
+        return settings
+    return save_settings({"real_mode": True, "target_grid_kw": kw, "linear_hold": True})
 
 
 def soll_netzbezug_kw(
@@ -4862,8 +4958,8 @@ def soll_netzbezug_kw(
 
     Ohne „Planung, keine Netzspitzen“ und ohne aktives Schreiben: kein Zukauf (0).
     Mit Planung oder wenn real_mode / ein Halt schon läuft: der gespeicherte
-    target_grid_kw (Planung, Gemeinschaft, Börse oder manuell).
-    Die SoC-Fall-Rampe bis zum maximalen Netzbezug ist entfernt.
+    target_grid_kw. Den linearen Zukauf setzt apply_linear_zukauf vorher dort hinein,
+    und nur solange der Schalter an ist und der Ladestand über dem Sockel liegt.
     Das Modbus-Schreiben bleibt an real_mode („Ins Register schreiben“) gebunden.
     """
     del live, now
@@ -5123,9 +5219,10 @@ def _ensure_writer() -> None:
                 # vorher aus war. Ausgeschalteter Schalter „keine Netzspitzen“ gibt frei.
                 if not settings.get("community_hold") and not settings.get("exchange_hold"):
                     settings = apply_planning_hold(settings, live)
+                settings = apply_linear_zukauf(settings, live)
                 if settings.get("real_mode"):
                     reapply_dauerzukauf_test()
-                # Planung an: nur der Planungswert. Keine SoC-Rampe bis zum Netzmaximum.
+                # Linearer Zukauf steht nur bei angeschaltetem Schalter in target_grid_kw.
                 target_kw = soll_netzbezug_kw(settings, live, _planning_enabled())
                 plan = simulate(
                     live.get("grid_kw"),

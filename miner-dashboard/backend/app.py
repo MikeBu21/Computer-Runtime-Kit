@@ -657,6 +657,8 @@ def api_bms_netzbezug_settings():
             updates["exchange_hold"] = False
     if "target_grid_kw" in form:
         updates["target_grid_kw"] = form.get("target_grid_kw") or 0
+    if "linear_zukauf" in form:
+        updates["linear_zukauf"] = form.get("linear_zukauf") in ("1", "true", "on")
     for key in (
         "idle_grid_w",
         "idle_work_mode",
