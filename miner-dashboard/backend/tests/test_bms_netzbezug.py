@@ -1229,6 +1229,11 @@ class SocImportRampTests(unittest.TestCase):
 class ReleaseLoopAndTrackerTests(unittest.TestCase):
     def tearDown(self):
         bms_seite._release_cooldown_until = 0.0
+        bms_seite._release_pause_until = 0.0
+        bms_seite._release_attempts = 0
+        bms_seite._release_sent = False
+        bms_seite._needs_release = False
+        bms_seite._soc_floor_released = False
         bms_seite._last_drift_check = 0.0
         bms_seite._last_drift_release = 0.0
         bms_seite._clear_release_block()
@@ -1244,15 +1249,22 @@ class ReleaseLoopAndTrackerTests(unittest.TestCase):
             self.assertFalse(bms_seite._queue_release_if_drift(settings))
         self.assertFalse(settings["release_pending"])
 
-    def test_three_failures_lock_an_unchanged_release(self):
+    def test_three_failures_pause_then_retry_until_verified(self):
         bms_seite._clear_release_block()
-        bms_seite._release_attempts = 2
+        bms_seite._release_attempts = 0
         bms_seite._release_sent = False
         bms_seite._needs_release = True
-        bms_seite._last_drift_check = 0.0
+        bms_seite._release_pause_until = 0.0
+        bms_seite._soc_floor_released = False
+        clock = {"now": 1000.0}
+        calls = {"n": 0}
         settings = {
             "real_mode": False,
             "release_pending": True,
+            "soc_stop": True,
+            "program_soc": [13] * 6,
+            "install_grid_charge": 0,
+            "install_grid_charge_a": 0,
             "inverter": "deye_hybrid",
             "modbus_host": "192.168.1.176",
             "modbus_port": 8899,
@@ -1263,20 +1275,58 @@ class ReleaseLoopAndTrackerTests(unittest.TestCase):
             "idle_work_mode": 2,
             "idle_energy_pattern": 1,
         }
-        regs = {"solar_sell": "on", "peak_w": "12880"}
-        with mock.patch.object(bms_seite, "resolve_ha_link", return_value=None), mock.patch.object(
-            bms_seite, "_send_verified", return_value={"command_sent": False, "write_text": "fehlgeschlagen"}
-        ), mock.patch.object(bms_seite, "_read_peak_flags", return_value=1), mock.patch.object(
-            bms_seite, "read_register_state", return_value=regs
-        ), mock.patch.object(bms_seite, "_persist_release_flag"):
-            result = bms_seite.apply_write(settings, {"target_grid_kw": 0})
-        self.assertIn("Freigabe abgebrochen", result.get("write_text") or "")
-        self.assertFalse(settings["release_pending"])
-        self.assertTrue(bms_seite._release_loop_locked(settings, regs))
-        bms_seite._last_drift_check = 0.0
-        with mock.patch.object(bms_seite, "read_register_state", return_value=regs):
-            self.assertFalse(bms_seite._queue_release_if_drift(settings))
-        self.assertFalse(settings["release_pending"])
+        live = {"soc_percent": 13}
+
+        def send(_settings, _serial, _writes, _raw):
+            calls["n"] += 1
+            if calls["n"] < 6:
+                return {"command_sent": False, "write_text": "fehlgeschlagen"}
+            return {"command_sent": True, "write_text": "Geschrieben und zurückgelesen: ok."}
+
+        with mock.patch.object(bms_seite.time, "monotonic", side_effect=lambda: clock["now"]), mock.patch.object(
+            bms_seite, "resolve_ha_link", return_value=None
+        ), mock.patch.object(bms_seite, "_send_verified", side_effect=send), mock.patch.object(
+            bms_seite, "_read_peak_flags", return_value=1
+        ), mock.patch.object(bms_seite, "_sync_ha_release", return_value=[]), mock.patch.object(
+            bms_seite, "_persist_release_flag"
+        ):
+            for _ in range(3):
+                failed = bms_seite.apply_write(settings, {"target_grid_kw": 0}, live)
+            self.assertIn("Drei Versuche ohne Bestätigung", failed.get("write_text") or "")
+            self.assertTrue(settings["release_pending"])
+            self.assertEqual(bms_seite._release_attempts, 0)
+            self.assertEqual(bms_seite._release_pause_until, clock["now"] + bms_seite.SAMPLE_GAP_SEC)
+            self.assertEqual(calls["n"], 3)
+            paused = bms_seite.apply_write(settings, {"target_grid_kw": 0}, live)
+            self.assertIn("bestehenden Takt", paused.get("write_text") or "")
+            self.assertEqual(calls["n"], 3)
+            clock["now"] = bms_seite._release_pause_until
+            bms_seite.apply_write(settings, {"target_grid_kw": 0}, live)
+            bms_seite.apply_write(settings, {"target_grid_kw": 0}, live)
+            self.assertEqual(bms_seite._release_attempts, 2)
+            self.assertEqual(calls["n"], 5)
+            verified = bms_seite.apply_write(settings, {"target_grid_kw": 0}, live)
+            self.assertTrue(verified.get("command_sent"))
+            self.assertFalse(settings["release_pending"])
+            self.assertTrue(bms_seite._soc_floor_released)
+            self.assertEqual(calls["n"], 6)
+            quiet = bms_seite.apply_write(settings, {"target_grid_kw": 0}, live)
+            self.assertIn("nichts geschrieben", quiet.get("write_text") or "")
+            self.assertEqual(calls["n"], 6)
+
+        data = bms_seite.default_settings()
+        data["real_mode"] = True
+        data["soc_stop"] = True
+        data["release_pending"] = False
+        data["program_soc"] = [13] * 6
+        with mock.patch.object(bms_seite, "load_settings", return_value=data), mock.patch.object(
+            bms_seite, "_persist_settings"
+        ), mock.patch.object(bms_seite, "_apply_ha_link", side_effect=lambda item: item), mock.patch.object(
+            bms_seite, "_live_soc", return_value=13.0
+        ):
+            saved = bms_seite.save_settings({"real_mode": False})
+        self.assertFalse(saved["real_mode"])
+        self.assertFalse(saved["release_pending"])
 
     def test_changed_setpoint_lets_drift_queue_again(self):
         bms_seite._clear_release_block()

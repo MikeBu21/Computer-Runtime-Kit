@@ -275,11 +275,17 @@ _tou_hold_applied = False
 _tou_soc_applied: Optional[tuple] = None
 _release_sent = False
 _release_attempts = 0
+# Nach drei Fehlversuchen liegt die nächste Runde einen Schreib-Takt später. Kein neues Intervall.
+_release_pause_until = 0.0
+# Sockmin-Rückschreiben ist bestätigt. Solange der Ladestand auf oder unter dem Sockmin bleibt,
+# startet kein zweites Rückschreiben und eine spätere Zwangsladung bleibt stehen.
+_soc_floor_released = False
 # Nutzer hat „Ins Register schreiben“ bei ausgeschalteter Netzspitzen-Planung selbst eingeschaltet.
 # Der Planungs-Halt darf diesen Schalter danach nicht wieder ausmachen.
 _manual_write_hold = False
 RELEASE_ATTEMPT_LIMIT = 3
-# Nach dem Abbruch nicht sofort wieder anstoßen. Sonst schreibt der Drift-Check endlos.
+# Früherer Dauerstopp nach drei Fehlversuchen. Die Freigabe nutzt ihn nicht mehr:
+# nach der Pause im Schreib-Takt beginnt eine neue Runde, bis die Prüfung stimmt.
 _release_cooldown_until = 0.0
 RELEASE_COOLDOWN_SEC = 30 * 60.0
 # Einmaliger Elektriker-Leseversuch je Prozess. Erfolg steht in den Einstellungen.
@@ -2182,8 +2188,22 @@ def load_settings() -> Dict[str, Any]:
     return _apply_ha_link(data)
 
 
+def _floor_release_holds(settings: Optional[Dict[str, Any]]) -> bool:
+    """True, solange das bestätigte Sockmin-Rückschreiben nicht noch einmal schreiben soll.
+
+    Fehlender Ladestand hält die Sperre. Erst ein bekannter Stand darüber gibt frei.
+    """
+    if not _soc_floor_released:
+        return False
+    soc = _live_soc(None)
+    if soc is None:
+        return True
+    return _soc_limit_blocks(settings, {"soc_percent": soc})
+
+
 def save_settings(updates: Dict[str, Any]) -> Dict[str, Any]:
     global _release_sent, _release_attempts, _release_cooldown_until, _manual_write_hold
+    global _release_pause_until, _soc_floor_released, _needs_release
     data = load_settings()
     if "inverter" in updates and updates["inverter"] in INVERTERS:
         data["inverter"] = updates["inverter"]
@@ -2192,11 +2212,17 @@ def save_settings(updates: Dict[str, Any]) -> Dict[str, Any]:
     if "real_mode" in updates:
         wanted = bool(updates["real_mode"])
         if data["real_mode"] and not wanted:
-            data["release_pending"] = True
-            _release_sent = False
-            _release_attempts = 0
-            _release_cooldown_until = 0.0
-            _clear_release_block()
+            if _floor_release_holds(data):
+                # Dieses Sockmin ist schon bestätigt zurückgeschrieben. Nicht noch einmal.
+                _needs_release = False
+            else:
+                _soc_floor_released = False
+                data["release_pending"] = True
+                _release_sent = False
+                _release_attempts = 0
+                _release_pause_until = 0.0
+                _release_cooldown_until = 0.0
+                _clear_release_block()
         if wanted and not data["real_mode"] and data.get("soc_stop"):
             # Nur über dem einheitlichen Sock% freigeben. Fehlende oder
             # widersprüchliche Sock%-Werte halten den Stopp und verhindern Schreiben.
@@ -3969,7 +3995,15 @@ def apply_soc_gate(
     die Programm-Sock%-Werte, bleibt Schreiben aus. Ein kurz fehlender Ladestand
     schaltet das Häkchen nicht aus. release_pending hält den Wiederanlauf nicht fest,
     sobald der Ladestand über der Grenze liegt.
+    Das Rückschreiben der Elektrikerwerte läuft einmal, mit Prüfrunden zu drei
+    Versuchen, bis die Register stimmen. Danach wird bei gleichem Sockmin nicht
+    noch einmal geschrieben.
     """
+    global _soc_floor_released
+    floor = _electrician_soc_limit(settings, now)
+    soc = _live_soc(live)
+    if floor is not None and soc is not None and soc > float(floor):
+        _soc_floor_released = False
     sock = sock_soc_status(settings)
     if not sock.get("ok"):
         if settings.get("real_mode") or not settings.get("soc_stop"):
@@ -4261,6 +4295,7 @@ def apply_write(
     live: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     global _needs_release, _tou_hold_applied, _tou_soc_applied, _release_sent, _release_attempts
+    global _release_pause_until, _soc_floor_released
     sock = sock_soc_status(settings)
     if settings.get("real_mode") and not sock.get("ok"):
         settings = save_settings({"real_mode": False, "soc_stop": True})
@@ -4280,10 +4315,12 @@ def apply_write(
     if not settings.get("real_mode"):
         # BMS aus: nichts halten, nur die offene Freigabe zu Ende prüfen.
         # release_pending nicht bei jedem Tick zurücksetzen: das hat die Freigabe endlos neu geschrieben.
-        # Nach erfolgreicher Verifikation kein Drift-Abgleich mehr. Drei Versuche liegen
-        # im bestehenden Schreib-Takt, nicht in einer zusätzlichen Wartezeit.
+        # Nach erfolgreicher Verifikation kein weiteres Schreiben. Drei Versuche je Runde,
+        # danach eine Pause von einem Schreib-Takt und eine neue Runde, bis die Register stimmen.
         if not _release_due(settings):
             return _write_result(False, "Aus. Es wird nichts geschrieben.")
+        if time.monotonic() < _release_pause_until:
+            return _write_result(False, "Aus. Nächste Prüfrunde wartet den bestehenden Takt ab.")
         if _release_sent:
             _needs_release = False
             _clear_release_pending(settings)
@@ -4330,20 +4367,22 @@ def apply_write(
             if verified:
                 _release_sent = True
                 _release_attempts = 0
+                _release_pause_until = 0.0
                 _needs_release = False
+                if settings.get("soc_stop") or _soc_limit_blocks(settings, live):
+                    _soc_floor_released = True
                 _clear_release_block()
                 _clear_release_pending(settings)
             else:
                 _release_attempts += 1
                 _release_sent = False
                 if _release_attempts >= RELEASE_ATTEMPT_LIMIT:
-                    _remember_release_block(settings)
-                    _start_release_cooldown()
-                    _clear_release_pending(settings)
+                    _release_attempts = 0
+                    _release_pause_until = time.monotonic() + SAMPLE_GAP_SEC
                     result = _write_result(
                         False,
                         (result.get("write_text") or "")
-                        + " Freigabe abgebrochen, es wird nichts mehr geschrieben.",
+                        + " Drei Versuche ohne Bestätigung. Nächste Runde folgt im bestehenden Takt.",
                         result.get("raw"),
                     )
             return result
