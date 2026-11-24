@@ -119,6 +119,33 @@
     font-size: 0.92rem;
   }
   .gvr-note { color: var(--muted); font-size: 0.88rem; margin: 0.35rem 0; }
+  .gvr-rest-sliders { display: flex; flex-direction: column; gap: 0.7rem; margin-top: 0.9rem; }
+  .gvr-rest-sliders label {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 0.15rem 0.6rem;
+    color: var(--muted);
+    font-size: 0.82rem;
+  }
+  .gvr-rest-sliders input[type="range"] { grid-column: 1 / -1; width: 100%; accent-color: #00e676; }
+  .gvr-rest-sliders output { color: #fff; font-variant-numeric: tabular-nums; }
+  .gvr-purchase-min {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem 0.7rem;
+    align-items: center;
+    margin-top: 0.85rem;
+    color: var(--muted);
+    font-size: 0.82rem;
+  }
+  .gvr-purchase-min input[type="number"] {
+    width: 4.5rem;
+    background: rgba(255,255,255,0.06);
+    color: #fff;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.25rem 0.4rem;
+  }
   .gvr-chart-wrap { height: 340px; }
   .gvr-chart-wrap.short { height: 240px; }
   .gvr-cards.stats { grid-template-columns: repeat(3, 1fr); }
@@ -205,12 +232,36 @@
     <p class="gvr-kicker">Empfohlener Zukauf</p>
     <p class="gvr-value" id="gvr_weekly">— <span>kW</span></p>
     <p class="gvr-sub" id="gvr_weekly_sub">Dauerzukauf aus Last, PV-Prognose und Speicher — Anzeige immer aktuell.</p>
+    <label class="gvr-purchase-min">Mindest-SoC für den Zukauf
+      <input type="number" id="gvr_purchase_min_soc" min="0" max="90" step="1" value="35"> %
+      <button type="button" id="gvr_purchase_min_soc_save">Speichern</button>
+    </label>
+    <p class="gvr-note" id="gvr_purchase_min_soc_state">Gilt nur für diese Rechnung, nicht für den Steuerungsalgorithmus.</p>
     <p class="gvr-lamp" id="gvr_lamp" hidden><i class="gvr-lamp-dot" aria-hidden="true"></i><span>Nacht ist gedeckt</span></p>
   </div>
   <div class="gvr-hero-side">
     <p class="gvr-kicker">Rest der letzten Tage</p>
     <p class="gvr-value gvr-value-side" id="gvr_rest">— <span>kW</span></p>
-    <p class="gvr-sub">Last minus PV morgen mal 80 Prozent minus PV übermorgen mal 60 Prozent minus Speicherentlastung, geteilt durch 24, mindestens 0. Nur Anzeige, nicht ins BMS.</p>
+    <p class="gvr-sub">Vorwärtsrechnung nur für diese Karte. Die Regler ändern den empfohlenen Zukauf nicht. Unter der Bandoberkante hält die Gegenregelung den Wert exakt an der Grenze, Socmin bleibt unberührt.</p>
+    <div class="gvr-rest-sliders">
+      <label>Speicher-Sollwert
+        <output id="gvr_rest_soc_out">45 %</output>
+        <input type="range" id="gvr_rest_soc" min="30" max="95" step="1" value="45">
+      </label>
+      <label>BV-Risiko morgen
+        <output id="gvr_rest_tom_out">0 %</output>
+        <input type="range" id="gvr_rest_tom" min="0" max="100" step="1" value="0">
+      </label>
+      <label>BV-Risiko übermorgen
+        <output id="gvr_rest_after_out">0 %</output>
+        <input type="range" id="gvr_rest_after" min="0" max="100" step="1" value="0">
+      </label>
+      <label>Gesamtrisiko
+        <output id="gvr_rest_total_out">100 %</output>
+        <input type="range" id="gvr_rest_total" min="0" max="200" step="5" value="100">
+      </label>
+    </div>
+    <p class="gvr-note" id="gvr_rest_save_state"></p>
     <div class="gvr-meta" id="gvr_meta"></div>
   </div>
   <div class="gvr-safety-stack">
@@ -413,6 +464,13 @@
     }
     const safety = data.safety || {};
     const targets = data.targets || {};
+    const purchaseMin = document.getElementById("gvr_purchase_min_soc");
+    if (purchaseMin && document.activeElement !== purchaseMin) {
+      const own = targets.purchase_min_soc_percent;
+      const used = (data.recommended_parts || {}).min_soc_percent;
+      const shown = own != null ? own : used;
+      if (shown != null && !Number.isNaN(Number(shown))) purchaseMin.value = String(shown);
+    }
     const safetySub = document.getElementById("gvr_safety_sub");
     const deviationSub = document.getElementById("gvr_deviation_sub");
     const safetyBits = [];
@@ -469,6 +527,10 @@
     } else if (divisorEl && safety.divisor != null) {
       divisorEl.value = String(safety.divisor);
     }
+    setRestSlider("gvr_rest_soc", "gvr_rest_soc_out", targets.rest_soc_setpoint_percent, " %");
+    setRestSlider("gvr_rest_tom", "gvr_rest_tom_out", targets.rest_bv_risk_tomorrow_percent, " %");
+    setRestSlider("gvr_rest_after", "gvr_rest_after_out", targets.rest_bv_risk_day_after_percent, " %");
+    setRestSlider("gvr_rest_total", "gvr_rest_total_out", targets.rest_total_risk_percent, " %");
     const modeFromParts = (data.recommended_parts || {}).pv_estimate_mode;
     const mode = String(targets.pv_estimate_mode || modeFromParts || "pv").toLowerCase() === "pattern"
       ? "pattern"
@@ -753,6 +815,37 @@
     status.textContent = "Takt und Teiler gespeichert.";
   }
 
+  function setRestSlider(inputId, outputId, value, suffix) {
+    const input = document.getElementById(inputId);
+    const output = document.getElementById(outputId);
+    if (!input || value == null || Number.isNaN(Number(value))) return;
+    if (document.activeElement !== input) input.value = String(value);
+    if (output) output.textContent = input.value + suffix;
+  }
+
+  async function saveRestControls() {
+    const status = document.getElementById("gvr_rest_save_state");
+    if (status) status.textContent = "Speichere …";
+    const response = await fetch("/api/grundverbrauch/ziele", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify({
+        rest_soc_setpoint_percent: Number(document.getElementById("gvr_rest_soc").value),
+        rest_bv_risk_tomorrow_percent: Number(document.getElementById("gvr_rest_tom").value),
+        rest_bv_risk_day_after_percent: Number(document.getElementById("gvr_rest_after").value),
+        rest_total_risk_percent: Number(document.getElementById("gvr_rest_total").value)
+      })
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      if (status) status.textContent = data.error || "Speichern fehlgeschlagen.";
+      return;
+    }
+    render(data);
+    if (status) status.textContent = "Regler gespeichert. Der empfohlene Zukauf ist unverändert.";
+  }
+
   async function savePvEstimateMode(mode) {
     const status = document.getElementById("gvr_pv_mode_state");
     if (status) status.textContent = "Speichere …";
@@ -770,8 +863,44 @@
     render(data);
   }
 
+  async function savePurchaseMinSoc() {
+    const status = document.getElementById("gvr_purchase_min_soc_state");
+    const input = document.getElementById("gvr_purchase_min_soc");
+    if (status) status.textContent = "Speichere …";
+    const response = await fetch("/api/grundverbrauch/ziele", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify({ purchase_min_soc_percent: Number(input.value) })
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      if (status) status.textContent = data.error || "Speichern fehlgeschlagen.";
+      return;
+    }
+    render(data);
+    if (status) status.textContent = "Mindest-SoC für den Zukauf gespeichert. Der Steuerungsalgorithmus ist unverändert.";
+  }
+
   const safetySave = document.getElementById("gvr_safety_save");
   if (safetySave) safetySave.addEventListener("click", saveSafety);
+  const purchaseMinSave = document.getElementById("gvr_purchase_min_soc_save");
+  if (purchaseMinSave) purchaseMinSave.addEventListener("click", savePurchaseMinSoc);
+
+  [
+    ["gvr_rest_soc", "gvr_rest_soc_out"],
+    ["gvr_rest_tom", "gvr_rest_tom_out"],
+    ["gvr_rest_after", "gvr_rest_after_out"],
+    ["gvr_rest_total", "gvr_rest_total_out"]
+  ].forEach(function (pair) {
+    const input = document.getElementById(pair[0]);
+    const output = document.getElementById(pair[1]);
+    if (!input) return;
+    input.addEventListener("input", function () {
+      if (output) output.textContent = input.value + " %";
+    });
+    input.addEventListener("change", saveRestControls);
+  });
 
   document.querySelectorAll('input[name="gvr_pv_estimate_mode"]').forEach(function (input) {
     input.addEventListener("change", function () {

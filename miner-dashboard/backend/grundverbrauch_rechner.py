@@ -72,16 +72,22 @@ WEATHER_FACTOR_MAX = 1.35
 # Dauer-Zukauf voraus: Lastmischung, zwei Plateaus, Glättung.
 FORWARD_LOOKBACK_DAYS = 7
 # Tag-Gutschrift: noch erwarteter Rest von heute voll, morgen 0,6, übermorgen 0,4.
+# Dieselbe Mischung gilt für Empfohlener Zukauf und Rest der letzten Tage.
 FORWARD_PV_TODAY_W = 1.0
 FORWARD_PV_TOMORROW_W = 0.6
 FORWARD_PV_DAY_AFTER_W = 0.4
-# Zweites Anzeigefeld. Zuverlässigkeit je Tag, ohne 60/40-Mischung und ohne flaches Vertrauen.
-NEW_RISK_TOMORROW_RELIABILITY = 0.80
-NEW_RISK_DAY_AFTER_RELIABILITY = 0.60
 FORWARD_RELIEF_DAYS = 2.0
 # Lineares Pufferband über dem Min-SoC, in Prozentpunkten.
 # Am Min-SoC ist der Zuschlag die volle Basislast, bei +5 % die Hälfte, ab +10 % null.
+# Die harte Wand für den Rest der letzten Tage liegt an der Oberkante dieses Bands.
 FORWARD_BUFFER_BAND_PCT = 10.0
+# Regler nur für den Rest der letzten Tage. Der empfohlene Zukauf liest sie nicht.
+REST_SOC_SETPOINT_DEFAULT = 45.0
+REST_SOC_SETPOINT_MIN = 30.0
+REST_SOC_SETPOINT_MAX = 95.0
+REST_BV_RISK_MAX = 100.0
+REST_TOTAL_RISK_DEFAULT = 100.0
+REST_TOTAL_RISK_MAX = 200.0
 # Normal 50/35/15. Liegt die 48-Stunden-Last über dem 1,5-fachen des Wochentags: 70/20/10.
 FORWARD_RECENT_WEIGHT = 0.50
 FORWARD_WEEKDAY_WEIGHT = 0.35
@@ -163,6 +169,13 @@ def default_targets() -> Dict[str, Any]:
         "safety_divisor": SAFETY_DIVISOR_DEFAULT,
         # Standard: PV-/Open-Meteo-Schätzung. Alternative: Musterschätzung.
         "pv_estimate_mode": PV_ESTIMATE_MODE_PV,
+        # Nur Rest der letzten Tage. 100 % Gesamtrisiko = Faktor 1.
+        "rest_soc_setpoint_percent": REST_SOC_SETPOINT_DEFAULT,
+        "rest_bv_risk_tomorrow_percent": 0.0,
+        "rest_bv_risk_day_after_percent": 0.0,
+        "rest_total_risk_percent": REST_TOTAL_RISK_DEFAULT,
+        # None = Mindest-SoC der Steuerung. Eine Zahl gilt nur für diesen Rechner.
+        "purchase_min_soc_percent": None,
     }
 
 
@@ -261,6 +274,21 @@ def _load_state(path) -> Dict[str, Any]:
     targets["safety_divisor"] = normalize_safety_divisor(targets.get("safety_divisor"))
     targets["pv_estimate_mode"] = normalize_pv_estimate_mode(
         targets.get("pv_estimate_mode")
+    )
+    targets["rest_soc_setpoint_percent"] = normalize_rest_soc_setpoint(
+        targets.get("rest_soc_setpoint_percent")
+    )
+    targets["rest_bv_risk_tomorrow_percent"] = normalize_rest_bv_risk(
+        targets.get("rest_bv_risk_tomorrow_percent")
+    )
+    targets["rest_bv_risk_day_after_percent"] = normalize_rest_bv_risk(
+        targets.get("rest_bv_risk_day_after_percent")
+    )
+    targets["rest_total_risk_percent"] = normalize_rest_total_risk(
+        targets.get("rest_total_risk_percent")
+    )
+    targets["purchase_min_soc_percent"] = normalize_purchase_min_soc(
+        targets.get("purchase_min_soc_percent")
     )
     data["targets"] = targets
     if not isinstance(data.get("safety"), dict):
@@ -1674,6 +1702,120 @@ def hard_min_soc_percent(raw: Any) -> float:
     return _clamp_kw(value, MIN_SOC_HARD_LOW, MIN_SOC_HARD_HIGH)
 
 
+PURCHASE_MIN_SOC_MIN = 0.0
+PURCHASE_MIN_SOC_MAX = 90.0
+
+
+def normalize_purchase_min_soc(raw: Any) -> Optional[float]:
+    """Eigener Mindest-SoC des Rechners. Leer heißt: Wert der Steuerung nehmen."""
+    if raw is None or raw == "":
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return max(PURCHASE_MIN_SOC_MIN, min(PURCHASE_MIN_SOC_MAX, value))
+
+
+def purchase_min_soc_for_calculation(raw: Any, algorithm_min_soc: Any) -> float:
+    """Mindest-SoC für den empfohlenen Zukauf.
+
+    Eine gespeicherte Zahl gilt so, wie sie steht, ohne den Korridor 30–35 %.
+    Ohne eigene Zahl bleibt der Wert aus dem Steuerungsalgorithmus, dort geklemmt.
+    """
+    chosen = normalize_purchase_min_soc(raw)
+    if chosen is None:
+        return hard_min_soc_percent(algorithm_min_soc)
+    return chosen
+
+
+def normalize_rest_soc_setpoint(raw: Any) -> float:
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = REST_SOC_SETPOINT_DEFAULT
+    return max(REST_SOC_SETPOINT_MIN, min(REST_SOC_SETPOINT_MAX, value))
+
+
+def normalize_rest_bv_risk(raw: Any) -> float:
+    try:
+        value = float(0.0 if raw is None else raw)
+    except (TypeError, ValueError):
+        value = 0.0
+    return max(0.0, min(REST_BV_RISK_MAX, value))
+
+
+def normalize_rest_total_risk(raw: Any) -> float:
+    try:
+        value = float(REST_TOTAL_RISK_DEFAULT if raw is None else raw)
+    except (TypeError, ValueError):
+        value = REST_TOTAL_RISK_DEFAULT
+    return max(0.0, min(REST_TOTAL_RISK_MAX, value))
+
+
+def socmin_wall_boundary_percent(min_soc_percent: float) -> float:
+    """Oberkante des Linearbands. Darunter beginnt die Gegenregelung."""
+    return float(min_soc_percent) + FORWARD_BUFFER_BAND_PCT
+
+
+def socmin_wall_kw(
+    soc_percent: float,
+    storage_kwh: float,
+    min_soc_percent: float,
+) -> float:
+    """kW über 24 Stunden, die den Speicher exakt auf die Bandoberkante heben.
+
+    Liegt der SoC schon auf oder über der Grenze, ist die Wand 0.
+    Socmin selbst ist keine Halteposition.
+    """
+    storage = max(0.0, _f(storage_kwh))
+    if storage <= 0:
+        return 0.0
+    boundary = socmin_wall_boundary_percent(min_soc_percent)
+    if _f(soc_percent) + 1e-9 >= boundary:
+        return 0.0
+    gap_kwh = (boundary - _f(soc_percent)) / 100.0 * storage
+    return gap_kwh / HOURS
+
+
+def rest_of_recent_days_kw(
+    *,
+    forward_kw: Optional[float],
+    soc_percent: Optional[float],
+    storage_kwh: Optional[float],
+    min_soc_percent: float,
+    load_kwh: Optional[float],
+    soc_setpoint_percent: float = REST_SOC_SETPOINT_DEFAULT,
+    bv_risk_tomorrow_percent: float = 0.0,
+    bv_risk_day_after_percent: float = 0.0,
+    total_risk_percent: float = REST_TOTAL_RISK_DEFAULT,
+) -> Optional[float]:
+    """Rest der letzten Tage. Der empfohlene Zukauf bleibt außen vor.
+
+    Gesamtrisiko skaliert Sollwert, BV-Risiko morgen und BV-Risiko übermorgen.
+    Rutscht das Ergebnis in den Linearbereich unter der Bandoberkante, hält
+    die Gegenregelung es exakt auf dieser Grenze. Socmin wird nicht angefahren.
+    """
+    if forward_kw is None or soc_percent is None or storage_kwh is None:
+        return None
+    scale = normalize_rest_total_risk(total_risk_percent) / 100.0
+    tomorrow = normalize_rest_bv_risk(bv_risk_tomorrow_percent) / 100.0 * scale
+    day_after = normalize_rest_bv_risk(bv_risk_day_after_percent) / 100.0 * scale
+    load = max(0.0, _f(load_kwh))
+    risk_kw = load * (
+        FORWARD_PV_TOMORROW_W * tomorrow + FORWARD_PV_DAY_AFTER_W * day_after
+    ) / HOURS
+    setpoint = normalize_rest_soc_setpoint(soc_setpoint_percent)
+    storage = max(0.0, _f(storage_kwh))
+    soc = _f(soc_percent)
+    setpoint_kwh = max(0.0, setpoint - soc) / 100.0 * storage * scale
+    raw = max(0.0, _f(forward_kw)) + risk_kw + setpoint_kwh / HOURS
+    wall = socmin_wall_kw(soc, storage, min_soc_percent)
+    if wall > 0.0 and raw + 1e-9 < wall:
+        return round(wall, 3)
+    return round(raw, 3)
+
+
 def _optional_kwh(value: Any) -> Optional[float]:
     if value is None or value == "":
         return None
@@ -2168,26 +2310,6 @@ def safety_feed_kw(
     return round(max(0.0, gap) / HOURS, 3)
 
 
-def new_risk_model_kw(
-    load_kwh: Optional[float],
-    tomorrow_kwh: Optional[float],
-    day_after_kwh: Optional[float],
-    relief_kwh: Optional[float],
-) -> float:
-    """Anzeige: (Last − PV morgen×0,8 − PV übermorgen×0,6 − Entlastung) / 24, mindestens 0.
-
-    Speicherentlastung senkt den Zukauf. Wird nicht zum empfohlenen Zukauf und
-    nicht ins BMS geschrieben. Die Wetterprognose kommt stündlich.
-    """
-    credited = (
-        NEW_RISK_TOMORROW_RELIABILITY * max(0.0, _f(tomorrow_kwh))
-        + NEW_RISK_DAY_AFTER_RELIABILITY * max(0.0, _f(day_after_kwh))
-    )
-    relief = max(0.0, _f(relief_kwh))
-    gap = max(0.0, _f(load_kwh)) - credited - relief
-    return round(max(0.0, gap) / HOURS, 3)
-
-
 def forward_purchase_kw(
     *,
     soc_percent: Optional[float],
@@ -2209,8 +2331,14 @@ def forward_purchase_kw(
     hours_until_plan: Optional[float] = None,
     house_kwh: Optional[float] = None,
     night_kwh: Optional[float] = None,
+    soc_setpoint_percent: float = REST_SOC_SETPOINT_DEFAULT,
+    bv_risk_tomorrow_percent: float = 0.0,
+    bv_risk_day_after_percent: float = 0.0,
+    total_risk_percent: float = REST_TOTAL_RISK_DEFAULT,
 ) -> Dict[str, Any]:
     """Dauer-Zukauf mit PV-Wetterprognose (Open-Meteo über morgen/übermorgen).
+
+    Die vier Rest-Regler ändern kw nicht. Sie stecken nur in new_risk_kw.
 
     Last = Mischung aus 48 Stunden, Wochentag und 7-Tage-Mittel, mal base_load_scale.
     Zukauf = (Last − PV-Gutschrift − Speicher über dem Pufferband) / 24, Tag und Nacht.
@@ -2250,7 +2378,8 @@ def forward_purchase_kw(
         return empty
     if storage_kwh is None or storage_kwh <= 0 or soc_percent is None:
         return empty
-    min_soc = hard_min_soc_percent(min_soc_percent)
+    chosen_min = normalize_purchase_min_soc(min_soc_percent)
+    min_soc = hard_min_soc_percent(min_soc_percent) if chosen_min is None else chosen_min
     try:
         scale = float(base_load_scale)
     except (TypeError, ValueError):
@@ -2403,7 +2532,18 @@ def forward_purchase_kw(
             safety_bridge,
         ),
         "safety_house_kwh": None if house_kwh is None else round(max(0.0, _f(house_kwh)), 2),
-        "new_risk_kw": new_risk_model_kw(load_kwh, pv_tom, pv_after, usable),
+        # Rest der letzten Tage. kw bleibt der ungeregelte empfohlene Zukauf.
+        "new_risk_kw": rest_of_recent_days_kw(
+            forward_kw=shown,
+            soc_percent=soc_percent,
+            storage_kwh=storage_kwh,
+            min_soc_percent=min_soc,
+            load_kwh=load_kwh,
+            soc_setpoint_percent=soc_setpoint_percent,
+            bv_risk_tomorrow_percent=bv_risk_tomorrow_percent,
+            bv_risk_day_after_percent=bv_risk_day_after_percent,
+            total_risk_percent=total_risk_percent,
+        ),
         "today_pv_kwh": None if today_pv_kwh is None else round(today_kwh, 2),
         "today_shortfall_kwh": round(shortfall_kwh, 2),
         "pull_down": pull_down,
@@ -2669,6 +2809,7 @@ def _forward_for_report(
     plan_soc_percent: Optional[float] = None,
     hours_until_plan: Optional[float] = None,
     pv_estimate_mode: Any = PV_ESTIMATE_MODE_PV,
+    rest_controls: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Baut den angezeigten Dauer-Zukauf aus Steuerungsdaten und Glättung."""
     bases: List[float] = []
@@ -2679,7 +2820,10 @@ def _forward_for_report(
 
         algo = load_state()
         cfg = load_config()
-        min_soc = hard_min_soc_percent(cfg.get("min_soc_percent"))
+        min_soc = purchase_min_soc_for_calculation(
+            (rest_controls or {}).get("purchase_min_soc_percent"),
+            cfg.get("min_soc_percent"),
+        )
         if storage_kwh is None:
             raw_storage = cfg.get("storage_kwh")
             storage_kwh = None if raw_storage is None else float(raw_storage)
@@ -2744,6 +2888,18 @@ def _forward_for_report(
         hours_until_plan=hours_until_plan,
         house_kwh=house_kwh,
         night_kwh=night,
+        soc_setpoint_percent=(rest_controls or {}).get(
+            "rest_soc_setpoint_percent", REST_SOC_SETPOINT_DEFAULT
+        ),
+        bv_risk_tomorrow_percent=(rest_controls or {}).get(
+            "rest_bv_risk_tomorrow_percent", 0.0
+        ),
+        bv_risk_day_after_percent=(rest_controls or {}).get(
+            "rest_bv_risk_day_after_percent", 0.0
+        ),
+        total_risk_percent=(rest_controls or {}).get(
+            "rest_total_risk_percent", REST_TOTAL_RISK_DEFAULT
+        ),
     )
     parts = dict(parts)
     parts["pv_estimate_mode"] = pv_in.get("mode") if isinstance(pv_in, dict) else normalize_pv_estimate_mode(pv_estimate_mode)
@@ -3295,6 +3451,7 @@ def get_report(base_dir: str) -> Dict[str, Any]:
             plan_soc_percent=plan_soc,
             hours_until_plan=hours_plan,
             pv_estimate_mode=targets.get("pv_estimate_mode"),
+            rest_controls=targets,
         )
         if (
             forward.get("kw") is None
@@ -3413,8 +3570,8 @@ def get_report(base_dir: str) -> Dict[str, Any]:
         )
         report["safety_base_kw"] = base_kw
         report["safety_deviation_kw"] = deviation_kw
-        # Nur Anzeige. recommended_kw und recommended_import_kw bleiben der Dauerzukauf.
-        report["new_risk_kw"] = parts_now.get("new_risk_kw")
+        # Nur Anzeige. Die Rest-Regler und die Socmin-Wand ändern recommended_kw nicht.
+        report["new_risk_kw"] = parts_now.get("new_risk_kw") if isinstance(parts_now, dict) else None
         report["mehrbedarf_morgen_kw"] = mehrbedarf_kw
         report["mehrbedarf_override_kw"] = override_kw
         report["mehrbedarf_day_kw"] = day_share
@@ -3505,6 +3662,43 @@ def save_targets(base_dir: str, updates: Dict[str, Any]) -> Dict[str, Any]:
         if "pv_estimate_mode" in updates:
             targets["pv_estimate_mode"] = normalize_pv_estimate_mode(
                 updates.get("pv_estimate_mode")
+            )
+        if "purchase_min_soc_percent" in updates:
+            chosen = normalize_purchase_min_soc(updates.get("purchase_min_soc_percent"))
+            if chosen is None:
+                raise ValueError("Ungültiger Mindest-SoC für den Zukauf")
+            targets["purchase_min_soc_percent"] = chosen
+        if "rest_soc_setpoint_percent" in updates:
+            try:
+                float(updates["rest_soc_setpoint_percent"])
+            except (TypeError, ValueError):
+                raise ValueError("Ungültiger Speicher-Sollwert")
+            targets["rest_soc_setpoint_percent"] = normalize_rest_soc_setpoint(
+                updates["rest_soc_setpoint_percent"]
+            )
+        if "rest_bv_risk_tomorrow_percent" in updates:
+            try:
+                float(updates["rest_bv_risk_tomorrow_percent"])
+            except (TypeError, ValueError):
+                raise ValueError("Ungültiges BV-Risiko morgen")
+            targets["rest_bv_risk_tomorrow_percent"] = normalize_rest_bv_risk(
+                updates["rest_bv_risk_tomorrow_percent"]
+            )
+        if "rest_bv_risk_day_after_percent" in updates:
+            try:
+                float(updates["rest_bv_risk_day_after_percent"])
+            except (TypeError, ValueError):
+                raise ValueError("Ungültiges BV-Risiko übermorgen")
+            targets["rest_bv_risk_day_after_percent"] = normalize_rest_bv_risk(
+                updates["rest_bv_risk_day_after_percent"]
+            )
+        if "rest_total_risk_percent" in updates:
+            try:
+                float(updates["rest_total_risk_percent"])
+            except (TypeError, ValueError):
+                raise ValueError("Ungültiges Gesamtrisiko")
+            targets["rest_total_risk_percent"] = normalize_rest_total_risk(
+                updates["rest_total_risk_percent"]
             )
         state["targets"] = targets
         _save_state(path, state)

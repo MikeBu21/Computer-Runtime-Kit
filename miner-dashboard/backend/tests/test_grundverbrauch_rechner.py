@@ -1250,28 +1250,10 @@ class SafetyCorrectionTests(unittest.TestCase):
         )
         self.assertGreater(safety_feed_kw(0.0, 0.85, credited, house), 0.0)
 
-    def test_rest_display_uses_day_reliability_and_not_the_purchase(self):
-        from grundverbrauch_rechner import (
-            HOURS,
-            NEW_RISK_DAY_AFTER_RELIABILITY,
-            NEW_RISK_TOMORROW_RELIABILITY,
-            forward_purchase_kw,
-            new_risk_model_kw,
-        )
+    def test_rest_display_uses_the_same_formula_as_the_purchase(self):
+        from grundverbrauch_rechner import HOURS, forward_purchase_kw
 
-        self.assertEqual(NEW_RISK_TOMORROW_RELIABILITY, 0.80)
-        self.assertEqual(NEW_RISK_DAY_AFTER_RELIABILITY, 0.60)
-        tomorrow, after, relief, load = 8.94, 30.97, 13.94, 18.14
-        covered = max(0.0, load - (0.80 * tomorrow + 0.60 * after) - relief) / HOURS
-        self.assertEqual(new_risk_model_kw(load, tomorrow, after, relief), round(covered, 3))
-        self.assertEqual(round(covered, 3), 0.0)
-        short = new_risk_model_kw(50.0, tomorrow, after, relief)
-        self.assertAlmostEqual(
-            short,
-            round(max(0.0, 50.0 - (0.80 * tomorrow + 0.60 * after) - relief) / HOURS, 3),
-            places=3,
-        )
-        self.assertGreater(short, 0.0)
+        tomorrow, after = 8.94, 30.97
         out = forward_purchase_kw(
             soc_percent=79,
             storage_kwh=41,
@@ -1287,6 +1269,7 @@ class SafetyCorrectionTests(unittest.TestCase):
         blend = 0.6 * tomorrow + 0.4 * after
         headroom = (79 - 35) / 100.0 * 41
         usable = headroom - 0.10 * 41
+        self.assertEqual(out["new_risk_kw"], out["kw"])
         self.assertEqual(out["new_risk_kw"], 0.0)
         self.assertAlmostEqual(out["safety_base_kw"], round((blend * 0.85 + usable) / HOURS, 3), places=3)
         self.assertGreater(out["safety_base_kw"], 0.0)
@@ -1584,7 +1567,8 @@ class PvEstimateModeTests(unittest.TestCase):
         )
         self.assertGreater(muster_day["kw"], pv_day["kw"])
         self.assertGreater(muster_day["p_day"], pv_day["p_day"])
-        self.assertGreater(muster_day["new_risk_kw"], pv_day["new_risk_kw"])
+        self.assertEqual(muster_day["new_risk_kw"], muster_day["kw"])
+        self.assertEqual(pv_day["new_risk_kw"], pv_day["kw"])
         self.assertLess(muster_day["pv_credit_kwh"], pv_day["pv_credit_kwh"])
         self.assertLessEqual(muster_day["safety_base_kw"], pv_day["safety_base_kw"])
 
@@ -1606,9 +1590,20 @@ class PvEstimateModeTests(unittest.TestCase):
         )
         self.assertGreater(pv_night["night_bridge_kw"], 0.0)
         self.assertGreater(muster_night["night_bridge_kw"], 0.0)
-        # Nachtboden selbst ist PV-unabhängig; p_day/new_risk folgen weiter der Quelle.
+        self.assertEqual(pv_night["night_bridge_kw"], muster_night["night_bridge_kw"])
+        # Nachtboden selbst ist PV-unabhängig; p_day folgt weiter der Quelle.
+        # Der Rest liegt über dem Zukauf, weil der Sollwert 45 % über dem SoC 38 % liegt.
         self.assertGreater(muster_night["p_day"], pv_night["p_day"])
-        self.assertGreater(muster_night["new_risk_kw"], pv_night["new_risk_kw"])
+        from grundverbrauch_rechner import HOURS, REST_SOC_SETPOINT_DEFAULT
+
+        gap_kw = (REST_SOC_SETPOINT_DEFAULT - 38.0) / 100.0 * 41.0 / HOURS
+        self.assertAlmostEqual(
+            pv_night["new_risk_kw"], round(pv_night["kw"] + gap_kw, 3), places=3
+        )
+        self.assertAlmostEqual(
+            muster_night["new_risk_kw"], round(muster_night["kw"] + gap_kw, 3), places=3
+        )
+        self.assertGreater(pv_night["new_risk_kw"], pv_night["kw"])
 
     def test_save_targets_persists_and_toggles_both_ways(self):
         import tempfile
@@ -1696,7 +1691,168 @@ class PvEstimateModeTests(unittest.TestCase):
         self.assertEqual(out["p_day"], 0.0)
         self.assertEqual(out["night_bridge_kw"], 0.0)
         self.assertLess(out["safety_base_kw"], 0.0)
-        self.assertEqual(out["new_risk_kw"], 0.0)
+        from grundverbrauch_rechner import HOURS
+
+        wall = (45.0 - 29.0) / 100.0 * 41.0 / HOURS
+        self.assertAlmostEqual(out["new_risk_kw"], round(wall, 3), places=3)
+        self.assertGreater(out["new_risk_kw"], out["kw"])
+
+    def test_rest_slider_payload_reaches_save_targets(self):
+        import sys
+        from unittest.mock import patch
+
+        sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[1]))
+        import app as dashboard
+
+        captured = {}
+
+        def fake_save(base_dir, updates):
+            captured.update(updates)
+            return {"targets": dict(updates)}
+
+        client = dashboard.app.test_client()
+        with client.session_transaction() as sess:
+            sess["logged_in"] = True
+        with patch("grundverbrauch_rechner.save_targets", fake_save):
+            response = client.post(
+                "/api/grundverbrauch/ziele",
+                json={
+                    "rest_soc_setpoint_percent": 62,
+                    "rest_bv_risk_tomorrow_percent": 15,
+                    "rest_bv_risk_day_after_percent": 30,
+                    "rest_total_risk_percent": 140,
+                    "purchase_min_soc_percent": 42,
+                },
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(captured["rest_soc_setpoint_percent"], 62)
+        self.assertEqual(captured["rest_bv_risk_tomorrow_percent"], 15)
+        self.assertEqual(captured["rest_bv_risk_day_after_percent"], 30)
+        self.assertEqual(captured["rest_total_risk_percent"], 140)
+        self.assertEqual(captured["purchase_min_soc_percent"], 42)
+
+    def test_purchase_min_soc_is_separate_from_the_algorithm(self):
+        from grundverbrauch_rechner import (
+            forward_purchase_kw,
+            hard_min_soc_percent,
+            purchase_min_soc_for_calculation,
+        )
+
+        self.assertEqual(hard_min_soc_percent(40), 35.0)
+        self.assertEqual(purchase_min_soc_for_calculation(None, 32), 32.0)
+        self.assertEqual(purchase_min_soc_for_calculation(40, 32), 40.0)
+        self.assertEqual(purchase_min_soc_for_calculation(25, 40), 25.0)
+        common = dict(
+            soc_percent=38.0,
+            storage_kwh=41.0,
+            daily_base_kwh=18.0,
+            base_load_scale=1.0,
+            tomorrow_pv_kwh=10.0,
+            day_after_pv_kwh=10.0,
+            forecast_trust=0.85,
+            hours_until_sun=10.0,
+            daylight=False,
+            night_kwh=12.0,
+            weekday_kwh=18.0,
+            recent_48h_kwh=18.0,
+        )
+        low = forward_purchase_kw(min_soc_percent=35.0, **common)
+        high = forward_purchase_kw(min_soc_percent=40.0, **common)
+        self.assertEqual(low["min_soc_percent"], 35.0)
+        self.assertEqual(high["min_soc_percent"], 40.0)
+        self.assertGreater(low["headroom_kwh"], high["headroom_kwh"])
+        self.assertEqual(high["headroom_kwh"], 0.0)
+
+    def test_rest_sliders_scale_and_do_not_change_purchase(self):
+        from grundverbrauch_rechner import HOURS, forward_purchase_kw, rest_of_recent_days_kw
+
+        base_args = dict(
+            soc_percent=60.0,
+            storage_kwh=40.0,
+            min_soc_percent=35.0,
+            daily_base_kwh=24.0,
+            base_load_scale=1.0,
+            tomorrow_pv_kwh=4.0,
+            day_after_pv_kwh=4.0,
+            forecast_trust=0.85,
+            hours_until_sun=6.0,
+            daylight=True,
+            weekday_kwh=24.0,
+            recent_48h_kwh=24.0,
+        )
+        plain = forward_purchase_kw(**base_args)
+        tuned = forward_purchase_kw(
+            **base_args,
+            soc_setpoint_percent=70.0,
+            bv_risk_tomorrow_percent=50.0,
+            bv_risk_day_after_percent=25.0,
+            total_risk_percent=200.0,
+        )
+        self.assertEqual(tuned["kw"], plain["kw"])
+        self.assertGreater(tuned["new_risk_kw"], plain["new_risk_kw"])
+        scale = 2.0
+        load = plain["load_kwh"]
+        risk_kw = load * (0.6 * (0.50 * scale) + 0.4 * (0.25 * scale)) / HOURS
+        set_kw = (70.0 - 60.0) / 100.0 * 40.0 * scale / HOURS
+        self.assertAlmostEqual(
+            tuned["new_risk_kw"],
+            round(plain["kw"] + risk_kw + set_kw, 3),
+            places=3,
+        )
+        muted = rest_of_recent_days_kw(
+            forward_kw=plain["kw"],
+            soc_percent=60.0,
+            storage_kwh=40.0,
+            min_soc_percent=35.0,
+            load_kwh=load,
+            soc_setpoint_percent=70.0,
+            bv_risk_tomorrow_percent=50.0,
+            bv_risk_day_after_percent=25.0,
+            total_risk_percent=0.0,
+        )
+        self.assertEqual(muted, plain["kw"])
+
+    def test_socmin_wall_holds_the_band_edge_exactly(self):
+        from grundverbrauch_rechner import HOURS, rest_of_recent_days_kw
+
+        storage = 40.0
+        # SoC im Linearband 35–45. Zukauf 0 würde hineinrutschen.
+        wall = (45.0 - 40.0) / 100.0 * storage / HOURS
+        held = rest_of_recent_days_kw(
+            forward_kw=0.0,
+            soc_percent=40.0,
+            storage_kwh=storage,
+            min_soc_percent=35.0,
+            load_kwh=24.0,
+            soc_setpoint_percent=40.0,
+            bv_risk_tomorrow_percent=0.0,
+            bv_risk_day_after_percent=0.0,
+            total_risk_percent=0.0,
+        )
+        self.assertAlmostEqual(held, round(wall, 3), places=3)
+        # Schon über der Grenze: keine Wand, der Zukauf bleibt.
+        above = rest_of_recent_days_kw(
+            forward_kw=0.2,
+            soc_percent=50.0,
+            storage_kwh=storage,
+            min_soc_percent=35.0,
+            load_kwh=24.0,
+            soc_setpoint_percent=45.0,
+            total_risk_percent=100.0,
+        )
+        self.assertEqual(above, 0.2)
+        # Unter Socmin hält die Wand an 45 %, nicht an 35 %.
+        below = rest_of_recent_days_kw(
+            forward_kw=0.0,
+            soc_percent=29.0,
+            storage_kwh=storage,
+            min_soc_percent=35.0,
+            load_kwh=10.0,
+            soc_setpoint_percent=30.0,
+            total_risk_percent=0.0,
+        )
+        self.assertAlmostEqual(below, round((45.0 - 29.0) / 100.0 * storage / HOURS, 3), places=3)
+        self.assertGreater(below, (35.0 - 29.0) / 100.0 * storage / HOURS)
 
 
 if __name__ == "__main__":

@@ -115,9 +115,19 @@ class ImportHoldTests(unittest.TestCase):
         self.assertEqual(bms_seite._hold_mode, "charge")
 
     def test_peak_enable_only_adds_bit_4(self):
+        bms_seite._last_peak_flags = None
+        bms_seite._confirmed.pop(0x00B2, None)
         self.assertEqual(_peak_enable_row(_item(), 11002), [])
         self.assertEqual(_by_addr(_peak_enable_row(_item(), 0x2AEA))[0x00B2], 0x2AFA)
+        # Ohne vollständige Maske kein Schreiben: ein nacktes Bit 4 würde andere Schalter löschen.
         self.assertEqual(_peak_enable_row(_item(), None), [])
+        bms_seite._last_peak_flags = 0x2AEA
+        kept = _by_addr(_peak_enable_row(_item(), None))[0x00B2]
+        mask = 1 << bms_seite.GRID_PEAK_ENABLE_BIT
+        self.assertEqual(kept, 0x2AEA | mask)
+        self.assertEqual(kept & ~mask, 0x2AEA & ~mask)
+        bms_seite._last_peak_flags = None
+        self.assertEqual(_peak_enable_row(_item(), None, enabled=False), [])
 
     def test_hold_deadband_scales_for_low_targets(self):
         self.assertEqual(_hold_deadband_w(0.2), 60)
@@ -2004,6 +2014,237 @@ class SharedMachineRuleTests(unittest.TestCase):
         self.assertIn(bms_seite.WRITE_REGISTER_GAP_SEC, sleeps)
         self.assertGreaterEqual(sleeps.count(bms_seite.READBACK_WAIT_SEC), 2)
         self.assertTrue(result["command_sent"])
+
+
+class CollapsedPurchaseHoldTests(unittest.TestCase):
+    """Verworfener Zukauf: bestätigter Merker darf den Halt nicht überspringen, wenn das Netz ~0 ist."""
+
+    def setUp(self):
+        _reset_hold(None)
+        bms_seite._known_phase = None
+        bms_seite._confirmed.clear()
+        bms_seite._confirmed_at = 0.0
+        bms_seite._last_peak_flags = None
+        bms_seite._needs_release = False
+        bms_seite._release_sent = False
+        bms_seite._release_attempts = 0
+        bms_seite._release_pause_until = 0.0
+        bms_seite._soc_floor_released = False
+
+    def tearDown(self):
+        bms_seite._known_phase = None
+        bms_seite._confirmed.clear()
+        bms_seite._last_peak_flags = None
+        bms_seite._needs_release = False
+        bms_seite._release_sent = False
+        _reset_hold(None)
+
+    def _settings(self, *, real_mode=True, soc_stop=False):
+        return {
+            "inverter": "deye_hybrid",
+            "real_mode": real_mode,
+            "linear_zukauf": True,
+            "linear_hold": True,
+            "planning_hold": False,
+            "community_hold": False,
+            "exchange_hold": False,
+            "manual_off": False,
+            "soc_stop": soc_stop,
+            "release_pending": not real_mode,
+            "program_soc": [15] * 6,
+            "target_grid_kw": 6.4,
+            "install_peak_shaving": 0,
+            "install_grid_charge": 0,
+            "install_grid_charge_a": 0,
+            "install_max_import_w": 8000,
+            "modbus_host": "10.0.0.10",
+            "modbus_port": 8899,
+            "modbus_unit": 1,
+            "logger_ip": "10.0.0.10",
+            "logger_serial": 5,
+            "known_entry_ids": [],
+        }
+
+    def _live(self, grid_kw, soc=23.0):
+        return {"soc_percent": soc, "grid_kw": grid_kw, "battery_kw": -1.3, "load_kw": 1.3}
+
+    def _run_write(self, settings, live, peak_flags):
+        written = []
+
+        def fake_write(*args, **_kwargs):
+            written.append((int(args[5]), int(args[6])))
+
+        def fake_read(*args, **_kwargs):
+            address = int(args[5])
+            for addr, value in reversed(written):
+                if addr == address:
+                    return value
+            return 0
+
+        link = {"lookup": "sg04lp3", "model": "SUN-12K-SG04LP3", "serial": 5}
+        with mock.patch.object(bms_seite, "resolve_ha_link", return_value=link), mock.patch.object(
+            bms_seite, "_read_peak_flags", return_value=peak_flags
+        ), mock.patch.object(bms_seite, "_persist_release_flag"), mock.patch.object(
+            bms_seite, "_serial_for_logger", return_value=5
+        ), mock.patch("bms_seite.socket.create_connection", return_value=mock.Mock()), mock.patch.object(
+            bms_seite, "_write_on_sock", side_effect=fake_write
+        ), mock.patch.object(bms_seite, "_read_on_sock", side_effect=fake_read), mock.patch.object(
+            bms_seite.time, "sleep"
+        ):
+            result = bms_seite.apply_write(settings, {"target_grid_kw": settings["target_grid_kw"]}, live)
+        return written, result
+
+    def _seed_matching_hold(self, live, base_word):
+        """Merker auf genau die Werte setzen, die der nächste Halt schreiben würde."""
+        mask = 1 << bms_seite.GRID_PEAK_ENABLE_BIT
+        _reset_hold(None)
+        bms_seite._hold_mode = "charge"
+        rows, _soc, _charging = bms_seite._import_writes(_item(), 6400, live, base_word)
+        expected = _by_addr(rows)
+        _reset_hold(None)
+        bms_seite._confirmed.clear()
+        bms_seite._last_peak_flags = None
+        bms_seite._confirmed[0x0082] = 1
+        bms_seite._confirmed[0x0080] = expected[0x0080]
+        bms_seite._confirmed[0x00BF] = expected[0x00BF]
+        bms_seite._confirmed[0x00B2] = base_word | mask
+        return expected
+
+    def test_stale_confirmed_hold_is_rewritten_when_grid_is_near_zero(self):
+        # SoC 23 % über Sockel 15 %, Soll 6,4 kW, Zähler 0,01 kW. Merker behauptet den Halt schon.
+        base = 0x2AEA
+        mask = 1 << bms_seite.GRID_PEAK_ENABLE_BIT
+        live = self._live(0.01)
+        expected = self._seed_matching_hold(live, base)
+        written, result = self._run_write(self._settings(), live, base)
+        values = dict(written)
+        self.assertEqual(values[0x0082], 1)
+        self.assertEqual(values[0x0080], expected[0x0080])
+        self.assertEqual(values[0x00BF], expected[0x00BF])
+        self.assertEqual(values[0x00B2], base | mask)
+        self.assertEqual(values[0x00B2] & ~mask, base & ~mask)
+        self.assertTrue(result["command_sent"])
+        self.assertNotIn("nichts neu geschrieben", result["write_text"])
+
+    def test_three_hundred_watts_at_a_high_setpoint_rewrites_the_hold(self):
+        base = 0x2AEA
+        mask = 1 << bms_seite.GRID_PEAK_ENABLE_BIT
+        live = self._live(0.3)
+        expected = self._seed_matching_hold(live, base)
+        written, _result = self._run_write(self._settings(), live, base)
+        values = dict(written)
+        self.assertEqual(values[0x0082], 1)
+        self.assertEqual(values[0x0080], expected[0x0080])
+        self.assertEqual(values[0x00BF], expected[0x00BF])
+        self.assertEqual(values[0x00B2], base | mask)
+        self.assertEqual(values[0x00B2] & ~mask, base & ~mask)
+
+    def test_eight_hundred_watts_still_rewrites_a_high_setpoint(self):
+        base = 0x2AEA
+        mask = 1 << bms_seite.GRID_PEAK_ENABLE_BIT
+        live = self._live(0.8)
+        self._seed_matching_hold(live, base)
+        written, _result = self._run_write(self._settings(), live, base)
+        values = dict(written)
+        self.assertEqual(values[0x0082], 1)
+        self.assertEqual(values[0x00B2], base | mask)
+
+    def test_real_import_above_one_kilowatt_does_not_rewrite_the_hold(self):
+        base = 0x2AEA
+        mask = 1 << bms_seite.GRID_PEAK_ENABLE_BIT
+        live = {"soc_percent": 23.0, "grid_kw": 2.0, "battery_kw": 0.0, "load_kw": 2.0}
+        self._seed_matching_hold(live, base)
+        written, _result = self._run_write(self._settings(), live, base | mask)
+        addrs = {addr for addr, _value in written}
+        self.assertNotIn(0x0082, addrs)
+        self.assertNotIn(0x00B2, addrs)
+
+    def test_missing_peak_mask_does_not_write_bit_4_alone(self):
+        live = self._live(0.3)
+        self._seed_matching_hold(live, 0x2AEA)
+        bms_seite._confirmed.pop(0x00B2, None)
+        bms_seite._last_peak_flags = None
+        written, _result = self._run_write(self._settings(), live, None)
+        addrs = {addr for addr, _value in written}
+        self.assertNotIn(0x00B2, addrs)
+        self.assertIn(0x0082, addrs)
+
+    def test_unread_peak_register_keeps_the_known_mask(self):
+        base = 0x2AEA
+        mask = 1 << bms_seite.GRID_PEAK_ENABLE_BIT
+        live = self._live(0.01)
+        self._seed_matching_hold(live, base)
+        written, _result = self._run_write(self._settings(), live, None)
+        values = dict(written)
+        self.assertEqual(values[0x0082], 1)
+        self.assertEqual(values[0x00B2], base | mask)
+        self.assertEqual(values[0x00B2] & ~mask, base & ~mask)
+
+    def test_planning_hold_rewrites_stale_registers_when_grid_is_low(self):
+        base = 0x2AEA
+        mask = 1 << bms_seite.GRID_PEAK_ENABLE_BIT
+        live = {"soc_percent": 40.0, "grid_kw": 0.3, "battery_kw": -1.3, "load_kw": 1.3}
+        expected = self._seed_matching_hold(live, base)
+        settings = self._settings()
+        settings["linear_zukauf"] = False
+        settings["linear_hold"] = False
+        settings["planning_hold"] = True
+        written, _result = self._run_write(settings, live, base)
+        values = dict(written)
+        self.assertEqual(values[0x0082], 1)
+        self.assertEqual(values[0x0080], expected[0x0080])
+        self.assertEqual(values[0x00BF], expected[0x00BF])
+        self.assertEqual(values[0x00B2], base | mask)
+        self.assertEqual(values[0x00B2] & ~mask, base & ~mask)
+
+    def test_confirmed_hold_stays_skipped_when_the_meter_matches(self):
+        peak = 0x2AEA | (1 << bms_seite.GRID_PEAK_ENABLE_BIT)
+        bms_seite._confirmed[0x0082] = 1
+        bms_seite._confirmed[0x00B2] = peak
+        # Netz liegt auf dem Soll, die Batterie entlädt das Haus nicht. Der bestätigte Halt bleibt stehen.
+        matching = {"soc_percent": 23.0, "grid_kw": 6.4, "battery_kw": 0.0, "load_kw": 6.4}
+        written, _result = self._run_write(self._settings(), matching, peak)
+        addrs = {addr for addr, _value in written}
+        self.assertNotIn(0x0082, addrs)
+        self.assertNotIn(0x00B2, addrs)
+
+    def _release_writes(self, settings, live, peak_flags):
+        captured = {}
+
+        def send(_settings, _serial, writes, _raw):
+            captured["writes"] = list(writes)
+            return {"command_sent": True, "write_text": "Geschrieben und zurückgelesen: ok."}
+
+        link = {"lookup": "sg04lp3", "model": "SUN-12K-SG04LP3", "serial": 5}
+        bms_seite._needs_release = True
+        bms_seite._release_sent = False
+        with mock.patch.object(bms_seite, "resolve_ha_link", return_value=link), mock.patch.object(
+            bms_seite, "_read_peak_flags", return_value=peak_flags
+        ), mock.patch.object(bms_seite, "_send_verified", side_effect=send), mock.patch.object(
+            bms_seite, "_sync_ha_release", return_value=[]
+        ), mock.patch.object(bms_seite, "_persist_release_flag"):
+            bms_seite.apply_write(settings, {"target_grid_kw": 0}, live)
+        return _by_addr(captured["writes"])
+
+    def test_release_keeps_purchase_enables_while_soc_is_above_the_sockel(self):
+        peak = 0x2AEA | (1 << bms_seite.GRID_PEAK_ENABLE_BIT)
+        values = self._release_writes(self._settings(real_mode=False, soc_stop=True), self._live(0.01), peak)
+        self.assertEqual(values[0x0082], 1)
+        self.assertGreater(values[0x0080], 0)
+        self.assertEqual(values[0x00BF], 6400)
+        self.assertEqual(values[0x00B2], peak)
+        mask = 1 << bms_seite.GRID_PEAK_ENABLE_BIT
+        self.assertEqual(values[0x00B2] & ~mask, peak & ~mask)
+
+    def test_release_turns_purchase_enables_off_at_the_sockel(self):
+        peak = 0x2AEA | (1 << bms_seite.GRID_PEAK_ENABLE_BIT)
+        values = self._release_writes(
+            self._settings(real_mode=False, soc_stop=True),
+            self._live(0.01, soc=14.0),
+            peak,
+        )
+        self.assertEqual(values[0x0082], 0)
+        self.assertEqual(values[0x00B2] & (1 << bms_seite.GRID_PEAK_ENABLE_BIT), 0)
 
 
 if __name__ == "__main__":

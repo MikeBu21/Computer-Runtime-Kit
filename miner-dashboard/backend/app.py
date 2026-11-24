@@ -1911,6 +1911,15 @@ def api_grundverbrauch_ziele():
         updates["safety_divisor"] = payload.get("safety_divisor")
     if "pv_estimate_mode" in payload:
         updates["pv_estimate_mode"] = payload.get("pv_estimate_mode")
+    for key in (
+        "rest_soc_setpoint_percent",
+        "rest_bv_risk_tomorrow_percent",
+        "rest_bv_risk_day_after_percent",
+        "rest_total_risk_percent",
+        "purchase_min_soc_percent",
+    ):
+        if key in payload:
+            updates[key] = payload.get(key)
     try:
         report = save_targets(os.path.dirname(__file__), updates)
     except ValueError as exc:

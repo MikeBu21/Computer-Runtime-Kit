@@ -2916,6 +2916,12 @@ PEAK_TRIM_GAIN = 0.5
 PEAK_TRIM_EVERY_SEC = 30
 MODE_SWITCH_W = 150
 GRID_DEADBAND_W = 250
+# Zusammengebrochener Zukauf: der Zähler liegt weit unter einem hohen Soll.
+# 300 W und Werte bis 1 kW zählen noch dazu. Ab etwa 1,5 kW ist das ein echter Bezug,
+# der nicht bei jedem Takt neu geschrieben wird. Leichte Rückspeisung gilt noch als ~0.
+HOLD_GRID_COLLAPSE_W = 1000
+HOLD_GRID_COLLAPSE_FLOOR_W = -200
+HOLD_COLLAPSE_GAP_W = 1000
 # Fallback-Alias. Der Regelkreis nutzt _max_sell_w(settings).
 SELL_POWER_MAX_W = TOU_HOLD_POWER_W
 # Programm-Modus 0x00AC–0x00B1: Bit 0–1 Laden (Netz/Generator), Bit 5 Verkaufen.
@@ -3088,22 +3094,60 @@ def _house_load_kw(live: Optional[Dict[str, Any]]) -> Optional[float]:
     return round(float(live["load_kw"]), 3)
 
 
+def _peak_base_word(item: Dict[str, Any], peak_flags: Optional[int]) -> Optional[int]:
+    """Frische Lesung, sonst die letzte Maske oder der bestätigte Merker.
+
+    Eine fehlende Lesung darf die Kappung nicht stumm auslassen.
+    """
+    if peak_flags is not None:
+        return int(peak_flags) & 0xFFFF
+    if _last_peak_flags is not None:
+        return int(_last_peak_flags) & 0xFFFF
+    register = item.get("grid_peak_enable_register")
+    if register is None:
+        return None
+    cached = _confirmed.get(int(register))
+    if cached is None:
+        return None
+    return int(cached) & 0xFFFF
+
+
 def _peak_enable_row(item: Dict[str, Any], peak_flags: Optional[int], enabled: bool = True) -> List[tuple]:
     """0x00B2 ist ein 16-Bit-Feld mit weiteren Schaltern. Nur Bit 4 ändern, nie überschreiben.
 
     Bei der Einspeisung muss die Spitzenkappung aus: mit gesetztem Bit 4 verkauft der
     SG04LP3 in Export First keine Batterieleistung (Firmware-Fehler, am Gerät bestätigt:
     Bit 4 gelöscht, sofort 1 kW Einspeisung ohne PV).
+    Ohne vollständige Maske wird nichts geschrieben. Ein einzelnes Bit 4 würde die
+    übrigen Schalter löschen.
     """
     register = item.get("grid_peak_enable_register")
-    if register is None or peak_flags is None:
+    if register is None:
         return []
+    base = _peak_base_word(item, peak_flags)
     mask = 1 << GRID_PEAK_ENABLE_BIT
-    current = bool(int(peak_flags) & mask)
+    if base is None:
+        return []
+    current = bool(int(base) & mask)
     if current == enabled:
         return []
-    value = int(peak_flags) | mask if enabled else int(peak_flags) & ~mask
-    return [(int(register), "Grid Peak shaving enable", value)]
+    value = int(base) | mask if enabled else int(base) & ~mask
+    return [(int(register), "Grid Peak shaving enable", value & 0xFFFF)]
+
+
+def _force_peak_on_row(item: Dict[str, Any], peak_flags: Optional[int]) -> List[tuple]:
+    """Bit 4 auf der vollständigen bekannten Maske an schreiben.
+
+    Unabhängig von install_peak_shaving. Ohne Maske wird das Register nicht angefasst.
+    """
+    register = item.get("grid_peak_enable_register")
+    if register is None:
+        return []
+    base = _peak_base_word(item, peak_flags)
+    if base is None:
+        return []
+    mask = 1 << GRID_PEAK_ENABLE_BIT
+    return [(int(register), "Grid Peak shaving enable", (int(base) | mask) & 0xFFFF)]
 
 
 def _release_flag_row(
@@ -3130,6 +3174,95 @@ def _release_flag_row(
     if value == (int(peak_flags) & 0xFFFF):
         return []
     return [(int(register), "System work switch", value)]
+
+
+def _purchase_hold_above_sockel(
+    settings: Optional[Dict[str, Any]],
+    live: Optional[Dict[str, Any]],
+) -> bool:
+    """Linearzukauf im Fenster oder Planungs-Halt, und der Ladestand liegt über dem Sockel."""
+    if not settings:
+        return False
+    linear = _flag_on(settings.get("linear_zukauf"))
+    planning = bool(settings.get("planning_hold"))
+    if not linear and not planning:
+        return False
+    floor = _electrician_soc_limit(settings)
+    soc = _live_soc(live)
+    if floor is None or soc is None or float(soc) <= float(floor):
+        return False
+    if planning:
+        return True
+    kw = netzbezug_soc_rampe_kw(soc, floor, _gespeicherter_max_import_w(settings))
+    return kw is not None
+
+
+def _grid_collapsed_under_target(target_w: int, live: Optional[Dict[str, Any]]) -> bool:
+    """Hoher Zukauf-Soll, gemessenes Netz bleibt weit darunter.
+
+    300 W bis 1 kW bei mehreren kW Soll ist ein verworfener Halt. Ein Bezug in der
+    Nähe des Solls, oder ab etwa 1,5 kW, wird nicht bei jedem Takt neu geschrieben.
+    """
+    grid = _grid_w(live)
+    if grid is None:
+        return False
+    try:
+        target = int(target_w)
+    except (TypeError, ValueError):
+        return False
+    if target <= HOLD_COLLAPSE_GAP_W:
+        return False
+    if grid < HOLD_GRID_COLLAPSE_FLOOR_W or grid > HOLD_GRID_COLLAPSE_W:
+        return False
+    if grid > target // 2:
+        return False
+    return target - grid >= HOLD_COLLAPSE_GAP_W
+
+
+def _drop_hold_confirmed(item: Dict[str, Any]) -> None:
+    """Merker der Halt-Register löschen, damit ein verworfener Soll neu geschrieben wird."""
+    for key in (
+        "grid_charge_register",
+        "grid_charge_current_register",
+        "grid_peak_power_register",
+        "grid_peak_enable_register",
+    ):
+        raw = item.get(key)
+        if raw is not None:
+            _confirmed.pop(int(raw), None)
+
+
+def _last_written(writes: List[tuple], address: int) -> Optional[int]:
+    found: Optional[int] = None
+    for addr, _name, value in writes:
+        if int(addr) == int(address):
+            found = int(value)
+    return found
+
+
+def _append_purchase_hold(
+    writes: List[tuple],
+    item: Dict[str, Any],
+    target_w: int,
+    peak_flags: Optional[int],
+    settings: Optional[Dict[str, Any]],
+    replace: bool,
+) -> None:
+    """Netzladen ein, Ladestrom, Kappungs-Watt und Bit 4. Nicht aus install_peak_shaving."""
+    enable = item.get("grid_charge_register")
+    current = item.get("grid_charge_current_register")
+    peak = item.get("grid_peak_power_register")
+    if enable is not None and (replace or _last_written(writes, int(enable)) != 1):
+        writes.append((int(enable), "Battery Grid Charging", 1))
+    if current is not None and int(target_w) > 0 and (
+        replace or not (_last_written(writes, int(current)) or 0) > 0
+    ):
+        amps = _grid_charge_amps(int(target_w), _max_charge_a(settings))
+        writes.append((int(current), "Battery Grid Charging Current", max(1, amps)))
+    if peak is not None and int(target_w) > 0 and (replace or _last_written(writes, int(peak)) is None):
+        trim = 0 if replace else int(_peak_trim_w)
+        writes.append((int(peak), "Grid Peak shaving", max(0, int(target_w) + trim)))
+    writes.extend(_force_peak_on_row(item, peak_flags))
 
 
 def _import_writes(
@@ -4117,14 +4250,19 @@ def _send_rows(settings: Dict[str, Any], serial: int, writes: List[tuple], raw: 
 
 
 def _read_peak_flags(item: Dict[str, Any], settings: Dict[str, Any], serial: int) -> Optional[int]:
+    global _last_peak_flags
     register = item.get("grid_peak_enable_register")
     if register is None or not serial:
         return None
     for _attempt in range(3):
         try:
-            return read_solarman_holding(
-                settings["modbus_host"], settings["modbus_port"], settings["modbus_unit"], serial, int(register)
-            )
+            value = int(
+                read_solarman_holding(
+                    settings["modbus_host"], settings["modbus_port"], settings["modbus_unit"], serial, int(register)
+                )
+            ) & 0xFFFF
+            _last_peak_flags = value
+            return value
         except OSError:
             time.sleep(0.3)
     return None
@@ -4140,6 +4278,8 @@ READBACK_WAIT_SEC = 0.2
 WRITE_ATTEMPTS = 3
 _confirmed: Dict[int, int] = {}
 _confirmed_at = 0.0
+# Letzte gelesene Maske von 0x00B2. Eine fehlende Lesung baut Bit 4 darauf auf.
+_last_peak_flags: Optional[int] = None
 _LEGAL_WORDS = {
     0x008E: frozenset({0, 2}),
     0x008D: frozenset({0, 1}),
@@ -4313,7 +4453,7 @@ def apply_write(
     live: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     global _needs_release, _tou_hold_applied, _tou_soc_applied, _release_sent, _release_attempts
-    global _release_pause_until, _soc_floor_released
+    global _release_pause_until, _soc_floor_released, _hold_mode
     sock = sock_soc_status(settings)
     if settings.get("real_mode") and not sock.get("ok"):
         settings = save_settings({"real_mode": False, "soc_stop": True})
@@ -4353,6 +4493,13 @@ def apply_write(
         serial = int(link.get("serial") or 0) if link else 0
         peak_flags = _read_peak_flags(item, settings, serial)
         writes = writes + _release_flag_row(item, peak_flags, settings)
+        soc_now = _live_soc(live)
+        if _purchase_hold_above_sockel(settings, live) and not (
+            soc_now is not None and float(soc_now) >= SOC_FULL
+        ):
+            # Freigabe darf Netzladen und Kappung nicht ausknipsen, solange der Zukauf gilt.
+            keep_w = int(round(float(settings.get("target_grid_kw") or 0) * 1000))
+            _append_purchase_hold(writes, item, keep_w, peak_flags, settings, replace=True)
         flags_unread = item.get("grid_peak_enable_register") is not None and peak_flags is None
         with _lock:
             if _release_sent or not _release_due(settings):
@@ -4418,6 +4565,17 @@ def apply_write(
         _reset_hold(target_w, settings)
     writes = [(int(item["register"]), item.get("register_name") or "Soll", int(raw))]
     peak_flags = _read_peak_flags(item, settings, serial)
+    soc_now = _live_soc(live)
+    battery_full = soc_now is not None and float(soc_now) >= SOC_FULL
+    collapsed = (
+        target_w >= 0
+        and not battery_full
+        and _purchase_hold_above_sockel(settings, live)
+        and _grid_collapsed_under_target(target_w, live)
+    )
+    if collapsed:
+        # Verworfener Halt: der Zähler steht bei ~0, der Soll bleibt ein Zukauf.
+        _hold_mode = "charge"
     if target_w < 0:
         rows, tou_soc, tou_charging = _feed_writes(item, -target_w, live, settings, peak_flags)
     else:
@@ -4430,6 +4588,9 @@ def apply_write(
             settings=settings,
         )
     writes.extend(rows)
+    if collapsed:
+        _append_purchase_hold(writes, item, target_w, peak_flags, settings, replace=False)
+        _drop_hold_confirmed(item)
     tou_state = (tou_soc, tou_charging)
     writes.extend(_tou_program_writes(item, tou_soc, tou_charging, with_power=True, settings=settings))
     signature = (
