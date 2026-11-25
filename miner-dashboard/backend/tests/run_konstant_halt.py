@@ -37,7 +37,7 @@ def sample() -> dict:
         "grid": num("sensor.192_168_1_176_grid_power"),
         "load": num("Beispiel"),
         "pv": num("Beispiel"),
-        "micro": num("sensor.192_168_1_176_microinverter_power"),
+        "micro": num("Beispiel"),
         "batt": num("Beispiel"),
         "soc": num("Beispiel"),
     }

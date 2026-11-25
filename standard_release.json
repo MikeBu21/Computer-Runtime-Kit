@@ -1,6 +1,6 @@
 {
   "channel": "standard",
-  "created": "2026-11-25T10:49:55+0100",
+  "created": "2026-11-25T13:03:18+0100",
   "files": {
     "AGENTS.md": "80cbbeae8bec122292d37f093e879ceae5d45f6625e7582e0b4e93288a4988ce",
     "Desktop/Alles starten.desktop": "85873226fbffe9a8d4f9d3ecee426a588e89740ad2da39dd5a47651e4c7a37ca",
@@ -17,10 +17,10 @@
     "homeassistant/ha_bridge_token.py": "52e6d842b198e0a91ad9f433a0c7e80216b1d21f150fa6eb9d3ecb125ec2200f",
     "homeassistant/ha_data_bridge.py": "3c8c1632786ca20d2719c435d4f6fdb85df0d74cc27c8cecaaef6b277a9ae585",
     "homeassistant/setup-hacs.py": "65cce4f2f9485b2565710507517036cf8521da06b954d49a382dd5b7f6ad12d4",
-    "miner-dashboard/backend/app.py": "94754ead33b583955b61af6cf30bfd292cb684f338d89a487c202f815eff205b",
+    "miner-dashboard/backend/app.py": "e8afc83582ed35c65b8de36ccd702616c4419b71e2bcf207eb7dcf416813ff50",
     "miner-dashboard/backend/apply_automatik_app_patch.py": "363b56106cb0bb3bda7de02a32858c877522ea0cdc73424ccf93bfaaa3441cc0",
     "miner-dashboard/backend/automation_rules.py": "c6959a240882b4d899262b75dc19df50a2c1182d67eb2068840e925a4ebf7f10",
-    "miner-dashboard/backend/billing_month_peak.py": "6d7b72a51ec9a3c94a693ca7d99f5e4a9191fd2f04b101b2f73aa1d17c5b6e7c",
+    "miner-dashboard/backend/billing_month_peak.py": "8fe9bb49ab8e31af2cb27fd1abb4b2dfa55169346cef39e90bd8528002424d29",
     "miner-dashboard/backend/bms_seite.py": "0e5ae2e5ea84c1a9731daa132f287d3c1b6b915c25cf45c14b964d99ca860388",
     "miner-dashboard/backend/boersenhandel.py": "eb524fccc0a5bc488b6b7b3e5eb227a8aca6126dd9a8baae5bae9a480773863c",
     "miner-dashboard/backend/boot_repair_after_powerloss.py": "30b5369d1e3da27be6c5e9f561f8767a7febf4a07ad1cf453e846c9eb60ff866",
@@ -159,7 +159,7 @@
     "miner-dashboard/backend/templates/base.html": "375c82d667bf3868f8389434f6fd0cb0c23bb5d2652cd4f4c6c273e34790aaf7",
     "miner-dashboard/backend/templates/bms_netzbezug.html": "3cef285ff55b32ca140873f4ebc342d778dc3d5ed4c4a4f08f58f279b342b9df",
     "miner-dashboard/backend/templates/boersenhandel.html": "3235abce7ace131510950c2cb6b3fba577bf358477da855761649f8896636859",
-    "miner-dashboard/backend/templates/dashboard.html": "3fa510a95f6eca8717f26d140feee3af768d4a99e1a4396fec0632864ca718da",
+    "miner-dashboard/backend/templates/dashboard.html": "cb2616805b05e083ab3af7745321df2a0ad0c88e238e8841bbd570591ddd1bd0",
     "miner-dashboard/backend/templates/dienste.html": "55a3f860f5263bb2437e92a0b33b733d8f4f8aa9506d9fc1e6376b0a754b4d1b",
     "miner-dashboard/backend/templates/energie.html": "8f44132e47338a3c15db7554d8f49585b02b618d8da9ffcbc05d48d4ce0dee18",
     "miner-dashboard/backend/templates/energiegemeinschaft.html": "3740bccc5210dab0ab7184f5703068d9b731c12440ea801cbdb14063de94f19a",
@@ -183,7 +183,7 @@
     "miner-dashboard/backend/tests/probe_feed_clamp.py": "aecdd185b43a7f2f7226d68822fbf5708e4a9f21797f468115fdf8ee185fcf52",
     "miner-dashboard/backend/tests/probe_peak_clamp.py": "65383eb064425e8306d056380ebada44ff1ac56e7fe69e8f87079fb522d822ac",
     "miner-dashboard/backend/tests/run_disable_verify.py": "bcb7504c37473b5e311e7e95d58e9298b34278925cd631e5a2c5cc65083de5cc",
-    "miner-dashboard/backend/tests/run_konstant_halt.py": "72859a1248bc751a99069aa7d2f31e3c3c29dfcbc93447f4f7626ecbfda9f78a",
+    "miner-dashboard/backend/tests/run_konstant_halt.py": "c0eb91e45dcc3a21d4ea913a9b117cad97d21874a5d84092d592bd1d70f0932e",
     "miner-dashboard/backend/tests/run_netzbezug_stufen.py": "7615eadad6a5bd537d1bd79916cc87478919a9ff23f2c5114e787ea8bb6d6bee",
     "miner-dashboard/backend/tests/run_watt_stufen_200_2000.py": "bfee0d9600d09da1c793d39c4379f467e0815c6b87b9aa08a24aaea44d40fcf4",
     "miner-dashboard/backend/tests/test_absorption_plan.py": "c317a6799f65a23530b3dac8080ac11a94b40ca0d76b16cea22661602abd3d5c",
@@ -191,7 +191,7 @@
     "miner-dashboard/backend/tests/test_anchor_window.py": "a0028864fca391f5f1a73172cbd33b40c5c19f4f1be542abacbbca838e352c24",
     "miner-dashboard/backend/tests/test_auto_control_steering.py": "f9927a0d0a9b52488df58ebdff2dd9115a94ed27c0540f2363176aea6ee5b959",
     "miner-dashboard/backend/tests/test_battery_protection.py": "7f9a1b24e0e13738535f8eff7edc32a49394b42c4fe9fb39ee8d42a0d99581b0",
-    "miner-dashboard/backend/tests/test_billing_month_peak.py": "b24c3a33c5297b2b115f7a3fde0ea1b12311241efbd4e79dce169dab391a44bd",
+    "miner-dashboard/backend/tests/test_billing_month_peak.py": "81b448e89847ff0511222caa0e1970ae4919612e4af80ec32c09e25239bfbaf7",
     "miner-dashboard/backend/tests/test_bms_netzbezug.py": "b0eaceca5f58271307b66272568ba3e27e44494770aac2498e23777d06706b05",
     "miner-dashboard/backend/tests/test_boersenhandel_range.py": "d86faac990ac5deea03ce19c8a43096e24ff6e5b7c9fc07c54dbef66ac0c1b87",
     "miner-dashboard/backend/tests/test_consumer_statistics.py": "5606c6ea046d84962baad442c900c7d16e009c9516e028cefbb3ca857faeec0f",
@@ -199,7 +199,7 @@
     "miner-dashboard/backend/tests/test_consumption_low_anomaly_pattern.py": "d5e231e2edeb95910aa1d6774dac8c20a26f38b181518d63788b8f2fb0d459e9",
     "miner-dashboard/backend/tests/test_consumption_risk.py": "1b538bc4be96bed3f08b6ff09c07df58be9f3766fe90b1efcde7cbefdd6ab8dc",
     "miner-dashboard/backend/tests/test_control_algorithm.py": "9c0449d68d38005a40af51ca1fcfbab0d1173291aac7d06e9cb68d234ebaca8a",
-    "miner-dashboard/backend/tests/test_control_logger_read.py": "7e1215a5d636ed7c5d7f3435c004bc073bdbdee863d22985f2ebd508c680525d",
+    "miner-dashboard/backend/tests/test_control_logger_read.py": "8b365d1c99192c614502871a93ca4a34d2f9b2d105012611c1955a07d2acc2ca",
     "miner-dashboard/backend/tests/test_curve_plan.py": "9fffe0c6098780f32d1a9730b727383edd50267e33107c6fe153ec87d8231f35",
     "miner-dashboard/backend/tests/test_daemon_control.py": "0d38cbad53501bac0fd141c0a3e284e237210f6f25667a8c60c29bcad98484ac",
     "miner-dashboard/backend/tests/test_day_night_neuron.py": "92dc7166f1c6f8474cb04088c172d0ef0040ddb073f4252d58fb8767d16a7a94",
@@ -320,5 +320,5 @@
   },
   "format": 2,
   "notes": "Download nutzt den Soft-Scan: nur Token im Programmcode, und der Scan wird nach jedem Update wiederhergestellt. Der Upload-Scan bleibt streng. Standardwerte ohne persönliche Daten.",
-  "version": 73
+  "version": 74
 }

@@ -178,6 +178,7 @@ def index():
         energy_visibility=energy_visibility,
         recovery_pending=recovery_pending,
         message=request.args.get('message'),
+        monatsspitze=monatsspitze,
         monatsspitze_kw=monatsspitze["text"],
         monatsspitze_label=monatsspitze["label"],
     )
@@ -2313,21 +2314,72 @@ from energy_timeseries_24h import get_timeseries_24h, maybe_record_sample
 import time
 
 
-def _dashboard_monatsspitze():
-    """Höchste volle Viertelstunde Netzbezug, dieselbe Rechnung wie die Kellerrechnung."""
-    try:
-        from billing_month_peak import billing_month_peak
+def _kw_text(value):
+    if not isinstance(value, (int, float)):
+        return ""
+    return f"{float(value):.2f}".replace(".", ",") + " kW"
 
-        peak = billing_month_peak(os.path.dirname(__file__))
+
+def _euro_text(value):
+    if not isinstance(value, (int, float)):
+        return ""
+    return f"{float(value):.2f}".replace(".", ",") + " €"
+
+
+def _dashboard_monatsspitze():
+    """Echte und hypothetische Monatsspitze plus Tarif und Kosten."""
+    base = os.path.dirname(__file__)
+    try:
+        from billing_month_peak import (
+            billing_month_peak,
+            hypothetical_month_peak,
+            load_peak_entry,
+            peak_money,
+        )
+
+        measured = billing_month_peak(base)
+        uncovered = hypothetical_month_peak(base)
+        entry = load_peak_entry(base)
     except Exception:
-        peak = {}
-    kw = peak.get("peak_kw") if isinstance(peak, dict) else None
-    if not isinstance(kw, (int, float)):
-        return {"peak_kw": None, "text": "", "label": ""}
+        measured, uncovered, entry = {}, {}, {}
+    measured = measured if isinstance(measured, dict) else {}
+    uncovered = uncovered if isinstance(uncovered, dict) else {}
+    entry = entry if isinstance(entry, dict) else {}
+    calculated = measured.get("peak_kw")
+    calculated_hypo = uncovered.get("peak_kw")
+    peak_kw = entry.get("peak_kw")
+    if not isinstance(peak_kw, (int, float)):
+        peak_kw = calculated if isinstance(calculated, (int, float)) else None
+    hypo_kw = entry.get("hypothetical_kw")
+    if not isinstance(hypo_kw, (int, float)):
+        hypo_kw = calculated_hypo if isinstance(calculated_hypo, (int, float)) else None
+    tariff = entry.get("tariff_eur_per_kw")
+    if not isinstance(tariff, (int, float)):
+        tariff = None
+    try:
+        from billing_month_peak import peak_money
+
+        money = peak_money(peak_kw, hypo_kw, tariff)
+    except Exception:
+        money = {}
     return {
-        "peak_kw": float(kw),
-        "text": f"{float(kw):.2f}".replace(".", ",") + " kW",
-        "label": str(peak.get("label") or ""),
+        "peak_kw": peak_kw,
+        "peak_kw_calculated": calculated if isinstance(calculated, (int, float)) else None,
+        "peak_overridden": isinstance(entry.get("peak_kw"), (int, float)),
+        "text": _kw_text(peak_kw),
+        "label": str(measured.get("label") or ""),
+        "hypothetical_kw": hypo_kw,
+        "hypothetical_kw_calculated": calculated_hypo if isinstance(calculated_hypo, (int, float)) else None,
+        "hypothetical_overridden": isinstance(entry.get("hypothetical_kw"), (int, float)),
+        "hypothetical_text": _kw_text(hypo_kw),
+        "hypothetical_label": str(uncovered.get("label") or ""),
+        "tariff_eur_per_kw": tariff,
+        "cost_eur": money.get("cost_eur"),
+        "cost_text": _euro_text(money.get("cost_eur")),
+        "hypothetical_cost_eur": money.get("hypothetical_cost_eur"),
+        "hypothetical_cost_text": _euro_text(money.get("hypothetical_cost_eur")),
+        "saved_eur": money.get("saved_eur"),
+        "saved_text": _euro_text(money.get("saved_eur")),
     }
 
 
@@ -2356,6 +2408,43 @@ def flow_data():
         flow["battery_power_kw"] = bat.get("power_kw")
     flow["monatsspitze"] = _dashboard_monatsspitze()
     return jsonify(flow)
+
+
+@app.route('/api/monatsspitze', methods=['POST'])
+def api_monatsspitze():
+    if not session.get('logged_in'):
+        return jsonify({"ok": False, "error": "nicht angemeldet"}), 401
+    from billing_month_peak import save_peak_entry
+
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        return jsonify({"ok": False, "error": "Ungültige Anfrage"}), 400
+    updates = {}
+    for key in ("peak_kw", "hypothetical_kw", "tariff_eur_per_kw"):
+        if key in payload:
+            updates[key] = payload.get(key)
+    current = _dashboard_monatsspitze()
+
+    def _same_as_calculated(raw, calculated):
+        if raw is None or raw == "" or not isinstance(calculated, (int, float)):
+            return False
+        try:
+            value = float(str(raw).replace(",", "."))
+        except (TypeError, ValueError):
+            return False
+        return abs(value - float(calculated)) < 0.005
+
+    if _same_as_calculated(updates.get("peak_kw"), current.get("peak_kw_calculated")):
+        updates["peak_kw"] = None
+    if _same_as_calculated(updates.get("hypothetical_kw"), current.get("hypothetical_kw_calculated")):
+        updates["hypothetical_kw"] = None
+    try:
+        save_peak_entry(os.path.dirname(__file__), updates)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    result = _dashboard_monatsspitze()
+    result["ok"] = True
+    return jsonify(result)
 
 
 @app.route('/battery_data')

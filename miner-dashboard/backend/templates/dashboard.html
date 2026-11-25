@@ -1027,10 +1027,64 @@
         var(--surface);
     }
     .role-sum-panel .panel-title { margin: 0 0 0.35rem; }
-    .role-monatsspitze {
-      width: 220px;
-      max-width: 100%;
+    .role-peak-row {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0.85rem;
       margin: 0.35rem 0 0.85rem;
+    }
+    .role-monatsspitze {
+      width: auto;
+      max-width: none;
+      margin: 0;
+      padding: 0.7rem 0.85rem;
+      min-height: 0;
+    }
+    .role-peak-inputs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.35rem 0.9rem;
+      align-items: baseline;
+    }
+    .role-peak-field {
+      display: flex;
+      align-items: baseline;
+      gap: 0.3rem;
+      margin-top: 0.1rem;
+    }
+    .role-peak-field input {
+      width: 4.4rem;
+      background: transparent;
+      border: none;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 0;
+      color: #fff;
+      font-size: 1.15rem;
+      font-weight: 800;
+      line-height: 1.15;
+      padding: 0.02rem 0 0.08rem;
+      font-variant-numeric: tabular-nums;
+    }
+    .role-peak-field input:focus {
+      outline: none;
+      border-bottom-color: rgba(255, 193, 7, 0.85);
+    }
+    .role-peak-unit {
+      color: var(--muted);
+      font-weight: 700;
+      font-size: 0.92rem;
+    }
+    .role-peak-cost {
+      color: #fff;
+      font-weight: 700;
+      font-size: 0.95rem;
+      font-variant-numeric: tabular-nums;
+    }
+    .role-peak-saved {
+      color: #00e676;
+      font-weight: 700;
+      font-size: 0.88rem;
+      font-variant-numeric: tabular-nums;
     }
     .role-sum-hint {
       margin: 0 0 0.85rem;
@@ -1106,7 +1160,7 @@
       margin-top: 0.4rem;
     }
     @media (max-width: 700px) {
-      .role-yield-grid { grid-template-columns: 1fr; }
+      .role-yield-grid, .role-peak-row { grid-template-columns: 1fr; }
       .role-yield-value { font-size: 2rem; }
     }
     @media (max-width: 900px) {
@@ -1226,10 +1280,32 @@
 
   <div class="panel role-sum-panel" id="role_sum_panel">
     <h5 class="panel-title">Σ Rollenübersicht</h5>
-    <div class="role-sum-card role-monatsspitze" id="monatsspitze_box">
-      <div class="role-sum-label">Monatsspitze</div>
-      <div class="role-sum-value" id="monatsspitze_kw">{{ monatsspitze_kw|default('2,89 kW', true) }}</div>
-      <div class="role-yield-note" id="monatsspitze_note">{{ monatsspitze_label|default('Viertelstunde 22.11.2026, 18:00–18:15. Gemessen ab 21.11.', true) }}</div>
+    <div class="role-peak-row">
+      <div class="role-sum-card role-monatsspitze" id="monatsspitze_box">
+        <div class="role-sum-label">Monatsspitze</div>
+        <div class="role-peak-inputs">
+          <label class="role-peak-field">
+            <input id="monatsspitze_kw" type="text" inputmode="decimal" value="{{ monatsspitze.peak_kw if monatsspitze.peak_kw is not none else '' }}" aria-label="Monatsspitze in Kilowatt">
+            <span class="role-peak-unit">kW</span>
+          </label>
+          <label class="role-peak-field">
+            <input id="monatsspitze_tariff" type="text" inputmode="decimal" value="{{ monatsspitze.tariff_eur_per_kw if monatsspitze.tariff_eur_per_kw is not none else '' }}" aria-label="Tarif in Euro pro Kilowatt" placeholder="Tarif">
+            <span class="role-peak-unit">€/kW</span>
+          </label>
+        </div>
+        <div class="role-peak-cost" id="monatsspitze_cost">{{ monatsspitze.cost_text or '—' }}</div>
+        <div class="role-yield-note" id="monatsspitze_note">{{ monatsspitze.label or '' }}</div>
+      </div>
+      <div class="role-sum-card role-monatsspitze" id="monatsspitze_hypo_box">
+        <div class="role-sum-label">Hypothetische Monatsspitze</div>
+        <label class="role-peak-field">
+          <input id="monatsspitze_hypo_kw" type="text" inputmode="decimal" value="{{ monatsspitze.hypothetical_kw if monatsspitze.hypothetical_kw is not none else '' }}" aria-label="Hypothetische Monatsspitze in Kilowatt">
+          <span class="role-peak-unit">kW</span>
+        </label>
+        <div class="role-peak-cost" id="monatsspitze_hypo_cost">{{ monatsspitze.hypothetical_cost_text or '—' }}</div>
+        <div class="role-peak-saved" id="monatsspitze_saved">{% if monatsspitze.saved_text %}Gespart {{ monatsspitze.saved_text }}{% else %}Gespart —{% endif %}</div>
+        <div class="role-yield-note" id="monatsspitze_hypo_note">{{ monatsspitze.hypothetical_label or 'Verbrauch minus Erzeugung, ohne PMS-Gegenregelung' }}</div>
+      </div>
     </div>
     <p class="role-sum-hint">Summe je Rolle — dieselben Werte wie Steuerung und Energiemanagement</p>
     <div class="role-yield-grid">
@@ -2903,6 +2979,89 @@
       return text + " kWh";
     }
 
+    function parsePeakNumber(raw) {
+      if (raw === null || raw === undefined || raw === "") return null;
+      const n = Number(String(raw).replace(",", "."));
+      return Number.isFinite(n) ? n : null;
+    }
+
+    function formatEuro(raw) {
+      if (raw === null || raw === undefined || Number.isNaN(Number(raw))) return "—";
+      return Number(raw).toLocaleString("de-DE", {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      }) + " €";
+    }
+
+    function paintPeakMoney() {
+      const peak = parsePeakNumber(document.getElementById("monatsspitze_kw")?.value);
+      const hypo = parsePeakNumber(document.getElementById("monatsspitze_hypo_kw")?.value);
+      const tariff = parsePeakNumber(document.getElementById("monatsspitze_tariff")?.value);
+      const cost = (kw) => (kw === null || tariff === null) ? null : kw * tariff;
+      const realCost = cost(peak);
+      const hypoCost = cost(hypo);
+      const costEl = document.getElementById("monatsspitze_cost");
+      const hypoCostEl = document.getElementById("monatsspitze_hypo_cost");
+      const savedEl = document.getElementById("monatsspitze_saved");
+      if (costEl) costEl.textContent = formatEuro(realCost);
+      if (hypoCostEl) hypoCostEl.textContent = formatEuro(hypoCost);
+      if (savedEl) {
+        savedEl.textContent = realCost === null || hypoCost === null
+          ? "Gespart —"
+          : "Gespart " + formatEuro(hypoCost - realCost);
+      }
+    }
+
+    const peakDirty = {};
+
+    function setPeakInput(id, value) {
+      const el = document.getElementById(id);
+      if (!el || document.activeElement === el || peakDirty[id]) return;
+      const next = value === null || value === undefined || value === "" ? "" : String(value).replace(".", ",");
+      if (el.value !== next) el.value = next;
+    }
+
+    function applyMonatsspitze(peak) {
+      if (!peak) return;
+      setPeakInput("monatsspitze_kw", peak.peak_kw);
+      setPeakInput("monatsspitze_hypo_kw", peak.hypothetical_kw);
+      setPeakInput("monatsspitze_tariff", peak.tariff_eur_per_kw);
+      const note = document.getElementById("monatsspitze_note");
+      const hypoNote = document.getElementById("monatsspitze_hypo_note");
+      if (note && peak.label) note.textContent = peak.label;
+      if (hypoNote && peak.hypothetical_label) hypoNote.textContent = peak.hypothetical_label;
+      paintPeakMoney();
+    }
+
+    let peakSaveTimer = null;
+    let peakEditGen = 0;
+    function saveMonatsspitze() {
+      paintPeakMoney();
+      const gen = ++peakEditGen;
+      window.clearTimeout(peakSaveTimer);
+      peakSaveTimer = window.setTimeout(() => {
+        const body = {
+          peak_kw: parsePeakNumber(document.getElementById("monatsspitze_kw")?.value),
+          hypothetical_kw: parsePeakNumber(document.getElementById("monatsspitze_hypo_kw")?.value),
+          tariff_eur_per_kw: parsePeakNumber(document.getElementById("monatsspitze_tariff")?.value),
+        };
+        fetch("/api/monatsspitze", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify(body),
+        })
+          .then((response) => response.json())
+          .then((data) => {
+            if (!data || !data.ok || gen !== peakEditGen) return;
+            peakDirty.monatsspitze_kw = false;
+            peakDirty.monatsspitze_hypo_kw = false;
+            peakDirty.monatsspitze_tariff = false;
+            applyMonatsspitze(data);
+          })
+          .catch(() => {});
+      }, 350);
+    }
+
     function updateRoleSumSummary(data) {
       const sums = (data && data.role_sums) || {};
       const yields = (data && data.role_pv) || {};
@@ -2924,11 +3083,7 @@
       setKw("role_sum_netz", "netz");
       setKw("role_sum_speicher", "speicher");
       setKw("role_sum_verbrauch", "verbraucher");
-      const peak = data && data.monatsspitze;
-      const peakEl = document.getElementById("monatsspitze_kw");
-      if (peakEl && peak && peak.text) peakEl.textContent = peak.text;
-      const peakNote = document.getElementById("monatsspitze_note");
-      if (peakNote && peak && peak.label) peakNote.textContent = peak.label;
+      applyMonatsspitze(data && data.monatsspitze);
       const socEl = document.getElementById("role_sum_speicher_soc");
       if (socEl) {
         const soc = data && data.battery_soc;
@@ -3997,6 +4152,16 @@
       initRecoveryButtons();
       bindEnergyLineNav();
       bindEnergyLineLegend();
+      ["monatsspitze_kw", "monatsspitze_hypo_kw", "monatsspitze_tariff"].forEach((id) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.addEventListener("input", () => {
+          peakDirty[id] = true;
+          paintPeakMoney();
+          saveMonatsspitze();
+        });
+      });
+      paintPeakMoney();
       loadCustomFlowMeta().then(() => updateFlowValues());
       updateFlowValues();
       updateEnergyStats24h();
