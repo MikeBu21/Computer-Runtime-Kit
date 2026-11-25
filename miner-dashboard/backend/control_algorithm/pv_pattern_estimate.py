@@ -711,6 +711,55 @@ def effective_today_pv_kwh(state: Dict[str, Any]) -> float:
     return float(state.get("pv_yield_today_kwh") or 0)
 
 
+def _optional_yield_kwh(raw: Any) -> Optional[float]:
+    if raw is None or raw == "":
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if value < 0:
+        return None
+    return round(value, 1)
+
+
+def role_overview_yields(
+    state: Dict[str, Any],
+    config: Dict[str, Any],
+    live: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Zwei Tageswerte für die Rollenübersicht.
+
+    assumed_today_kwh ist die Produktion, mit der die Akku-Simulation rechnet:
+    Steuerungs-PV (Muster-Override, sonst OMS inklusive Performance-Ratio und
+    Stundenfaktoren) mal Band-Dämpfung mal Risiko.
+    pattern_kwh ist die Musterschätzung ohne diesen Risiko- und Dämpfungsabzug.
+    """
+    from control_algorithm.energy_balance import (
+        _planning_band_caps,
+        normalize_risk_factor,
+    )
+
+    base = effective_today_pv_kwh(state or {})
+    try:
+        scale = float((_planning_band_caps(config or {}, state or {}, live) or {}).get("pv_scale") or 1.0)
+    except Exception:
+        scale = 1.0
+    scale = max(0.75, min(1.0, scale))
+    risk = normalize_risk_factor((config or {}).get("risk_factor_percent")) / 100.0
+    pattern = (state or {}).get("pv_pattern_estimate") or {}
+    override = (state or {}).get("pv_forecast_override") or {}
+    return {
+        "assumed_today_kwh": round(base * scale * risk, 1),
+        "pattern_kwh": _optional_yield_kwh(pattern.get("estimated_kwh"))
+        if isinstance(pattern, dict)
+        else None,
+        "override_active": bool(override.get("active")) if isinstance(override, dict) else False,
+        "pv_scale": round(scale, 4),
+        "risk_factor": round(risk, 4),
+    }
+
+
 def effective_today_hours(state: Dict[str, Any]) -> Optional[Dict[str, float]]:
     ov = state.get("pv_forecast_override") or {}
     if ov.get("active"):

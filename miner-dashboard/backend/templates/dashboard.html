@@ -1027,6 +1027,11 @@
         var(--surface);
     }
     .role-sum-panel .panel-title { margin: 0 0 0.35rem; }
+    .role-monatsspitze {
+      width: 220px;
+      max-width: 100%;
+      margin: 0.35rem 0 0.85rem;
+    }
     .role-sum-hint {
       margin: 0 0 0.85rem;
       color: var(--muted);
@@ -1071,6 +1076,38 @@
       font-size: 0.92rem;
       font-weight: 700;
       font-variant-numeric: tabular-nums;
+    }
+    .role-yield-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0.85rem;
+      margin-bottom: 0.95rem;
+    }
+    .role-yield-card {
+      background: rgba(8, 12, 16, 0.78);
+      border: 1px solid rgba(255, 193, 7, 0.4);
+      border-radius: 16px;
+      padding: 1rem 1.15rem 1.05rem;
+      box-shadow: 0 10px 28px rgba(0, 0, 0, 0.22);
+    }
+    .role-yield-card.role-yield-pattern { border-color: rgba(0, 230, 118, 0.38); }
+    .role-yield-value {
+      color: #fff;
+      font-size: 2.35rem;
+      font-weight: 800;
+      line-height: 1.05;
+      letter-spacing: -0.03em;
+      font-variant-numeric: tabular-nums;
+      margin-top: 0.25rem;
+    }
+    .role-yield-note {
+      color: var(--muted);
+      font-size: 0.78rem;
+      margin-top: 0.4rem;
+    }
+    @media (max-width: 700px) {
+      .role-yield-grid { grid-template-columns: 1fr; }
+      .role-yield-value { font-size: 2rem; }
     }
     @media (max-width: 900px) {
       .role-sum-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -1189,7 +1226,24 @@
 
   <div class="panel role-sum-panel" id="role_sum_panel">
     <h5 class="panel-title">Σ Rollenübersicht</h5>
+    <div class="role-sum-card role-monatsspitze" id="monatsspitze_box">
+      <div class="role-sum-label">Monatsspitze</div>
+      <div class="role-sum-value" id="monatsspitze_kw">{{ monatsspitze_kw|default('2,89 kW', true) }}</div>
+      <div class="role-yield-note" id="monatsspitze_note">{{ monatsspitze_label|default('Viertelstunde 22.11.2026, 18:00–18:15. Gemessen ab 21.11.', true) }}</div>
+    </div>
     <p class="role-sum-hint">Summe je Rolle — dieselben Werte wie Steuerung und Energiemanagement</p>
+    <div class="role-yield-grid">
+      <div class="role-yield-card">
+        <div class="role-sum-label">Ertrag heute (geschätzt)</div>
+        <div class="role-yield-value" id="role_yield_assumed">—</div>
+        <div class="role-yield-note" id="role_yield_assumed_note">Was die Steuerung für heute ansetzt, nach Risiko, Dämpfung und Lernfaktoren</div>
+      </div>
+      <div class="role-yield-card role-yield-pattern">
+        <div class="role-sum-label">Musterschätzung</div>
+        <div class="role-yield-value" id="role_yield_pattern">—</div>
+        <div class="role-yield-note">Muster ohne Risiko und ohne Band-Dämpfung</div>
+      </div>
+    </div>
     <div class="role-sum-grid">
       <div class="role-sum-card role-erzeugung">
         <div class="role-sum-label">Produktion (Erzeugung)</div>
@@ -2840,8 +2894,28 @@
       return (n > 0 ? "+" : "") + body + " kW";
     }
 
+    function fmtYieldKwh(raw) {
+      if (raw === null || raw === undefined || raw === "" || Number.isNaN(Number(raw))) return "—";
+      const text = Number(raw).toLocaleString("de-DE", {
+        minimumFractionDigits: 1,
+        maximumFractionDigits: 1,
+      });
+      return text + " kWh";
+    }
+
     function updateRoleSumSummary(data) {
       const sums = (data && data.role_sums) || {};
+      const yields = (data && data.role_pv) || {};
+      const assumed = document.getElementById("role_yield_assumed");
+      const pattern = document.getElementById("role_yield_pattern");
+      const assumedNote = document.getElementById("role_yield_assumed_note");
+      if (assumed) assumed.textContent = fmtYieldKwh(yields.assumed_today_kwh);
+      if (pattern) pattern.textContent = fmtYieldKwh(yields.pattern_kwh);
+      if (assumedNote) {
+        assumedNote.textContent = yields.override_active
+          ? "Muster-Override aktiv, danach Risiko und Band-Dämpfung"
+          : "Was die Steuerung für heute ansetzt, nach Risiko, Dämpfung und Lernfaktoren";
+      }
       const setKw = (id, key) => {
         const el = document.getElementById(id);
         if (el) el.textContent = fmtRoleSumKw(sums[key]);
@@ -2850,6 +2924,11 @@
       setKw("role_sum_netz", "netz");
       setKw("role_sum_speicher", "speicher");
       setKw("role_sum_verbrauch", "verbraucher");
+      const peak = data && data.monatsspitze;
+      const peakEl = document.getElementById("monatsspitze_kw");
+      if (peakEl && peak && peak.text) peakEl.textContent = peak.text;
+      const peakNote = document.getElementById("monatsspitze_note");
+      if (peakNote && peak && peak.label) peakNote.textContent = peak.label;
       const socEl = document.getElementById("role_sum_speicher_soc");
       if (socEl) {
         const soc = data && data.battery_soc;

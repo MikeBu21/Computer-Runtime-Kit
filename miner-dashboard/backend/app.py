@@ -164,6 +164,7 @@ def index():
         recovery_pending = list_pending_recovery()
     except Exception:
         recovery_pending = []
+    monatsspitze = _dashboard_monatsspitze()
     return render_template(
         'dashboard.html',
         miners=miners,
@@ -177,6 +178,8 @@ def index():
         energy_visibility=energy_visibility,
         recovery_pending=recovery_pending,
         message=request.args.get('message'),
+        monatsspitze_kw=monatsspitze["text"],
+        monatsspitze_label=monatsspitze["label"],
     )
 
 def _password_ok(stored, given):
@@ -2310,11 +2313,40 @@ from energy_timeseries_24h import get_timeseries_24h, maybe_record_sample
 import time
 
 
+def _dashboard_monatsspitze():
+    """Höchste volle Viertelstunde Netzbezug, dieselbe Rechnung wie die Kellerrechnung."""
+    try:
+        from billing_month_peak import billing_month_peak
+
+        peak = billing_month_peak(os.path.dirname(__file__))
+    except Exception:
+        peak = {}
+    kw = peak.get("peak_kw") if isinstance(peak, dict) else None
+    if not isinstance(kw, (int, float)):
+        return {"peak_kw": None, "text": "", "label": ""}
+    return {
+        "peak_kw": float(kw),
+        "text": f"{float(kw):.2f}".replace(".", ",") + " kW",
+        "label": str(peak.get("label") or ""),
+    }
+
+
 @app.route('/flow_data')
 def flow_data():
     # Batterieleistung nicht als zweite Quelle in die Rollensumme geben.
     # build_flow_response liest SOC, Batterie, PV und Netz aus dem HA-Snapshot.
     flow = build_flow_response(os.path.dirname(__file__), load_battery_soc, None)
+    try:
+        from control_algorithm.config import load_config, load_state
+        from control_algorithm.pv_pattern_estimate import role_overview_yields
+
+        flow["role_pv"] = role_overview_yields(load_state(), load_config())
+    except Exception:
+        flow["role_pv"] = {
+            "assumed_today_kwh": None,
+            "pattern_kwh": None,
+            "override_active": False,
+        }
     bat = load_battery_data()
     if bat.get("source") in ("home_assistant", "ha_cache"):
         if bat.get("soc"):
@@ -2322,6 +2354,7 @@ def flow_data():
         flow["battery_mode"] = bat.get("mode")
         flow["battery_display_kw"] = bat.get("display_kw")
         flow["battery_power_kw"] = bat.get("power_kw")
+    flow["monatsspitze"] = _dashboard_monatsspitze()
     return jsonify(flow)
 
 

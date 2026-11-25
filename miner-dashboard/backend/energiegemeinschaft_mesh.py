@@ -180,6 +180,7 @@ def feed_packet(
     code: str,
     energy_kwh: Optional[float] = None,
     balance_kwh: Optional[float] = None,
+    energy_kw: Optional[float] = None,
 ) -> Dict[str, Any]:
     payload: Dict[str, Any] = {
         "v": 1,
@@ -194,6 +195,8 @@ def feed_packet(
         payload["feed_in_kwh"] = round(float(energy_kwh), 3)
     if balance_kwh is not None:
         payload["balance_kwh"] = round(float(balance_kwh), 3)
+    if energy_kw is not None:
+        payload["energy_kw"] = round(float(energy_kw), 3)
     return sign_packet(payload, code)
 
 
@@ -288,7 +291,7 @@ def _merge_history(older: Any, newer: Any, limit: int = 360) -> List[Dict[str, A
             except (TypeError, ValueError):
                 continue
             merged = by_ts.get(stamp, {"ts": stamp})
-            for field in ("feed_in_kw", "soc_percent"):
+            for field in ("feed_in_kw", "soc_percent", "energy_kw"):
                 if point.get(field) is not None:
                     merged[field] = point.get(field)
             by_ts[stamp] = merged
@@ -493,18 +496,24 @@ def local_export_kwh() -> Optional[float]:
         return None
 
 
-def local_reading() -> Tuple[float, Optional[float], Optional[float]]:
+def local_reading() -> Tuple[float, Optional[float], Optional[float], float]:
+    """Einspeisung, Speicher, Tagesenergie, vorzeichenbehaftete Netzleistung.
+
+    energy_kw: positiv ist Einspeisung, negativ ist Netzbezug.
+    feed_in_kw bleibt der positive Anteil und zählt weiter nur die Einspeisung.
+    """
     try:
         from control_algorithm.live_data import load_live_snapshot
 
         live = load_live_snapshot()
         grid = float(live.get("grid_kw") or 0)
         feed = round(max(0.0, -grid), 3)
+        signed = round(-grid, 3)
         soc_raw = live.get("soc_percent")
         soc = None if soc_raw is None else round(float(soc_raw), 1)
-        return feed, soc, local_export_kwh()
+        return feed, soc, local_export_kwh(), signed
     except Exception:
-        return 0.0, None, None
+        return 0.0, None, None, 0.0
 
 
 def night_balance_kwh_from_state(state: Dict[str, Any]) -> Optional[float]:
@@ -712,8 +721,17 @@ CONNECTED_GAP_SEC = 150
 HISTORY_LIMIT = 360
 
 
-def append_history(previous: Any, now: float, feed_kw: Optional[float], soc: Optional[float]) -> List[Dict[str, Any]]:
-    """Einen Zeitpunkt an den Verlauf dieses Geräts hängen."""
+def append_history(
+    previous: Any,
+    now: float,
+    feed_kw: Optional[float],
+    soc: Optional[float],
+    energy_kw: Optional[float] = None,
+) -> List[Dict[str, Any]]:
+    """Einen Zeitpunkt an den Verlauf dieses Geräts hängen.
+
+    energy_kw ist die vorzeichenbehaftete Netzleistung: plus Einspeisung, minus Bezug.
+    """
     history = [item for item in (previous or []) if isinstance(item, dict)]
     if history and abs(float(history[-1].get("ts") or 0) - float(now)) < 20:
         point = dict(history[-1])
@@ -722,6 +740,8 @@ def append_history(previous: Any, now: float, feed_kw: Optional[float], soc: Opt
             point["feed_in_kw"] = round(float(feed_kw), 3)
         if soc is not None:
             point["soc_percent"] = round(float(soc), 1)
+        if energy_kw is not None:
+            point["energy_kw"] = round(float(energy_kw), 3)
         history[-1] = point
     else:
         point = {"ts": round(float(now), 1)}
@@ -729,6 +749,8 @@ def append_history(previous: Any, now: float, feed_kw: Optional[float], soc: Opt
             point["feed_in_kw"] = round(float(feed_kw), 3)
         if soc is not None:
             point["soc_percent"] = round(float(soc), 1)
+        if energy_kw is not None:
+            point["energy_kw"] = round(float(energy_kw), 3)
         history.append(point)
     return history[-HISTORY_LIMIT:]
 
@@ -740,12 +762,14 @@ def history_for_display(item: Dict[str, Any], now: float) -> List[Dict[str, Any]
         return stored[-HISTORY_LIMIT:]
     feed = item.get("feed_in_kw")
     soc = item.get("soc_percent")
+    signed = item.get("energy_kw")
     feed_v = float(feed) if isinstance(feed, (int, float)) else None
     soc_v = float(soc) if isinstance(soc, (int, float)) else None
-    if feed_v is None and soc_v is None:
+    signed_v = float(signed) if isinstance(signed, (int, float)) else None
+    if feed_v is None and soc_v is None and signed_v is None:
         return []
     stamp = float(item.get("seen") or now)
-    return append_history([], stamp, feed_v, soc_v)
+    return append_history([], stamp, feed_v, soc_v, signed_v)
 
 
 def seed_live_history() -> None:
@@ -771,12 +795,14 @@ def seed_live_history() -> None:
                 continue
             feed = item.get("feed_in_kw")
             soc = item.get("soc_percent")
+            signed = item.get("energy_kw")
             feed_v = float(feed) if isinstance(feed, (int, float)) else None
             soc_v = float(soc) if isinstance(soc, (int, float)) else None
-            if feed_v is None and soc_v is None:
+            signed_v = float(signed) if isinstance(signed, (int, float)) else None
+            if feed_v is None and soc_v is None and signed_v is None:
                 continue
             stamp = float(item.get("seen") or now)
-            item["history"] = append_history([], stamp, feed_v, soc_v)
+            item["history"] = append_history([], stamp, feed_v, soc_v, signed_v)
 
     _update(mutate)
 
@@ -832,6 +858,8 @@ def _absorb_member(keep: Dict[str, Any], extra: Dict[str, Any]) -> None:
         keep["seen"] = extra.get("seen")
         if extra.get("feed_in_kw") is not None:
             keep["feed_in_kw"] = extra.get("feed_in_kw")
+        if extra.get("energy_kw") is not None:
+            keep["energy_kw"] = extra.get("energy_kw")
         if extra.get("soc_percent") is not None:
             keep["soc_percent"] = extra.get("soc_percent")
         if extra.get("balance_kwh") is not None:
@@ -895,6 +923,7 @@ def _remember_member(
     soc: Optional[float],
     energy_kwh: Optional[float] = None,
     balance_kwh: Optional[float] = None,
+    energy_kw: Optional[float] = None,
 ) -> None:
     now = time.time()
 
@@ -905,10 +934,12 @@ def _remember_member(
         key = _collapse_into(members, name, ip)
         prev = members.get(key) if isinstance(members.get(key), dict) else {}
         current_kw = feed if feed is not None else prev.get("feed_in_kw")
+        signed = energy_kw if energy_kw is not None else prev.get("energy_kw")
         members[key] = {
             "name": key,
             "ip": ip or prev.get("ip") or "",
             "feed_in_kw": current_kw,
+            "energy_kw": signed,
             "feed_in_kwh": energy_kwh if energy_kwh is not None else prev.get("feed_in_kwh"),
             "connected_kwh": accrue_connected_kwh(
                 prev.get("connected_kwh"),
@@ -919,7 +950,13 @@ def _remember_member(
             ),
             "soc_percent": soc if soc is not None else prev.get("soc_percent"),
             "balance_kwh": balance_kwh if balance_kwh is not None else prev.get("balance_kwh"),
-            "history": append_history(prev.get("history"), now, None if current_kw is None else float(current_kw), soc if soc is not None else prev.get("soc_percent")),
+            "history": append_history(
+                prev.get("history"),
+                now,
+                None if current_kw is None else float(current_kw),
+                soc if soc is not None else prev.get("soc_percent"),
+                None if signed is None else float(signed),
+            ),
             "alias": prev.get("alias") or "",
             "ask_ct_kwh": prev.get("ask_ct_kwh"),
             "grid_cost_ct_kwh": prev.get("grid_cost_ct_kwh"),
@@ -1188,6 +1225,7 @@ def handle_datagram(raw: bytes, source_ip: str) -> None:
         soc = payload.get("soc_percent")
         energy = payload.get("feed_in_kwh")
         balance = payload.get("balance_kwh")
+        signed = payload.get("energy_kw")
         _remember_member(
             name,
             source_ip,
@@ -1195,6 +1233,7 @@ def handle_datagram(raw: bytes, source_ip: str) -> None:
             None if soc is None else float(soc),
             None if energy is None else float(energy),
             None if balance is None else float(balance),
+            None if signed is None else float(signed),
         )
         return
     if kind == "cmd" and str(payload.get("to") or "") == local_name():
@@ -1318,11 +1357,11 @@ def cycle_once() -> None:
     snap = tailscale_snapshot()
     ensure_node_name(str(snap.get("self_name") or ""))
     name = local_name(snap)
-    feed, soc, energy = local_reading()
+    feed, soc, energy, signed = local_reading()
     balance = local_night_balance_kwh()
     self_ip = str(snap.get("self_ip") or "")
-    _remember_member(name, self_ip, feed, soc, energy, balance)
-    packet = feed_packet(name, feed, soc, code, energy, balance)
+    _remember_member(name, self_ip, feed, soc, energy, balance, signed)
+    packet = feed_packet(name, feed, soc, code, energy, balance, signed)
     settings = mesh_settings()
     sent: set[str] = set()
     # Bekannte Mitglieder immer unter der gespeicherten Adresse anstoßen –

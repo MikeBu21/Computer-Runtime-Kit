@@ -6,6 +6,7 @@ from control_algorithm.pv_pattern_estimate import (
     estimate_today_pv_from_patterns,
     pv_estimate_trace_payload,
     record_pv_estimate_trace,
+    role_overview_yields,
 )
 from control_algorithm.slot_profiles import hour_slot_ids
 
@@ -96,6 +97,32 @@ def test_estimate_trace_payload_ends_at_now():
     assert series[-1]["t"] == "2026-10-15T10:00:00"
     assert series[-1]["oms"] == 80.0
     assert series[-1]["pattern"] == 70.0
+
+
+def test_role_overview_scales_steering_yield_and_keeps_pattern():
+    state = {
+        "pv_yield_today_kwh": 40.0,
+        "pv_pattern_estimate": {"estimated_kwh": 22.0},
+        "pv_forecast_override": {"active": False},
+    }
+    plain = role_overview_yields(state, {"risk_factor_percent": 100, "storage_kwh": 0})
+    assert plain["assumed_today_kwh"] == 40.0
+    assert plain["pattern_kwh"] == 22.0
+    assert plain["override_active"] is False
+
+    risky = role_overview_yields(state, {"risk_factor_percent": 80, "storage_kwh": 0})
+    assert risky["assumed_today_kwh"] == 32.0
+    assert risky["pattern_kwh"] == 22.0
+
+    overridden = {
+        "pv_yield_today_kwh": 44.0,
+        "pv_pattern_estimate": {"estimated_kwh": 25.5},
+        "pv_forecast_override": {"active": True, "effective_kwh": 25.5},
+    }
+    live = role_overview_yields(overridden, {"risk_factor_percent": 100, "storage_kwh": 0})
+    assert live["assumed_today_kwh"] == 25.5
+    assert live["pattern_kwh"] == 25.5
+    assert live["override_active"] is True
 
 
 def test_empty_without_data():

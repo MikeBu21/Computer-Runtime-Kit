@@ -13,6 +13,7 @@ from energiegemeinschaft_mesh import (
     price_comparison,
     command_packet,
     feed_packet,
+    local_reading,
     generate_invite_code,
     merge_invite_codes,
     balance_lamp,
@@ -79,8 +80,10 @@ class TestEnergiegemeinschaftMesh(unittest.TestCase):
         packet = feed_packet("haus-nord", 1.25, 71, code)
         self.assertEqual(packet["feed_in_kw"], 1.25)
         self.assertEqual(packet["soc_percent"], 71.0)
-        with_energy = feed_packet("haus-nord", 1.25, 71, code, 8.2)
+        with_energy = feed_packet("haus-nord", 1.25, 71, code, 8.2, energy_kw=-0.4)
         self.assertEqual(with_energy["feed_in_kwh"], 8.2)
+        self.assertEqual(with_energy["energy_kw"], -0.4)
+        self.assertEqual(with_energy["feed_in_kw"], 1.25)
         self.assertTrue(verify_packet(packet, code))
         self.assertFalse(verify_packet(packet, "EG-AAAA-AAAA"))
 
@@ -153,6 +156,19 @@ class TestEnergiegemeinschaftMesh(unittest.TestCase):
         self.assertEqual(len(kept_soc), 2)
         self.assertEqual(kept_soc[-1]["feed_in_kw"], 1.6)
         self.assertEqual(kept_soc[-1]["soc_percent"], 71)
+        signed = append_history([], 200, 0.0, 80, -0.45)
+        self.assertEqual(signed[-1]["energy_kw"], -0.45)
+        self.assertEqual(signed[-1]["feed_in_kw"], 0.0)
+
+    def test_signed_energy_is_import_negative_and_export_positive(self):
+        with patch("control_algorithm.live_data.load_live_snapshot", return_value={"grid_kw": 0.45, "soc_percent": 90}):
+            feed, _soc, _kwh, signed = local_reading()
+        self.assertEqual(feed, 0.0)
+        self.assertEqual(signed, -0.45)
+        with patch("control_algorithm.live_data.load_live_snapshot", return_value={"grid_kw": -1.2, "soc_percent": 90}):
+            feed, _soc, _kwh, signed = local_reading()
+        self.assertEqual(feed, 1.2)
+        self.assertEqual(signed, 1.2)
 
     def test_current_reading_is_the_first_point_immediately(self):
         item = {"feed_in_kw": 2.4, "soc_percent": 81, "seen": 1000, "history": []}

@@ -696,7 +696,7 @@
     return value == null || value === "" ? "" : String(value);
   }
 
-  function seriesChart(title, key) {
+  function seriesChart(title, key, note) {
     const wrap = document.createElement("div");
     wrap.className = "eg-history";
     const label = document.createElement("p");
@@ -711,6 +711,12 @@
     empty.dataset.empty = key;
     empty.textContent = "Noch kein Wert.";
     wrap.append(label, svg, empty);
+    if (note) {
+      const hint = document.createElement("p");
+      hint.className = "eg-hint";
+      hint.textContent = note;
+      wrap.append(hint);
+    }
     return wrap;
   }
 
@@ -840,63 +846,134 @@
     svg.appendChild(axisX);
   }
 
-  function drawHistory(card, history) {
-    ["feed_in_kw", "soc_percent"].forEach(function (key) {
-      const svg = card.querySelector('[data-series="' + key + '"]');
-      const empty = card.querySelector('[data-empty="' + key + '"]');
-      if (!svg || !empty) return;
-      const points = (history || []).filter(function (point) {
-        return point[key] != null && egIsTodayPoint(point);
-      });
-      while (svg.firstChild) svg.removeChild(svg.firstChild);
-      if (!points.length) {
-        empty.hidden = false;
-        return;
-      }
-      empty.hidden = true;
-      const values = points.map(function (point) { return Number(point[key]); });
-      let min = Math.min.apply(null, values);
-      let max = Math.max.apply(null, values);
-      if (key === "soc_percent") {
-        min = 0;
-        max = 100;
-      } else if (min === max) {
-        min = 0;
-        max = max || 1;
-      }
-      const xLeft = 36;
-      const xRight = 312;
-      const yTop = 10;
-      const yBottom = 102;
-      const plotW = xRight - xLeft;
-      const plotH = yBottom - yTop;
-      function yOf(value) {
-        return yBottom - ((value - min) / (max - min)) * plotH;
-      }
-      function xOf(point) {
-        const hour = Math.max(0, Math.min(24, egHourOfDay(point.ts)));
-        return xLeft + (hour / 24) * plotW;
-      }
-      drawChartFrame(svg, min, max, key, yOf, xLeft, xRight, yTop, yBottom);
-      if (points.length === 1) {
-        const dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-        dot.setAttribute("cx", xOf(points[0]).toFixed(1));
-        dot.setAttribute("cy", yOf(Number(points[0][key])).toFixed(1));
-        dot.setAttribute("r", "5");
-        dot.setAttribute("fill", "#00e676");
-        svg.appendChild(dot);
-        return;
-      }
-      const coords = points.map(function (point) {
-        return xOf(point).toFixed(1) + "," + yOf(Number(point[key])).toFixed(1);
-      }).join(" ");
-      const line = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
-      line.setAttribute("points", coords);
-      line.setAttribute("fill", "none");
-      line.setAttribute("stroke", "#00e676");
-      line.setAttribute("stroke-width", "2");
-      svg.appendChild(line);
+  const EG_PEER_COLORS = ["#ffb300", "#64b5f6", "#ce93d8", "#ff8a65", "#80cbc4"];
+
+  function energyOf(point) {
+    if (point.energy_kw != null && point.energy_kw !== "" && !Number.isNaN(Number(point.energy_kw))) {
+      return Number(point.energy_kw);
+    }
+    if (point.feed_in_kw != null && point.feed_in_kw !== "" && !Number.isNaN(Number(point.feed_in_kw))) {
+      return Number(point.feed_in_kw);
+    }
+    return null;
+  }
+
+  function socOf(point) {
+    if (point.soc_percent == null || point.soc_percent === "" || Number.isNaN(Number(point.soc_percent))) return null;
+    return Number(point.soc_percent);
+  }
+
+  function todayPoints(history, read) {
+    return (history || []).filter(function (point) {
+      return egIsTodayPoint(point) && read(point) != null;
     });
+  }
+
+  function chartSpan(values, includeZero) {
+    let min = Math.min.apply(null, values);
+    let max = Math.max.apply(null, values);
+    if (includeZero) {
+      min = Math.min(0, min);
+      max = Math.max(0, max);
+    }
+    if (min === max) {
+      const pad = includeZero ? 0.5 : Math.max(1, Math.abs(min) * 0.04 || 1);
+      return [min - pad, max + pad];
+    }
+    const pad = (max - min) * 0.12;
+    min -= pad;
+    max += pad;
+    if (includeZero) {
+      min = Math.min(0, min);
+      max = Math.max(0, max);
+    }
+    return [min, max];
+  }
+
+  function drawTrack(svg, points, read, xOf, yOf, stroke, width) {
+    const ns = "http://www.w3.org/2000/svg";
+    if (!points.length) return;
+    if (points.length === 1) {
+      const dot = document.createElementNS(ns, "circle");
+      dot.setAttribute("cx", xOf(points[0]).toFixed(1));
+      dot.setAttribute("cy", yOf(read(points[0])).toFixed(1));
+      dot.setAttribute("r", width > 2 ? "4" : "2.5");
+      dot.setAttribute("fill", stroke);
+      svg.appendChild(dot);
+      return;
+    }
+    const coords = points.map(function (point) {
+      return xOf(point).toFixed(1) + "," + yOf(read(point)).toFixed(1);
+    }).join(" ");
+    const line = document.createElementNS(ns, "polyline");
+    line.setAttribute("points", coords);
+    line.setAttribute("fill", "none");
+    line.setAttribute("stroke", stroke);
+    line.setAttribute("stroke-width", String(width));
+    line.setAttribute("stroke-linejoin", "round");
+    line.setAttribute("stroke-linecap", "round");
+    svg.appendChild(line);
+  }
+
+  function drawMemberChart(card, key, history, others, read, includeZero) {
+    const svg = card.querySelector('[data-series="' + key + '"]');
+    const empty = card.querySelector('[data-empty="' + key + '"]');
+    if (!svg || !empty) return;
+    const own = todayPoints(history, read);
+    const peerSeries = (others || []).map(function (member, index) {
+      return {
+        points: todayPoints(member.history || [], read),
+        color: EG_PEER_COLORS[index % EG_PEER_COLORS.length]
+      };
+    }).filter(function (series) { return series.points.length; });
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+    if (!own.length && !peerSeries.length) {
+      empty.hidden = false;
+      return;
+    }
+    empty.hidden = true;
+    const values = own.map(read);
+    peerSeries.forEach(function (series) {
+      series.points.forEach(function (point) { values.push(read(point)); });
+    });
+    const span = chartSpan(values, includeZero);
+    const min = span[0];
+    const max = span[1];
+    const xLeft = 36;
+    const xRight = 312;
+    const yTop = 10;
+    const yBottom = 102;
+    const plotW = xRight - xLeft;
+    const plotH = yBottom - yTop;
+    function yOf(value) {
+      return yBottom - ((value - min) / (max - min)) * plotH;
+    }
+    function xOf(point) {
+      const hour = Math.max(0, Math.min(24, egHourOfDay(point.ts)));
+      return xLeft + (hour / 24) * plotW;
+    }
+    drawChartFrame(svg, min, max, key, yOf, xLeft, xRight, yTop, yBottom);
+    if (includeZero && min < 0 && max > 0) {
+      const zero = document.createElementNS("http://www.w3.org/2000/svg", "line");
+      const y = yOf(0);
+      zero.setAttribute("x1", String(xLeft));
+      zero.setAttribute("x2", String(xRight));
+      zero.setAttribute("y1", y.toFixed(1));
+      zero.setAttribute("y2", y.toFixed(1));
+      zero.setAttribute("stroke", "rgba(255,255,255,0.35)");
+      zero.setAttribute("stroke-width", "1");
+      zero.setAttribute("stroke-dasharray", "3 3");
+      svg.appendChild(zero);
+    }
+    peerSeries.forEach(function (series) {
+      drawTrack(svg, series.points, read, xOf, yOf, series.color, 1.25);
+    });
+    drawTrack(svg, own, read, xOf, yOf, "#00e676", 2.4);
+  }
+
+  function drawHistory(card, history, others) {
+    drawMemberChart(card, "energy_kw", history, others, energyOf, true);
+    drawMemberChart(card, "soc_percent", history, others, socOf, false);
   }
 
   function fieldInput(label, field, placeholder) {
@@ -961,7 +1038,10 @@
         readout.className = "eg-readout";
         const charts = document.createElement("div");
         charts.className = "eg-charts";
-        charts.append(seriesChart("Einspeisung heute über die Zeit", "feed_in_kw"), seriesChart("Speicher über die Zeit", "soc_percent"));
+        charts.append(
+          seriesChart("Energie über die Zeit", "energy_kw", "Negativ ist Netzbezug, positiv ist Einspeisung. Dünn: die anderen."),
+          seriesChart("Speicher über die Zeit", "soc_percent", "Linie ist der Speicherstand. Dünn: Speicher der anderen.")
+        );
         side.append(title);
         fieldInput("Name", "alias", "Haus Martin").forEach(function (node) { side.append(node); });
         fieldInput("Vereinbarter Preis", "ask_ct_kwh", "z. B. 12 Cent").forEach(function (node) { side.append(node); });
@@ -1066,7 +1146,8 @@
           input.dataset.applied = text;
         }
       });
-      drawHistory(card, member.history || []);
+      const others = members.filter(function (other) { return other.name !== member.name; });
+      drawHistory(card, member.history || [], others);
       updateAbgleich(card);
       grid.appendChild(card);
     });
