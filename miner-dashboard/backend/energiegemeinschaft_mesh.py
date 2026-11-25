@@ -11,6 +11,7 @@ import hashlib
 import hmac
 import json
 import os
+import queue
 import socket
 import subprocess
 import threading
@@ -27,12 +28,24 @@ LISTEN_PORT = 8765
 # wird alle 6 s ausgetauscht und im selben Takt ins Register geschrieben.
 TICK_SEC = 6
 FRESH_SEC = 90
+# Ein Verlaufspunkt pro Minute. 2000 Punkte sind gut ein Tag plus der ältere
+# 6-Sekunden-Block, der noch im Speicher liegt. Mit dem 6-s-Takt allein wären
+# 360 Punkte nach gut einer halben Stunde voll, und der Tag wäre weg.
+HISTORY_BUCKET_SEC = 60
+HISTORY_LIMIT = 2000
+TRAIL_POINTS = 8
+TRAIL_MAX_AGE_SEC = 26 * 3600
+_HISTORY_FIELDS = ("feed_in_kw", "soc_percent", "energy_kw", "pv_kw")
 _ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
 _lock = threading.Lock()
 _started = False
 _sock: Optional[socket.socket] = None
 _sock_ip = ""
 _listen_gen = 0
+# Empfang und Schreiben trennen. Sonst bleibt das nächste Paket im Socket liegen,
+# solange die Einstellungsdatei geschrieben wird, und geht bei einem Stoß verloren.
+_rx_queue: "queue.Queue[Tuple[bytes, str]]" = queue.Queue(maxsize=128)
+_rx_started = False
 _last_tick_ok = 0.0
 # Letzter vollständig gelesener Stand. Ein halbfertiges JSON darf daraus nicht
 # eine leere Gemeinschaft machen.
@@ -181,6 +194,10 @@ def feed_packet(
     energy_kwh: Optional[float] = None,
     balance_kwh: Optional[float] = None,
     energy_kw: Optional[float] = None,
+    pv_kw: Optional[float] = None,
+    pv_kwh: Optional[float] = None,
+    grid_import_kwh: Optional[float] = None,
+    trail: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     payload: Dict[str, Any] = {
         "v": 1,
@@ -197,6 +214,14 @@ def feed_packet(
         payload["balance_kwh"] = round(float(balance_kwh), 3)
     if energy_kw is not None:
         payload["energy_kw"] = round(float(energy_kw), 3)
+    if pv_kw is not None:
+        payload["pv_kw"] = round(float(pv_kw), 3)
+    if pv_kwh is not None:
+        payload["pv_kwh"] = round(float(pv_kwh), 3)
+    if grid_import_kwh is not None:
+        payload["grid_import_kwh"] = round(float(grid_import_kwh), 3)
+    if trail:
+        payload["trail"] = trail
     return sign_packet(payload, code)
 
 
@@ -251,8 +276,12 @@ def _read_raw() -> Dict[str, Any]:
 
 
 def _write_raw(data: Dict[str, Any]) -> None:
-    """Ersetzt die Datei atomar. Leser sehen den alten oder den neuen Stand, nie ein halbes JSON."""
-    payload = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+    """Ersetzt die Datei atomar. Leser sehen den alten oder den neuen Stand, nie ein halbes JSON.
+
+    Kompakt geschrieben: Mit einem Tagesverlauf je Mitglied wäre die eingerückte
+    Datei mehrfach so groß, und sie wird bei jedem Paket neu geschrieben.
+    """
+    payload = json.dumps(data, ensure_ascii=False, separators=(",", ":")) + "\n"
     tmp = SETTINGS_FILE.with_name(SETTINGS_FILE.name + ".tmp")
     with tmp.open("w", encoding="utf-8") as handle:
         handle.write(payload)
@@ -277,7 +306,7 @@ def mesh_settings() -> Dict[str, Any]:
     }
 
 
-def _merge_history(older: Any, newer: Any, limit: int = 360) -> List[Dict[str, Any]]:
+def _merge_history(older: Any, newer: Any, limit: int = HISTORY_LIMIT) -> List[Dict[str, Any]]:
     """Beide Verläufe behalten. Ein Punkt ohne Messwert löscht den gespeicherten Wert nicht."""
     by_ts: Dict[float, Dict[str, Any]] = {}
     for source in (older, newer):
@@ -291,7 +320,7 @@ def _merge_history(older: Any, newer: Any, limit: int = 360) -> List[Dict[str, A
             except (TypeError, ValueError):
                 continue
             merged = by_ts.get(stamp, {"ts": stamp})
-            for field in ("feed_in_kw", "soc_percent", "energy_kw"):
+            for field in _HISTORY_FIELDS:
                 if point.get(field) is not None:
                     merged[field] = point.get(field)
             by_ts[stamp] = merged
@@ -333,7 +362,16 @@ def _keep_recorded_stats(baseline: Dict[str, Any], data: Dict[str, Any]) -> None
         merged = _merge_history(old.get("history"), new.get("history"))
         if merged:
             new["history"] = merged
-        for field in ("feed_in_kwh", "soc_percent", "balance_kwh", "alias", "ask_ct_kwh", "grid_cost_ct_kwh"):
+        for field in (
+            "feed_in_kwh",
+            "pv_kwh",
+            "grid_import_kwh",
+            "soc_percent",
+            "balance_kwh",
+            "alias",
+            "ask_ct_kwh",
+            "grid_cost_ct_kwh",
+        ):
             if new.get(field) is None and old.get(field) is not None:
                 new[field] = old.get(field)
         old_connected = old.get("connected_kwh")
@@ -494,6 +532,34 @@ def local_export_kwh() -> Optional[float]:
         return round(float(sold), 3)
     except Exception:
         return None
+
+
+def local_day_reading() -> Tuple[Optional[float], Optional[float], Optional[float]]:
+    """Erzeugung jetzt (kW), heute erzeugt (kWh) und heute vom Netz bezogen (kWh)."""
+    pv_kw: Optional[float] = None
+    try:
+        from control_algorithm.live_data import load_live_snapshot
+
+        live = load_live_snapshot()
+        if "error" not in live:
+            pv_kw = round(max(0.0, float(live.get("pv_kw") or 0)), 3)
+    except Exception:
+        pass
+    pv_kwh: Optional[float] = None
+    import_kwh: Optional[float] = None
+    try:
+        from energy_stats_24h import read_stats_24h
+
+        state = read_stats_24h(str(BACKEND_DIR))
+        gen = state.get("generation_kwh") or {}
+        if gen.get("pv") is not None or gen.get("hydro") is not None:
+            pv_kwh = round(float(gen.get("pv") or 0) + float(gen.get("hydro") or 0), 3)
+        netz = (state.get("consumption_kwh") or {}).get("netz")
+        if netz is not None:
+            import_kwh = round(float(netz), 3)
+    except Exception:
+        pass
+    return pv_kw, pv_kwh, import_kwh
 
 
 def local_reading() -> Tuple[float, Optional[float], Optional[float], float]:
@@ -718,7 +784,12 @@ def ensure_node_name(tailscale_name: str) -> None:
 
 
 CONNECTED_GAP_SEC = 150
-HISTORY_LIMIT = 360
+
+
+def _num(value: Any) -> Optional[float]:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
 
 
 def append_history(
@@ -727,31 +798,27 @@ def append_history(
     feed_kw: Optional[float],
     soc: Optional[float],
     energy_kw: Optional[float] = None,
+    pv_kw: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
     """Einen Zeitpunkt an den Verlauf dieses Geräts hängen.
 
     energy_kw ist die vorzeichenbehaftete Netzleistung: plus Einspeisung, minus Bezug.
+    Innerhalb einer Minute wird der letzte Punkt mit dem neuesten Wert überschrieben,
+    sein Zeitstempel bleibt aber stehen. Sonst bringt das Zusammenführen in _update
+    den alten Zeitstempel als eigenen Punkt zurück.
     """
     history = [item for item in (previous or []) if isinstance(item, dict)]
-    if history and abs(float(history[-1].get("ts") or 0) - float(now)) < 20:
+    values = {"feed_in_kw": feed_kw, "soc_percent": soc, "energy_kw": energy_kw, "pv_kw": pv_kw}
+    last_ts = float(history[-1].get("ts") or 0) if history else None
+    if last_ts is not None and 0 <= float(now) - last_ts < HISTORY_BUCKET_SEC:
         point = dict(history[-1])
-        point["ts"] = round(float(now), 1)
-        if feed_kw is not None:
-            point["feed_in_kw"] = round(float(feed_kw), 3)
-        if soc is not None:
-            point["soc_percent"] = round(float(soc), 1)
-        if energy_kw is not None:
-            point["energy_kw"] = round(float(energy_kw), 3)
         history[-1] = point
     else:
         point = {"ts": round(float(now), 1)}
-        if feed_kw is not None:
-            point["feed_in_kw"] = round(float(feed_kw), 3)
-        if soc is not None:
-            point["soc_percent"] = round(float(soc), 1)
-        if energy_kw is not None:
-            point["energy_kw"] = round(float(energy_kw), 3)
         history.append(point)
+    for field, value in values.items():
+        if value is not None:
+            point[field] = round(float(value), 1 if field == "soc_percent" else 3)
     return history[-HISTORY_LIMIT:]
 
 
@@ -760,16 +827,118 @@ def history_for_display(item: Dict[str, Any], now: float) -> List[Dict[str, Any]
     stored = [point for point in (item.get("history") or []) if isinstance(point, dict)]
     if stored:
         return stored[-HISTORY_LIMIT:]
-    feed = item.get("feed_in_kw")
-    soc = item.get("soc_percent")
-    signed = item.get("energy_kw")
-    feed_v = float(feed) if isinstance(feed, (int, float)) else None
-    soc_v = float(soc) if isinstance(soc, (int, float)) else None
-    signed_v = float(signed) if isinstance(signed, (int, float)) else None
-    if feed_v is None and soc_v is None and signed_v is None:
+    feed_v = _num(item.get("feed_in_kw"))
+    soc_v = _num(item.get("soc_percent"))
+    signed_v = _num(item.get("energy_kw"))
+    pv_v = _num(item.get("pv_kw"))
+    if feed_v is None and soc_v is None and signed_v is None and pv_v is None:
         return []
     stamp = float(item.get("seen") or now)
-    return append_history([], stamp, feed_v, soc_v, signed_v)
+    return append_history([], stamp, feed_v, soc_v, signed_v, pv_v)
+
+
+def local_midnight_ts(now: float) -> float:
+    local = datetime.fromtimestamp(float(now)).astimezone()
+    return local.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+
+
+def grid_import_kwh_from_history(points: List[Dict[str, Any]], since: float) -> Optional[float]:
+    """Netzbezug aus dem Verlauf schätzen, für Nachbarn, die ihn noch nicht mitschicken."""
+    rows = []
+    for point in points:
+        ts = _num(point.get("ts"))
+        signed = _num(point.get("energy_kw"))
+        if ts is None or signed is None or ts < since:
+            continue
+        rows.append((ts, max(0.0, -signed)))
+    if not rows:
+        return None
+    total = 0.0
+    for (t0, k0), (t1, k1) in zip(rows, rows[1:]):
+        gap = t1 - t0
+        if 0 < gap <= CONNECTED_GAP_SEC:
+            total += (k0 + k1) / 2.0 * gap / 3600.0
+    return round(total, 3)
+
+
+def feed_kwh_from_history(points: List[Dict[str, Any]], since: float) -> Optional[float]:
+    """Einspeisung aus dem Verlauf. Der Tageszähler (verkauf) bleibt oft bei null."""
+    rows = []
+    for point in points:
+        ts = _num(point.get("ts"))
+        if ts is None or ts < since:
+            continue
+        feed = _num(point.get("feed_in_kw"))
+        if feed is None:
+            signed = _num(point.get("energy_kw"))
+            feed = None if signed is None else max(0.0, signed)
+        if feed is None:
+            continue
+        rows.append((ts, max(0.0, feed)))
+    if not rows:
+        return None
+    total = 0.0
+    for (t0, k0), (t1, k1) in zip(rows, rows[1:]):
+        gap = t1 - t0
+        if 0 < gap <= CONNECTED_GAP_SEC:
+            total += (k0 + k1) / 2.0 * gap / 3600.0
+    return round(total, 3)
+
+
+def choose_day_kwh(reported: Optional[float], measured: Optional[float]) -> Tuple[Optional[float], bool]:
+    """Tageszähler, wenn er die gemessene Kurve abdeckt. Sonst die Kurve."""
+    if measured is None:
+        return reported, False
+    if reported is None or float(measured) > float(reported) + 0.02:
+        return measured, True
+    return round(float(reported), 3), False
+
+
+def _slim_point(point: Dict[str, Any], now: float) -> Optional[Dict[str, Any]]:
+    ts = _num(point.get("ts"))
+    if ts is None or ts > float(now) + 120 or float(now) - ts > TRAIL_MAX_AGE_SEC:
+        return None
+    slim: Dict[str, Any] = {"ts": round(ts, 1)}
+    for field in _HISTORY_FIELDS:
+        val = _num(point.get(field))
+        if val is not None:
+            slim[field] = round(val, 1 if field == "soc_percent" else 3)
+    if len(slim) == 1:
+        return None
+    return slim
+
+
+def history_trail(history: Any, now: float) -> List[Dict[str, Any]]:
+    """Acht Minutenpunkte, das Fenster wandert. So kommt ein fehlender Tag in
+    etwa einer Viertelstunde nach, ohne das UDP-Paket über die Tailscale-MTU zu heben.
+    """
+    by_minute: Dict[int, Dict[str, Any]] = {}
+    for point in history or []:
+        if not isinstance(point, dict):
+            continue
+        slim = _slim_point(point, now)
+        if slim is None:
+            continue
+        by_minute[int(slim["ts"] // 60)] = slim
+    ordered = [by_minute[key] for key in sorted(by_minute)]
+    if len(ordered) <= TRAIL_POINTS:
+        return ordered
+    slots = (len(ordered) + TRAIL_POINTS - 1) // TRAIL_POINTS
+    start = (int(float(now) // TICK_SEC) % slots) * TRAIL_POINTS
+    return ordered[start:start + TRAIL_POINTS]
+
+
+def _clean_trail(trail: Any, now: float) -> List[Dict[str, Any]]:
+    if not isinstance(trail, list):
+        return []
+    cleaned = []
+    for point in trail[:48]:
+        if not isinstance(point, dict):
+            continue
+        slim = _slim_point(point, now)
+        if slim is not None:
+            cleaned.append(slim)
+    return cleaned
 
 
 def seed_live_history() -> None:
@@ -793,16 +962,14 @@ def seed_live_history() -> None:
         for item in stored.values():
             if not isinstance(item, dict) or item.get("history"):
                 continue
-            feed = item.get("feed_in_kw")
-            soc = item.get("soc_percent")
-            signed = item.get("energy_kw")
-            feed_v = float(feed) if isinstance(feed, (int, float)) else None
-            soc_v = float(soc) if isinstance(soc, (int, float)) else None
-            signed_v = float(signed) if isinstance(signed, (int, float)) else None
-            if feed_v is None and soc_v is None and signed_v is None:
+            feed_v = _num(item.get("feed_in_kw"))
+            soc_v = _num(item.get("soc_percent"))
+            signed_v = _num(item.get("energy_kw"))
+            pv_v = _num(item.get("pv_kw"))
+            if feed_v is None and soc_v is None and signed_v is None and pv_v is None:
                 continue
             stamp = float(item.get("seen") or now)
-            item["history"] = append_history([], stamp, feed_v, soc_v, signed_v)
+            item["history"] = append_history([], stamp, feed_v, soc_v, signed_v, pv_v)
 
     _update(mutate)
 
@@ -847,6 +1014,9 @@ def _absorb_member(keep: Dict[str, Any], extra: Dict[str, Any]) -> None:
         keep["feed_in_kwh"] = extra["feed_in_kwh"]
     if keep.get("balance_kwh") is None and extra.get("balance_kwh") is not None:
         keep["balance_kwh"] = extra["balance_kwh"]
+    for field in ("pv_kw", "pv_kwh", "grid_import_kwh"):
+        if keep.get(field) is None and extra.get(field) is not None:
+            keep[field] = extra[field]
     old_connected = keep.get("connected_kwh")
     extra_connected = extra.get("connected_kwh")
     if isinstance(extra_connected, (int, float)) and (
@@ -864,6 +1034,9 @@ def _absorb_member(keep: Dict[str, Any], extra: Dict[str, Any]) -> None:
             keep["soc_percent"] = extra.get("soc_percent")
         if extra.get("balance_kwh") is not None:
             keep["balance_kwh"] = extra.get("balance_kwh")
+        for field in ("pv_kw", "pv_kwh", "grid_import_kwh"):
+            if extra.get(field) is not None:
+                keep[field] = extra.get(field)
 
 
 def _collapse_into(members: Dict[str, Any], name: str, ip: str) -> str:
@@ -924,6 +1097,10 @@ def _remember_member(
     energy_kwh: Optional[float] = None,
     balance_kwh: Optional[float] = None,
     energy_kw: Optional[float] = None,
+    pv_kw: Optional[float] = None,
+    pv_kwh: Optional[float] = None,
+    grid_import_kwh: Optional[float] = None,
+    trail: Any = None,
 ) -> None:
     now = time.time()
 
@@ -935,6 +1112,7 @@ def _remember_member(
         prev = members.get(key) if isinstance(members.get(key), dict) else {}
         current_kw = feed if feed is not None else prev.get("feed_in_kw")
         signed = energy_kw if energy_kw is not None else prev.get("energy_kw")
+        production = pv_kw if pv_kw is not None else prev.get("pv_kw")
         members[key] = {
             "name": key,
             "ip": ip or prev.get("ip") or "",
@@ -950,12 +1128,16 @@ def _remember_member(
             ),
             "soc_percent": soc if soc is not None else prev.get("soc_percent"),
             "balance_kwh": balance_kwh if balance_kwh is not None else prev.get("balance_kwh"),
+            "pv_kw": production,
+            "pv_kwh": pv_kwh if pv_kwh is not None else prev.get("pv_kwh"),
+            "grid_import_kwh": grid_import_kwh if grid_import_kwh is not None else prev.get("grid_import_kwh"),
             "history": append_history(
-                prev.get("history"),
+                _merge_history(prev.get("history"), _clean_trail(trail, now)),
                 now,
                 None if current_kw is None else float(current_kw),
                 soc if soc is not None else prev.get("soc_percent"),
                 None if signed is None else float(signed),
+                None if production is None else float(production),
             ),
             "alias": prev.get("alias") or "",
             "ask_ct_kwh": prev.get("ask_ct_kwh"),
@@ -1234,6 +1416,10 @@ def handle_datagram(raw: bytes, source_ip: str) -> None:
             None if energy is None else float(energy),
             None if balance is None else float(balance),
             None if signed is None else float(signed),
+            _num(payload.get("pv_kw")),
+            _num(payload.get("pv_kwh")),
+            _num(payload.get("grid_import_kwh")),
+            payload.get("trail"),
         )
         return
     if kind == "cmd" and str(payload.get("to") or "") == local_name():
@@ -1337,6 +1523,7 @@ def _ensure_socket() -> None:
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 256 * 1024)
         sock.bind((bind_ip, LISTEN_PORT))
     except OSError as exc:
         sock.close()
@@ -1358,10 +1545,12 @@ def cycle_once() -> None:
     ensure_node_name(str(snap.get("self_name") or ""))
     name = local_name(snap)
     feed, soc, energy, signed = local_reading()
+    pv_kw, pv_kwh, import_kwh = local_day_reading()
     balance = local_night_balance_kwh()
     self_ip = str(snap.get("self_ip") or "")
-    _remember_member(name, self_ip, feed, soc, energy, balance, signed)
-    packet = feed_packet(name, feed, soc, code, energy, balance, signed)
+    _remember_member(name, self_ip, feed, soc, energy, balance, signed, pv_kw, pv_kwh, import_kwh)
+    trail = history_trail(_history_of(name), time.time())
+    packet = feed_packet(name, feed, soc, code, energy, balance, signed, pv_kw, pv_kwh, import_kwh, trail or None)
     settings = mesh_settings()
     sent: set[str] = set()
     # Bekannte Mitglieder immer unter der gespeicherten Adresse anstoßen –
@@ -1385,10 +1574,59 @@ def cycle_once() -> None:
     _last_tick_ok = time.time()
 
 
+def _history_of(name: str) -> List[Dict[str, Any]]:
+    folded = str(name or "").casefold()
+    for key, item in (mesh_settings().get("members") or {}).items():
+        if not isinstance(item, dict):
+            continue
+        if str(key).casefold() == folded or str(item.get("name") or "").casefold() == folded:
+            history = item.get("history")
+            return history if isinstance(history, list) else []
+    return []
+
+
+def _rx_worker() -> None:
+    while True:
+        raw, source_ip = _rx_queue.get()
+        try:
+            handle_datagram(raw, source_ip)
+        except Exception as exc:
+            print(f"[Energiegemeinschaft] Paketfehler: {exc}")
+
+
+def _ensure_rx_worker() -> None:
+    global _rx_started
+    if _rx_started:
+        return
+    with _lock:
+        if _rx_started:
+            return
+        _rx_started = True
+    threading.Thread(target=_rx_worker, name="eg-mesh-rx", daemon=True).start()
+
+
+def _enqueue_datagram(raw: bytes, source_ip: str) -> None:
+    """Sofort zurück zum Empfang. Das Schreiben der Datei läuft daneben."""
+    _ensure_rx_worker()
+    try:
+        _rx_queue.put_nowait((raw, source_ip))
+        return
+    except queue.Full:
+        pass
+    try:
+        _rx_queue.get_nowait()
+    except queue.Empty:
+        pass
+    try:
+        _rx_queue.put_nowait((raw, source_ip))
+    except queue.Full:
+        pass
+
+
 def _listen_loop(sock: socket.socket, gen: int) -> None:
     while gen == _listen_gen:
         try:
-            raw, addr = sock.recvfrom(4096)
+            raw, addr = sock.recvfrom(65535)
         except OSError:
             if gen != _listen_gen:
                 return
@@ -1396,10 +1634,7 @@ def _listen_loop(sock: socket.socket, gen: int) -> None:
             if _sock is sock:
                 _close_socket()
             return
-        try:
-            handle_datagram(raw, addr[0])
-        except Exception as exc:
-            print(f"[Energiegemeinschaft] Paketfehler: {exc}")
+        _enqueue_datagram(raw, addr[0])
 
 
 def _tick_loop() -> None:
@@ -1435,12 +1670,41 @@ def public_status() -> Dict[str, Any]:
     members = []
     feed_sum = 0.0
     fresh_count = 0
+    feed_today_total = 0.0
+    import_today_total = 0.0
+    midnight = local_midnight_ts(now)
     self_name = local_name(snap)
     self_ip = snap.get("self_ip") or ""
     for item in (settings.get("members") or {}).values():
         if not is_community_counterpart(item, self_name, self_ip):
             continue
         seen = float(item.get("seen") or 0)
+        # Tageswerte vom Vortag zählen nicht mehr als „heute“.
+        seen_today = seen >= midnight
+        history = [
+            point for point in history_for_display(item, now)
+            if (_num(point.get("ts")) or 0) >= midnight
+        ]
+        pv_today = _num(item.get("pv_kwh")) if seen_today else None
+        if seen_today:
+            feed_today, feed_estimated = choose_day_kwh(
+                _num(item.get("feed_in_kwh")),
+                feed_kwh_from_history(history, midnight),
+            )
+            import_today, import_estimated = choose_day_kwh(
+                _num(item.get("grid_import_kwh")),
+                grid_import_kwh_from_history(history, midnight),
+            )
+        else:
+            feed_today = None
+            import_today = None
+            feed_estimated = False
+            import_estimated = False
+        if feed_today is not None:
+            feed_today_total += feed_today
+        if import_today is not None:
+            import_today_total += import_today
+        signed_now = _num(item.get("energy_kw"))
         age = None if not seen else round(now - seen, 1)
         fresh = age is not None and age <= FRESH_SEC
         rejected = float(item.get("rejected_seen") or 0)
@@ -1473,7 +1737,14 @@ def public_status() -> Dict[str, Any]:
                 "feeding": member_is_feeding(feed, fresh),
                 "self": is_self,
                 "comparison": price_comparison(item.get("ask_ct_kwh"), item.get("grid_cost_ct_kwh")),
-                "history": history_for_display(item, now),
+                "pv_kw": _num(item.get("pv_kw")),
+                "grid_import_kw": None if signed_now is None else round(max(0.0, -signed_now), 3),
+                "feed_in_kwh_today": feed_today,
+                "feed_in_estimated": feed_estimated,
+                "pv_kwh_today": pv_today,
+                "grid_import_kwh_today": import_today,
+                "grid_import_estimated": import_estimated,
+                "history": history,
             }
         )
     members.sort(key=community_price_key)
@@ -1492,6 +1763,8 @@ def public_status() -> Dict[str, Any]:
         "fresh_count": fresh_count,
         "connection_count": sum(1 for row in members if not row["self"]),
         "feed_sum_kw": round(feed_sum, 3),
+        "feed_today_total_kwh": round(feed_today_total, 3),
+        "grid_import_today_total_kwh": round(import_today_total, 3),
         "members": members,
         "commands": list(reversed(settings.get("commands") or []))[:20],
         "community": page.get("community"),

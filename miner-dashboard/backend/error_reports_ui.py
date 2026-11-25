@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -16,6 +17,14 @@ DEFAULT_CONFIG = Path(
 WISHES_FILENAME = "steuerung-wuensche.txt"
 PIPELINE_DIR = Path("/home/piminer/minersteuerung/scripts/error_log_pipeline/pi")
 PYTHON = Path("/home/piminer/minersteuerung/venv/bin/python")
+
+if str(PIPELINE_DIR) not in sys.path:
+    sys.path.insert(0, str(PIPELINE_DIR))
+
+try:
+    import fault_scan
+except ImportError:  # pipeline not installed on this Pi
+    fault_scan = None
 
 
 def _load_json(path: Path) -> Any:
@@ -98,6 +107,7 @@ def _pkg_row(gz: Path, meta_path: Path, folder: str) -> Dict[str, Any]:
         "generated_at": meta.get("generated_at") or "",
         "sources": meta.get("sources") or [],
         "top_errors": meta.get("top_errors") or [],
+        "severity_counts": meta.get("severity_counts") or {},
         "git_sha": (meta.get("software") or {}).get("git_sha") if isinstance(meta.get("software"), dict) else "",
     }
 
@@ -113,7 +123,7 @@ def list_packages(folder: Path, name: str) -> List[Dict[str, Any]]:
     if not folder.is_dir():
         return []
     rows: List[Dict[str, Any]] = []
-    for meta in sorted(folder.glob("piminer-errors-*.meta.json"), reverse=True):
+    for meta in sorted(folder.glob("pi[mM]iner-errors-*.meta.json"), reverse=True):
         label = meta.name.replace(".meta.json", "")
         gz = folder / f"{label}.jsonl.gz"
         if not gz.is_file():
@@ -231,6 +241,72 @@ def save_wishes(text: str, cfg: Optional[Dict[str, Any]] = None) -> str:
     return cleaned
 
 
+def live_findings(cfg: Optional[Dict[str, Any]] = None, limit: int = 12) -> Dict[str, Any]:
+    """Was der Hintergrunddienst seit dem letzten Bericht erfasst hat (ohne neu zu scannen)."""
+    cfg = cfg or load_pipeline_config()
+    out: Dict[str, Any] = {
+        "available": False,
+        "period_start": None,
+        "last_scan": None,
+        "severity_counts": {"critical": 0, "error": 0, "warning": 0},
+        "top": [],
+        "total": 0,
+    }
+    if fault_scan is None:
+        return out
+    full = fault_scan.load_config(Path(str(cfg.get("config_path") or DEFAULT_CONFIG)))
+    store_path = Path(str(full["store_file"]))
+    if not store_path.is_file():
+        return out
+    store = fault_scan.load_store(full)
+    findings = fault_scan.report_findings(store, full)
+    for f in findings:
+        sev = f.get("severity")
+        if sev in out["severity_counts"]:
+            out["severity_counts"][sev] += 1
+    out.update(
+        available=True,
+        period_start=_fmt_ts(store.get("period_start")),
+        last_scan=_fmt_ts(store.get("last_scan")),
+        total=len(findings),
+        top=[
+            {
+                "severity": f.get("severity"),
+                "severity_label": fault_scan.SEVERITY_LABEL.get(f.get("severity"), ""),
+                "count": max(1, int(f.get("count") or 0)),
+                "category": f.get("category") or "",
+                "title": str(f.get("title") or "")[:160],
+                "last_seen": str(f.get("last_seen") or "").replace("T", " ")[:16],
+            }
+            for f in findings[:limit]
+        ],
+    )
+    return out
+
+
+def run_preview() -> Dict[str, Any]:
+    """Bericht so erzeugen, wie er gesendet würde — nichts wird gesendet oder zurückgesetzt."""
+    script = PIPELINE_DIR / "fault_scan.py"
+    if not script.is_file():
+        return {"ok": False, "message": f"Skript fehlt: {script}", "text": ""}
+    try:
+        r = subprocess.run(
+            ["/usr/bin/python3", str(script), "--preview", "--config", str(DEFAULT_CONFIG)],
+            capture_output=True,
+            text=True,
+            timeout=180,
+            check=False,
+            cwd=str(PIPELINE_DIR),
+        )
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "message": "Vorschau abgebrochen (Timeout)", "text": ""}
+    except OSError as exc:
+        return {"ok": False, "message": str(exc), "text": ""}
+    if r.returncode != 0:
+        return {"ok": False, "message": "Vorschau fehlgeschlagen", "text": (r.stderr or "").strip()}
+    return {"ok": True, "message": "Vorschau erstellt (nichts gesendet).", "text": r.stdout}
+
+
 def build_status() -> Dict[str, Any]:
     cfg = load_pipeline_config()
     chats = resolve_chat_ids(cfg)
@@ -240,15 +316,13 @@ def build_status() -> Dict[str, Any]:
     return {
         "window_days": int(cfg.get("window_days") or 14),
         "schedule_note": cfg.get("schedule_note") or "",
-        "schedule_collect": "alle 14 Tage (Hintergrunddienst, nur Berichte mit Einträgen)",
+        "schedule_collect": "stündlich erfassen, alle 14 Tage senden (nur wenn es etwas zu melden gibt)",
         "schedule_retry": "bei Telegram-Fehler: Pause, danach erneuter Versuch",
         "chat_ids": chats,
         "user_chat_id": str(cfg.get("user_chat_id") or ""),
         "chats_file": cfg.get("chats_file") or "",
-        "sources": [
-            "Steuerungsalgorithmus.log",
-            "control_algorithm_daemon.log",
-        ],
+        "sources": list(fault_scan.SOURCES_DESCRIPTION) if fault_scan else [],
+        "live": live_findings(cfg),
         "outbox": list_packages(outbox, "outbox"),
         "wishes": load_wishes(cfg),
         "sent": list_packages(sent, "sent")[:20],

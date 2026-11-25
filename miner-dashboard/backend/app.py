@@ -2034,6 +2034,15 @@ def api_fehlerberichte_test():
     return jsonify(run_test())
 
 
+@app.route('/api/fehlerberichte/vorschau', methods=['POST'])
+def api_fehlerberichte_vorschau():
+    if not session.get('logged_in'):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    from error_reports_ui import run_preview
+
+    return jsonify(run_preview())
+
+
 @app.route('/api/dashboard/config', methods=['GET', 'POST'])
 def api_dashboard_config():
     from dashboard_config import (

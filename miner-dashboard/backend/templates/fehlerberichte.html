@@ -74,6 +74,23 @@
       font-family: ui-monospace, monospace;
       font-size: 0.82rem;
     }
+    .err-badge.crit { background: rgba(244, 67, 54, 0.18); color: #ff6b5e; }
+    .err-badge.err { background: rgba(255, 152, 0, 0.16); color: #ffa726; }
+    .sev-cell { white-space: nowrap; }
+    .sources-list { margin: 0.35rem 0 0; padding-left: 1.1rem; font-size: 0.85rem; }
+    .sources-list li { margin: 0.15rem 0; }
+    #preview_text {
+      white-space: pre;
+      font-size: 0.75rem;
+      line-height: 1.35;
+      margin-top: 0.75rem;
+      max-height: 32rem;
+      overflow: auto;
+      padding: 0.75rem;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: rgba(0, 0, 0, 0.25);
+    }
     #send_detail {
       white-space: pre-wrap;
       font-size: 0.78rem;
@@ -105,12 +122,17 @@
         </div>
         <div class="err-stat">
           <div class="label">Fenster</div>
-          <div class="value">{{ status.window_days }} Tage · nur ERROR</div>
+          <div class="value">{{ status.window_days }} Tage · Warnung, Fehler, Kritisch</div>
         </div>
-        <div class="err-stat">
-          <div class="label">Quellen</div>
-          <div class="value">{{ status.sources | join(', ') }}</div>
-        </div>
+      </div>
+
+      <div style="margin-top: 1rem;">
+        <div class="label" style="color: var(--muted); font-size: 0.78rem;">Was erfasst wird</div>
+        <ul class="sources-list">
+          {% for s in status.sources %}
+            <li>{{ s }}</li>
+          {% endfor %}
+        </ul>
       </div>
 
       <div style="margin-top: 1rem;">
@@ -140,6 +162,57 @@
           <span style="color: var(--muted); font-size: 0.82rem;">Nächste Send: {{ status.timers.send_next }}</span>
         {% endif %}
       </div>
+    </div>
+
+    <div class="panel">
+      <div style="display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap;">
+        <h5 class="panel-title" style="margin: 0;">Seit dem letzten Bericht erfasst</h5>
+        <button type="button" class="btn-primary-custom" id="preview_btn">🔍 Vorschau des Berichts</button>
+      </div>
+      {% set live = status.live %}
+      {% if live.available %}
+        <div style="margin-top: 0.75rem; display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center;">
+          <span class="err-badge {% if live.severity_counts.critical %}crit{% else %}off{% endif %}">{{ live.severity_counts.critical }} kritisch</span>
+          <span class="err-badge {% if live.severity_counts.error %}err{% else %}off{% endif %}">{{ live.severity_counts.error }} Fehler</span>
+          <span class="err-badge {% if live.severity_counts.warning %}warn{% else %}off{% endif %}">{{ live.severity_counts.warning }} Warnungen</span>
+          <span style="color: var(--muted); font-size: 0.82rem;">seit {{ live.period_start or '—' }} · zuletzt geprüft {{ live.last_scan or '—' }}</span>
+        </div>
+        {% if live.top %}
+        <div style="overflow-x: auto; margin-top: 0.75rem;">
+          <table class="pkg-table">
+            <thead>
+              <tr>
+                <th>Schwere</th>
+                <th>Anzahl</th>
+                <th>Bereich</th>
+                <th>Meldung</th>
+                <th>Zuletzt</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for f in live.top %}
+              <tr>
+                <td class="sev-cell"><span class="err-badge {% if f.severity == 'critical' %}crit{% elif f.severity == 'error' %}err{% else %}warn{% endif %}">{{ f.severity_label }}</span></td>
+                <td>{{ f.count }}×</td>
+                <td>{{ f.category }}</td>
+                <td>{{ f.title }}</td>
+                <td class="sev-cell">{{ f.last_seen }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% if live.total > live.top|length %}
+        <p class="pkg-empty" style="margin-top: 0.5rem;">… und {{ live.total - live.top|length }} weitere (siehe Vorschau).</p>
+        {% endif %}
+        {% else %}
+        <p class="pkg-empty" style="margin-top: 0.75rem;">Keine Auffälligkeiten – es würde derzeit kein Bericht gesendet.</p>
+        {% endif %}
+      {% else %}
+        <p class="pkg-empty" style="margin-top: 0.75rem;">Noch keine Erfassung gelaufen. Die Vorschau startet die erste Erfassung.</p>
+      {% endif %}
+      <p id="preview_message" style="margin: 0.75rem 0 0; color: var(--muted); min-height: 1.2rem;"></p>
+      <pre id="preview_text" hidden></pre>
     </div>
 
     <div class="panel">
@@ -261,6 +334,32 @@
       wuenscheMsg.style.color = '#f44336';
     } finally {
       wuenscheBtn.disabled = false;
+    }
+  });
+
+  const previewBtn = document.getElementById('preview_btn');
+  const previewMsg = document.getElementById('preview_message');
+  const previewText = document.getElementById('preview_text');
+
+  previewBtn.addEventListener('click', async () => {
+    previewBtn.disabled = true;
+    previewMsg.textContent = 'Erfasse und erstelle Vorschau … (beim ersten Mal einige Sekunden)';
+    previewMsg.style.color = 'var(--muted)';
+    try {
+      const res = await fetch('/api/fehlerberichte/vorschau', {
+        method: 'POST',
+        headers: { 'X-Requested-With': 'fetch' },
+      });
+      const data = await res.json();
+      previewMsg.textContent = data.message || (data.ok ? 'OK' : 'Fehler');
+      previewMsg.style.color = data.ok ? 'var(--accent)' : '#f44336';
+      previewText.textContent = data.text || '';
+      previewText.hidden = !data.text;
+    } catch (err) {
+      previewMsg.textContent = String(err);
+      previewMsg.style.color = '#f44336';
+    } finally {
+      previewBtn.disabled = false;
     }
   });
 

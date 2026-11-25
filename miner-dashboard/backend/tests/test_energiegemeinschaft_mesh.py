@@ -6,7 +6,13 @@ from unittest.mock import patch
 from energiegemeinschaft_mesh import (
     accrue_connected_kwh,
     append_history,
+    choose_day_kwh,
+    feed_kwh_from_history,
+    grid_import_kwh_from_history,
     history_for_display,
+    history_trail,
+    _clean_trail,
+    _merge_history,
     code_is_valid,
     community_price_key,
     format_stillzeit,
@@ -159,6 +165,90 @@ class TestEnergiegemeinschaftMesh(unittest.TestCase):
         signed = append_history([], 200, 0.0, 80, -0.45)
         self.assertEqual(signed[-1]["energy_kw"], -0.45)
         self.assertEqual(signed[-1]["feed_in_kw"], 0.0)
+
+    def test_history_keeps_one_point_per_minute_for_a_whole_day(self):
+        history = []
+        for second in range(0, 24 * 3600, 6):
+            history = append_history(history, 1_000_000 + second, 0.1, 50, -0.2, 1.5)
+        self.assertEqual(len(history), 24 * 60)
+        self.assertEqual(history[0]["ts"], 1_000_000)
+        self.assertEqual(history[-1]["pv_kw"], 1.5)
+
+    def test_minute_update_does_not_come_back_as_a_second_point(self):
+        before = append_history([], 1000, 0.1, 50, -0.2)
+        after = append_history(before, 1006, 0.3, 51, -0.1, 2.0)
+        self.assertEqual(after[-1]["ts"], 1000)
+        merged = _merge_history(before, after)
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]["feed_in_kw"], 0.3)
+        self.assertEqual(merged[0]["pv_kw"], 2.0)
+
+    def test_feed_packet_carries_production_and_grid_import(self):
+        code = "EG-7K2M-Q4HP"
+        packet = feed_packet("haus-nord", 0.4, 71, code, 2.1, energy_kw=0.4, pv_kw=3.25, pv_kwh=18.5, grid_import_kwh=1.7)
+        self.assertEqual(packet["pv_kw"], 3.25)
+        self.assertEqual(packet["pv_kwh"], 18.5)
+        self.assertEqual(packet["grid_import_kwh"], 1.7)
+        self.assertTrue(verify_packet(packet, code))
+        self.assertNotIn("pv_kw", feed_packet("haus-nord", 0.4, 71, code))
+
+    def test_day_total_uses_the_curve_when_the_counter_stays_at_zero(self):
+        points = [
+            {"ts": 0, "feed_in_kw": 2.0, "energy_kw": 2.0},
+            {"ts": 60, "feed_in_kw": 2.0, "energy_kw": 2.0},
+        ]
+        measured = feed_kwh_from_history(points, 0)
+        self.assertEqual(measured, 0.033)
+        chosen, estimated = choose_day_kwh(0.0, measured)
+        self.assertTrue(estimated)
+        self.assertEqual(chosen, measured)
+        kept, estimated = choose_day_kwh(5.0, measured)
+        self.assertFalse(estimated)
+        self.assertEqual(kept, 5.0)
+        self.assertEqual(choose_day_kwh(None, None), (None, False))
+
+    def test_trail_covers_the_day_and_fits_one_datagram(self):
+        import time as time_mod
+
+        now = time_mod.time()
+        history = [
+            {
+                "ts": now - (24 * 60 - i) * 60,
+                "feed_in_kw": round(0.1 * (i % 5), 3),
+                "soc_percent": 40,
+                "energy_kw": -0.2,
+                "pv_kw": 1.25,
+            }
+            for i in range(24 * 60)
+        ]
+        seen = set()
+        for step in range(200):
+            for point in history_trail(history, now + step * 6):
+                seen.add(point["ts"])
+        self.assertGreater(len(seen), 1400)
+        sample = history_trail(history, now)
+        self.assertLessEqual(len(sample), 8)
+        packet = feed_packet(
+            "haus-nord", 0.4, 71, "EG-7K2M-Q4HP",
+            energy_kw=0.4, pv_kw=3.2, pv_kwh=18.5, grid_import_kwh=1.7, trail=sample,
+        )
+        self.assertLess(len(json.dumps(packet, separators=(",", ":")).encode("utf-8")), 1200)
+        self.assertTrue(verify_packet(packet, "EG-7K2M-Q4HP"))
+        hole = [{"ts": now - 3600, "feed_in_kw": 0.1}, {"ts": now - 60, "feed_in_kw": 0.2}]
+        trail = _clean_trail([{"ts": now - 600, "feed_in_kw": 1.5, "pv_kw": 2.0}, {"ts": "nope"}], now)
+        merged = _merge_history(hole, trail)
+        self.assertEqual(merged[1]["pv_kw"], 2.0)
+        self.assertEqual(len(merged), 3)
+
+    def test_grid_import_is_estimated_from_negative_energy_only(self):
+        points = [
+            {"ts": 0, "energy_kw": -2.0},
+            {"ts": 60, "energy_kw": -2.0},
+            {"ts": 120, "energy_kw": 1.0},
+            {"ts": 3600, "energy_kw": -5.0},
+        ]
+        self.assertEqual(grid_import_kwh_from_history(points, 0), 0.05)
+        self.assertIsNone(grid_import_kwh_from_history(points, 4000))
 
     def test_signed_energy_is_import_negative_and_export_positive(self):
         with patch("control_algorithm.live_data.load_live_snapshot", return_value={"grid_kw": 0.45, "soc_percent": 90}):

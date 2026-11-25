@@ -85,6 +85,9 @@ systemctl --user restart ha-data-bridge.service 2>/dev/null \
   || systemctl --user start ha-data-bridge.service 2>/dev/null \
   || log "WARNUNG: ha-data-bridge nicht neu startbar"
 
+systemctl --user try-restart error-log-send.service 2>/dev/null \
+  || log "WARNUNG: Fehlerbericht-Dienst nicht neu startbar"
+
 log "Steuerungsprozesse stoppen …"
 stop_proc app.py
 stop_proc scheduler.py

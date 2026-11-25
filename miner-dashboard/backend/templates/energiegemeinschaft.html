@@ -35,6 +35,28 @@
     <p class="eg-hint" id="eg_code_msg"></p>
   </section>
 
+  <section class="eg-hero" aria-label="Gemeinschaft heute">
+    <div class="eg-hero-kpis">
+      <div class="eg-hero-kpi">
+        <p class="eg-kicker">Summe Einspeisung jetzt</p>
+        <p class="eg-sum" id="eg_sum">– kW</p>
+      </div>
+      <div class="eg-hero-kpi">
+        <p class="eg-kicker"><i class="eg-key eg-key-feed"></i>Insgesamt eingespeist heute</p>
+        <p class="eg-sum" id="eg_feed_today">– kWh</p>
+      </div>
+      <div class="eg-hero-kpi">
+        <p class="eg-kicker"><i class="eg-key eg-key-import"></i>Insgesamt vom Netz bezogen heute</p>
+        <p class="eg-sum" id="eg_import_today">– kWh</p>
+        <p class="eg-sub" id="eg_import_note"></p>
+      </div>
+    </div>
+    <div class="eg-hero-foot">
+      <span class="eg-sub" id="eg_fresh">Noch keine Minute angekommen</span>
+      <span class="eg-net" id="eg_net">Tailscale wird gelesen…</span>
+    </div>
+  </section>
+
   <section class="eg-devices" id="eg_grid"></section>
 
   <section class="panel eg-settings" id="eg_settings" aria-label="Einstellungen zur Gemeinschaft">
@@ -43,15 +65,6 @@
   </section>
 
   <div class="eg-wrap">
-    <section class="eg-hero">
-      <div>
-        <p class="eg-kicker">Summe Einspeisung</p>
-        <p class="eg-sum" id="eg_sum">– kW</p>
-        <p class="eg-sub" id="eg_fresh">Noch keine Minute angekommen</p>
-      </div>
-      <div class="eg-net" id="eg_net">Tailscale wird gelesen…</div>
-    </section>
-
     <section class="panel">
       <h3>Tailscale</h3>
       <p class="eg-hint">Tailscale ist nur die Netzwerkschicht. Es gibt ein Konto, das von Michael. Alle Pis sind Geräte dieses Kontos. Niemand legt hier ein eigenes Tailscale-Konto an.</p>
@@ -69,14 +82,37 @@
     .eg-wrap { display: flex; flex-direction: column; gap: 1rem; max-width: 980px; }
     .eg-name, .eg-invite { width: 100%; max-width: none; box-sizing: border-box; }
     .eg-name .form-control { max-width: 320px; }
-    .eg-hero {
-      display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap;
-      padding: 1.1rem 1.2rem; border-radius: 18px;
-      background: linear-gradient(160deg, rgba(0,230,118,0.16), rgba(15,20,27,0.92));
-      border: 1px solid rgba(0,230,118,0.28);
+    :root {
+      --eg-soc: #00e676;
+      --eg-pv: #ffca28;
+      --eg-import: #ff6b6b;
+      --eg-feed: #4fc3f7;
     }
-    .eg-kicker { margin: 0; color: var(--muted); letter-spacing: 0.06em; text-transform: uppercase; font-size: 0.75rem; }
-    .eg-sum { margin: 0.15rem 0 0; font-size: 2.4rem; font-weight: 800; color: #fff; }
+    .eg-hero {
+      display: flex; flex-direction: column; gap: 1rem;
+      margin: 1.25rem 0 0; padding: 1.35rem 1.5rem; border-radius: 18px;
+      background: linear-gradient(160deg, rgba(0,230,118,0.14), rgba(15,20,27,0.94) 70%);
+      border: 1px solid rgba(0,230,118,0.24);
+    }
+    .eg-hero-kpis { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; }
+    .eg-hero-kpi + .eg-hero-kpi { border-left: 1px solid var(--border); padding-left: 1.25rem; }
+    .eg-hero-foot {
+      display: flex; justify-content: space-between; gap: 0.5rem 1rem; flex-wrap: wrap;
+      padding-top: 0.85rem; border-top: 1px solid var(--border);
+    }
+    .eg-kicker {
+      margin: 0; display: flex; align-items: center; gap: 0.45rem;
+      color: var(--muted); letter-spacing: 0.06em; text-transform: uppercase; font-size: 0.72rem; font-weight: 600;
+    }
+    .eg-key { width: 0.55rem; height: 0.55rem; border-radius: 3px; flex: 0 0 auto; background: var(--eg-key, var(--muted)); }
+    .eg-key-soc { --eg-key: var(--eg-soc); }
+    .eg-key-pv { --eg-key: var(--eg-pv); }
+    .eg-key-import { --eg-key: var(--eg-import); }
+    .eg-key-feed { --eg-key: var(--eg-feed); }
+    .eg-sum {
+      margin: 0.35rem 0 0; font-size: 2.1rem; font-weight: 800; color: #fff;
+      line-height: 1.1; font-variant-numeric: tabular-nums;
+    }
     .eg-sub, .eg-hint, .eg-net { color: var(--muted); font-size: 0.86rem; }
     .eg-code { font-size: 1.8rem; font-weight: 800; letter-spacing: 0.08em; margin: 0.4rem 0; color: #00e676; }
     .eg-row { display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center; }
@@ -84,7 +120,7 @@
     .eg-join { display: block; width: 100%; max-width: none; box-sizing: border-box; margin-top: 0.35rem; }
     #eg_join_row { width: 100%; }
     #eg_join_row .eg-join { flex: 1; width: auto; min-width: 0; margin-top: 0; }
-    .eg-devices { width: 100%; max-width: none; display: flex; flex-direction: column; gap: 0.85rem; margin: 1rem 0; }
+    .eg-devices { width: 100%; max-width: none; display: flex; flex-direction: column; gap: 1.25rem; margin: 1.25rem 0; }
     .eg-settings { width: 100%; max-width: none; box-sizing: border-box; }
     .eg-settings-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1rem 1.5rem; }
     .eg-settings .form-control { max-width: 220px; }
@@ -153,38 +189,97 @@
     .eg-choice .form-check-input, .eg-check .form-check-input { margin-top: 0.2rem; flex: 0 0 auto; }
     .eg-card {
       width: 100%; box-sizing: border-box; position: relative;
-      display: grid; grid-template-columns: minmax(200px, 260px) minmax(0, 1fr);
+      display: grid; grid-template-columns: minmax(200px, 250px) minmax(0, 1fr);
       gap: 1.25rem 2rem; align-items: start;
-      background: var(--surface); border: 1px solid var(--border); border-radius: 16px;
-      padding: 1.25rem 1.4rem 4.6rem;
+      background: linear-gradient(180deg, rgba(255,255,255,0.025), rgba(255,255,255,0) 40%), var(--surface);
+      border: 1px solid var(--border); border-radius: 18px;
+      padding: 1.4rem 1.5rem 4.6rem;
+      box-shadow: 0 12px 32px rgba(0,0,0,0.22);
+      transition: border-color 0.3s ease;
     }
-    .eg-settings-corner { position: absolute; left: 1.4rem; bottom: 1.15rem; }
+    .eg-card-head {
+      grid-column: 1 / -1; display: flex; align-items: center; gap: 0.7rem; flex-wrap: wrap;
+      padding-bottom: 1rem; border-bottom: 1px solid var(--border);
+    }
+    .eg-card-head h4 { margin: 0; font-size: 1.2rem; font-weight: 800; color: #fff; }
+    .eg-card-device { color: var(--muted); font-size: 0.82rem; }
+    .eg-settings-corner { position: absolute; left: 1.5rem; bottom: 1.2rem; }
     .eg-side { min-width: 0; }
-    .eg-readout { min-width: 0; display: flex; flex-direction: column; gap: 1rem; }
-    .eg-stats { display: grid; grid-template-columns: repeat(3, minmax(160px, 1fr)); gap: 1rem; margin: 0; }
-    .eg-stats > div {
-      background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.015));
-      border: 1px solid var(--border); border-radius: 16px; padding: 1.15rem 1.3rem;
+    .eg-side .form-label:first-child { margin-top: 0; }
+    .eg-readout { min-width: 0; display: flex; flex-direction: column; gap: 1.1rem; }
+    .eg-tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.85rem; }
+    .eg-tile, .eg-stats > div {
+      min-width: 0; box-sizing: border-box;
+      background: rgba(255,255,255,0.03);
+      border: 1px solid var(--border); border-radius: 14px; padding: 0.95rem 1.05rem;
     }
-    .eg-charts { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
-    .eg-bar { height: 8px; border-radius: 99px; background: rgba(255,255,255,0.08); overflow: hidden; }
-    .eg-bar > span { display: block; height: 100%; width: 0; background: #00e676; }
+    .eg-tile { border-top: 2px solid var(--eg-key, var(--border)); }
+    .eg-tile .eg-kicker { margin-bottom: 0.55rem; }
+    .eg-tile-sub { margin: 0.4rem 0 0; color: var(--muted); font-size: 0.8rem; font-variant-numeric: tabular-nums; }
+    .eg-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.85rem; margin: 0.6rem 0 0; }
+    .eg-stats .eg-kicker { margin: 0 0 0.55rem; }
+    .eg-bar { height: 6px; margin-top: 0.6rem; border-radius: 99px; background: rgba(255,255,255,0.08); overflow: hidden; }
+    .eg-bar > span { display: block; height: 100%; width: 0; background: var(--eg-soc); border-radius: inherit; transition: width 0.6s ease; }
+    .eg-status { display: flex; flex-direction: column; align-items: flex-start; gap: 0.45rem; }
+    .eg-status .eg-hint { margin: 0; }
+    .eg-latency {
+      appearance: none; cursor: pointer; font: inherit;
+      display: inline-flex; align-items: center; gap: 0.5rem;
+      padding: 0.35rem 0.8rem; border-radius: 999px;
+      background: rgba(255,255,255,0.04); border: 1px solid var(--border);
+      color: var(--text); font-size: 0.8rem; font-variant-numeric: tabular-nums;
+      transition: background 0.2s ease, border-color 0.2s ease;
+    }
+    .eg-latency:hover { background: rgba(255,255,255,0.08); }
+    .eg-latency-dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: #607d8b; flex: 0 0 auto; }
+    .eg-latency[data-level="good"] .eg-latency-dot { background: #00e676; box-shadow: 0 0 6px #00e676; }
+    .eg-latency[data-level="slow"] .eg-latency-dot { background: #ffca28; box-shadow: 0 0 6px #ffca28; }
+    .eg-latency[data-level="stale"] { border-color: rgba(255,107,107,0.4); }
+    .eg-latency[data-level="stale"] .eg-latency-dot { background: #ff6b6b; }
+    .eg-latency.is-loading .eg-latency-dot { animation: eg-pulse 0.8s ease-in-out infinite; }
+    @keyframes eg-pulse { 50% { opacity: 0.25; } }
+    .eg-charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.85rem; }
+    .eg-chart {
+      position: relative; min-width: 0;
+      background: rgba(0,0,0,0.2); border: 1px solid var(--border); border-radius: 14px;
+      padding: 0.8rem 0.9rem 0.5rem;
+    }
+    .eg-chart-head { display: flex; justify-content: space-between; align-items: baseline; gap: 0.5rem; margin-bottom: 0.35rem; }
+    .eg-chart-now { color: var(--eg-key); font-weight: 700; font-size: 0.95rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .eg-spark { width: 100%; height: auto; aspect-ratio: 360 / 168; display: block; overflow: visible; touch-action: pan-y; }
+    .eg-chart-empty {
+      position: absolute; left: 0; right: 0; top: 52%; margin: 0;
+      text-align: center; color: var(--muted); font-size: 0.82rem; pointer-events: none;
+    }
+    .eg-tip {
+      position: absolute; z-index: 2; pointer-events: none; white-space: nowrap;
+      transform: translate(-50%, calc(-100% - 10px));
+      padding: 0.3rem 0.55rem; border-radius: 8px;
+      background: rgba(11,15,20,0.94); border: 1px solid var(--border);
+      color: #fff; font-size: 0.78rem; font-variant-numeric: tabular-nums;
+      box-shadow: 0 6px 18px rgba(0,0,0,0.35);
+    }
+    .eg-tip span { color: var(--muted); margin-right: 0.35rem; }
     .eg-card .form-label { display: block; margin-top: 0.85rem; }
     .eg-card .form-control { width: 100%; max-width: none; box-sizing: border-box; }
-    .eg-actions { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 1rem; }
+    .eg-actions { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 1.1rem; }
     .eg-save { margin-top: 0; }
-    .eg-abgleich { margin: 0; }
-    .eg-history { margin: 0; }
-    .eg-spark { width: 100%; height: 140px; display: block; background: rgba(0,0,0,0.22); border-radius: 16px; }
-    @media (max-width: 900px) {
-      .eg-card, .eg-charts, .eg-stats { grid-template-columns: 1fr; }
+    .eg-abgleich { margin: 0; padding-top: 1rem; border-top: 1px solid var(--border); }
+    @media (max-width: 1200px) {
+      .eg-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
-    .eg-card.fresh { border-color: rgba(0,230,118,0.45); }
-    .eg-card h4 { margin: 0 0 0.35rem; display: flex; justify-content: space-between; gap: 0.4rem; }
-    .eg-dot { width: 0.65rem; height: 0.65rem; border-radius: 50%; background: #607d8b; display: inline-block; }
+    @media (max-width: 1000px) {
+      .eg-card { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 700px) {
+      .eg-charts, .eg-stats, .eg-hero-kpis { grid-template-columns: 1fr; }
+      .eg-hero-kpi + .eg-hero-kpi { border-left: 0; padding-left: 0; border-top: 1px solid var(--border); padding-top: 0.85rem; }
+      .eg-card { padding: 1.1rem 1.1rem 4.4rem; }
+    }
+    .eg-card.fresh { border-color: rgba(0,230,118,0.35); }
+    .eg-dot { width: 0.65rem; height: 0.65rem; border-radius: 50%; background: #607d8b; display: inline-block; flex: 0 0 auto; }
     .eg-card.fresh .eg-dot { background: #00e676; box-shadow: 0 0 8px #00e676; }
-    .eg-stats .eg-kicker { margin: 0 0 0.7rem; }
-    .eg-kw { font-size: 2rem; font-weight: 700; margin: 0; color: #fff; line-height: 1.15; }
+    .eg-kw { font-size: 1.6rem; font-weight: 750; margin: 0; color: #fff; line-height: 1.15; font-variant-numeric: tabular-nums; }
     .eg-cmds { list-style: none; padding: 0; margin: 0.8rem 0 0; }
     .eg-cmds li { padding: 0.35rem 0; border-top: 1px solid var(--border); font-size: 0.88rem; }
   </style>
@@ -250,10 +345,19 @@
     const members = data.members || [];
     // Ein zu schneller Poll kann einen leeren Zwischenstand zeichnen. Code und
     // Mitglieder, die schon sichtbar sind, bleiben stehen.
-    if (!data.invite_code && members.length === 0 && communityShown) return;
+    // Ein leerer Poll (Datei gerade im Schreiben) darf die Karten nicht ausradieren.
+    if (!members.length && communityShown) return;
     codeEl.textContent = data.invite_code || "noch keiner";
     fillDisplayName(data);
-    document.getElementById("eg_sum").textContent = (data.feed_sum_kw == null ? "–" : data.feed_sum_kw) + " kW";
+    document.getElementById("eg_sum").textContent = fmtKw(data.feed_sum_kw);
+    document.getElementById("eg_feed_today").textContent = fmtKwh(data.feed_today_total_kwh);
+    document.getElementById("eg_import_today").textContent = fmtKwh(data.grid_import_today_total_kwh);
+    const estimated = members.some(function (member) {
+      return member.grid_import_estimated || member.feed_in_estimated;
+    });
+    document.getElementById("eg_import_note").textContent = estimated
+      ? "Teils aus dem Minutenverlauf geschätzt, solange der Tageszähler fehlt."
+      : "";
     document.getElementById("eg_fresh").textContent = data.fresh_count + " von " + members.length + " in der letzten Minute";
     const net = data.tailscale_ok
       ? (data.self_name + " · " + (data.self_ip || "keine Adresse") + " · " + data.peer_count + " Gegenstellen")
@@ -696,35 +800,98 @@
     return value == null || value === "" ? "" : String(value);
   }
 
-  function seriesChart(title, key, note) {
-    const wrap = document.createElement("div");
-    wrap.className = "eg-history";
-    const label = document.createElement("p");
-    label.className = "eg-kicker";
-    label.textContent = title;
-    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    svg.setAttribute("viewBox", "0 0 320 120");
-    svg.setAttribute("class", "eg-spark");
-    svg.dataset.series = key;
-    const empty = document.createElement("p");
-    empty.className = "eg-hint";
-    empty.dataset.empty = key;
-    empty.textContent = "Noch kein Wert.";
-    wrap.append(label, svg, empty);
-    if (note) {
-      const hint = document.createElement("p");
-      hint.className = "eg-hint";
-      hint.textContent = note;
-      wrap.append(hint);
-    }
-    return wrap;
+  function numOf(value) {
+    if (value == null || value === "" || typeof value === "boolean") return null;
+    const num = Number(value);
+    return Number.isFinite(num) ? num : null;
   }
 
-  function chartTickLabel(value, key) {
-    if (key === "soc_percent") return String(Math.round(value));
-    if (Math.abs(value) >= 10) return value.toFixed(0);
-    if (Math.abs(value) >= 1) return value.toFixed(1);
-    return value.toFixed(2);
+  function fmtNum(value, digits) {
+    return Number(value).toLocaleString("de-DE", { minimumFractionDigits: digits, maximumFractionDigits: digits });
+  }
+
+  function fmtKw(value) {
+    const num = numOf(value);
+    if (num == null) return "– kW";
+    return fmtNum(num, Math.abs(num) >= 10 ? 1 : 2) + " kW";
+  }
+
+  function fmtKwh(value) {
+    const num = numOf(value);
+    if (num == null) return "– kWh";
+    return fmtNum(num, Math.abs(num) >= 100 ? 0 : (Math.abs(num) >= 10 ? 1 : 2)) + " kWh";
+  }
+
+  function fmtValue(value, unit) {
+    if (unit === "%") return fmtNum(value, 0) + " %";
+    return fmtKw(value);
+  }
+
+  function socOf(point) { return numOf(point.soc_percent); }
+  function pvOf(point) { return numOf(point.pv_kw); }
+  function importOf(point) {
+    const signed = numOf(point.energy_kw);
+    return signed == null ? null : Math.max(0, -signed);
+  }
+  function feedOf(point) {
+    const feed = numOf(point.feed_in_kw);
+    if (feed != null) return feed;
+    const signed = numOf(point.energy_kw);
+    return signed == null ? null : Math.max(0, signed);
+  }
+
+  const EG_SERIES = {
+    soc_percent: { title: "Speicherstand", unit: "%", color: "#00e676", keyClass: "eg-key-soc", fixed: [0, 100], read: socOf },
+    pv_kw: { title: "Verlauf der Produktion", unit: "kW", color: "#ffca28", keyClass: "eg-key-pv", read: pvOf },
+    grid_import_kw: { title: "Netzbezug", unit: "kW", color: "#ff6b6b", keyClass: "eg-key-import", read: importOf },
+    feed_in_kw: { title: "Einspeisung", unit: "kW", color: "#4fc3f7", keyClass: "eg-key-feed", read: feedOf }
+  };
+  const EG_CHART = { w: 360, h: 168, left: 34, right: 352, top: 12, bottom: 144 };
+  // Längere Lücken im Verlauf werden als Lücke gezeichnet, nicht als gerade Linie.
+  const EG_GAP_SEC = 300;
+  const SVG_NS = "http://www.w3.org/2000/svg";
+
+  function svgEl(name, attrs) {
+    const el = document.createElementNS(SVG_NS, name);
+    Object.keys(attrs || {}).forEach(function (key) { el.setAttribute(key, String(attrs[key])); });
+    return el;
+  }
+
+  function seriesChart(key) {
+    const spec = EG_SERIES[key];
+    const wrap = document.createElement("div");
+    wrap.className = "eg-chart " + spec.keyClass;
+    const head = document.createElement("div");
+    head.className = "eg-chart-head";
+    const label = document.createElement("p");
+    label.className = "eg-kicker";
+    const swatch = document.createElement("i");
+    swatch.className = "eg-key";
+    label.append(swatch, document.createTextNode(spec.title));
+    const now = document.createElement("span");
+    now.className = "eg-chart-now";
+    now.dataset.now = key;
+    now.textContent = "–";
+    head.append(label, now);
+    const svg = svgEl("svg", { viewBox: "0 0 " + EG_CHART.w + " " + EG_CHART.h, class: "eg-spark", role: "img", "aria-label": spec.title + " heute" });
+    svg.dataset.series = key;
+    const empty = document.createElement("p");
+    empty.className = "eg-chart-empty";
+    empty.dataset.empty = key;
+    empty.textContent = "Heute noch keine Werte.";
+    const tip = document.createElement("div");
+    tip.className = "eg-tip";
+    tip.hidden = true;
+    wrap.append(head, svg, empty, tip);
+    svg.addEventListener("pointermove", function (event) {
+      svg._egPointer = { clientX: event.clientX };
+      showTip(wrap, svg, tip, svg._egPointer);
+    });
+    svg.addEventListener("pointerleave", function () {
+      svg._egPointer = null;
+      hideTip(svg, tip);
+    });
+    return wrap;
   }
 
   const EG_CHART_TZ = "Europe/Vienna";
@@ -764,216 +931,240 @@
     return (parts.year + "-" + parts.month + "-" + parts.day) === egTodayKey();
   }
 
-  function drawChartFrame(svg, min, max, key, yOf, xLeft, xRight, yTop, yBottom) {
-    const ns = "http://www.w3.org/2000/svg";
-    const gridStroke = "rgba(255,255,255,0.08)";
-    const axisStroke = "rgba(255,255,255,0.28)";
-    const tickCount = 4;
-    for (let i = 0; i <= tickCount; i += 1) {
-      const ratio = i / tickCount;
-      const value = min + (max - min) * (1 - ratio);
-      const y = yOf(value);
-      const grid = document.createElementNS(ns, "line");
-      grid.setAttribute("x1", String(xLeft));
-      grid.setAttribute("x2", String(xRight));
-      grid.setAttribute("y1", y.toFixed(1));
-      grid.setAttribute("y2", y.toFixed(1));
-      grid.setAttribute("stroke", gridStroke);
-      grid.setAttribute("stroke-width", "1");
-      svg.appendChild(grid);
-      const tick = document.createElementNS(ns, "line");
-      tick.setAttribute("x1", String(xLeft - 4));
-      tick.setAttribute("x2", String(xLeft));
-      tick.setAttribute("y1", y.toFixed(1));
-      tick.setAttribute("y2", y.toFixed(1));
-      tick.setAttribute("stroke", axisStroke);
-      tick.setAttribute("stroke-width", "1");
-      svg.appendChild(tick);
-      const label = document.createElementNS(ns, "text");
-      label.setAttribute("x", String(xLeft - 6));
-      label.setAttribute("y", String(y + 3));
-      label.setAttribute("text-anchor", "end");
-      label.setAttribute("fill", "rgba(255,255,255,0.45)");
-      label.setAttribute("font-size", "9");
-      label.setAttribute("font-family", "inherit");
-      label.textContent = chartTickLabel(value, key);
-      svg.appendChild(label);
-    }
-    for (let i = 0; i <= tickCount; i += 1) {
-      const hour = (24 * i) / tickCount;
-      const x = xLeft + ((xRight - xLeft) * i) / tickCount;
-      const grid = document.createElementNS(ns, "line");
-      grid.setAttribute("x1", x.toFixed(1));
-      grid.setAttribute("x2", x.toFixed(1));
-      grid.setAttribute("y1", String(yTop));
-      grid.setAttribute("y2", String(yBottom));
-      grid.setAttribute("stroke", gridStroke);
-      grid.setAttribute("stroke-width", "1");
-      svg.appendChild(grid);
-      const tick = document.createElementNS(ns, "line");
-      tick.setAttribute("x1", x.toFixed(1));
-      tick.setAttribute("x2", x.toFixed(1));
-      tick.setAttribute("y1", String(yBottom));
-      tick.setAttribute("y2", String(yBottom + 4));
-      tick.setAttribute("stroke", axisStroke);
-      tick.setAttribute("stroke-width", "1");
-      svg.appendChild(tick);
-      const label = document.createElementNS(ns, "text");
-      label.setAttribute("x", x.toFixed(1));
-      label.setAttribute("y", String(yBottom + 14));
-      label.setAttribute("text-anchor", i === 0 ? "start" : (i === tickCount ? "end" : "middle"));
-      label.setAttribute("fill", "rgba(255,255,255,0.45)");
-      label.setAttribute("font-size", "9");
-      label.setAttribute("font-family", "inherit");
-      label.textContent = String(hour);
-      svg.appendChild(label);
-    }
-    const axisY = document.createElementNS(ns, "line");
-    axisY.setAttribute("x1", String(xLeft));
-    axisY.setAttribute("x2", String(xLeft));
-    axisY.setAttribute("y1", String(yTop));
-    axisY.setAttribute("y2", String(yBottom));
-    axisY.setAttribute("stroke", axisStroke);
-    axisY.setAttribute("stroke-width", "1.2");
-    svg.appendChild(axisY);
-    const axisX = document.createElementNS(ns, "line");
-    axisX.setAttribute("x1", String(xLeft));
-    axisX.setAttribute("x2", String(xRight));
-    axisX.setAttribute("y1", String(yBottom));
-    axisX.setAttribute("y2", String(yBottom));
-    axisX.setAttribute("stroke", axisStroke);
-    axisX.setAttribute("stroke-width", "1.2");
-    svg.appendChild(axisX);
-  }
-
-  const EG_PEER_COLORS = ["#ffb300", "#64b5f6", "#ce93d8", "#ff8a65", "#80cbc4"];
-
-  function energyOf(point) {
-    if (point.energy_kw != null && point.energy_kw !== "" && !Number.isNaN(Number(point.energy_kw))) {
-      return Number(point.energy_kw);
-    }
-    if (point.feed_in_kw != null && point.feed_in_kw !== "" && !Number.isNaN(Number(point.feed_in_kw))) {
-      return Number(point.feed_in_kw);
-    }
-    return null;
-  }
-
-  function socOf(point) {
-    if (point.soc_percent == null || point.soc_percent === "" || Number.isNaN(Number(point.soc_percent))) return null;
-    return Number(point.soc_percent);
-  }
-
   function todayPoints(history, read) {
     return (history || []).filter(function (point) {
       return egIsTodayPoint(point) && read(point) != null;
     });
   }
 
-  function chartSpan(values, includeZero) {
-    let min = Math.min.apply(null, values);
-    let max = Math.max.apply(null, values);
-    if (includeZero) {
-      min = Math.min(0, min);
-      max = Math.max(0, max);
-    }
-    if (min === max) {
-      const pad = includeZero ? 0.5 : Math.max(1, Math.abs(min) * 0.04 || 1);
-      return [min - pad, max + pad];
-    }
-    const pad = (max - min) * 0.12;
-    min -= pad;
-    max += pad;
-    if (includeZero) {
-      min = Math.min(0, min);
-      max = Math.max(0, max);
-    }
-    return [min, max];
+  function niceStep(raw) {
+    const power = Math.pow(10, Math.floor(Math.log10(raw)));
+    const scaled = raw / power;
+    const step = scaled <= 1 ? 1 : (scaled <= 2 ? 2 : (scaled <= 2.5 ? 2.5 : (scaled <= 5 ? 5 : 10)));
+    return step * power;
   }
 
-  function drawTrack(svg, points, read, xOf, yOf, stroke, width) {
-    const ns = "http://www.w3.org/2000/svg";
-    if (!points.length) return;
-    if (points.length === 1) {
-      const dot = document.createElementNS(ns, "circle");
-      dot.setAttribute("cx", xOf(points[0]).toFixed(1));
-      dot.setAttribute("cy", yOf(read(points[0])).toFixed(1));
-      dot.setAttribute("r", width > 2 ? "4" : "2.5");
-      dot.setAttribute("fill", stroke);
-      svg.appendChild(dot);
-      return;
-    }
-    const coords = points.map(function (point) {
-      return xOf(point).toFixed(1) + "," + yOf(read(point)).toFixed(1);
-    }).join(" ");
-    const line = document.createElementNS(ns, "polyline");
-    line.setAttribute("points", coords);
-    line.setAttribute("fill", "none");
-    line.setAttribute("stroke", stroke);
-    line.setAttribute("stroke-width", String(width));
-    line.setAttribute("stroke-linejoin", "round");
-    line.setAttribute("stroke-linecap", "round");
-    svg.appendChild(line);
+  function chartScale(values, spec) {
+    if (spec.fixed) return { min: spec.fixed[0], max: spec.fixed[1], step: 25 };
+    let top = 0.5;
+    values.forEach(function (value) { if (value * 1.1 > top) top = value * 1.1; });
+    const step = niceStep(top / 4);
+    return { min: 0, max: Math.ceil(top / step - 1e-9) * step, step: step };
   }
 
-  function drawMemberChart(card, key, history, others, read, includeZero) {
-    const svg = card.querySelector('[data-series="' + key + '"]');
-    const empty = card.querySelector('[data-empty="' + key + '"]');
-    if (!svg || !empty) return;
-    const own = todayPoints(history, read);
-    const peerSeries = (others || []).map(function (member, index) {
-      return {
-        points: todayPoints(member.history || [], read),
-        color: EG_PEER_COLORS[index % EG_PEER_COLORS.length]
-      };
-    }).filter(function (series) { return series.points.length; });
-    while (svg.firstChild) svg.removeChild(svg.firstChild);
-    if (!own.length && !peerSeries.length) {
-      empty.hidden = false;
-      return;
+  function tickLabel(value, step, unit) {
+    if (unit === "%") return fmtNum(value, 0);
+    const digits = step >= 1 ? 0 : (Math.abs(step * 10 - Math.round(step * 10)) < 1e-9 ? 1 : 2);
+    return fmtNum(value, digits);
+  }
+
+  function clockOf(tsSec) {
+    const parts = egLocalParts(Number(tsSec) * 1000);
+    return parts.hour + ":" + parts.minute;
+  }
+
+  function drawFrame(svg, scale, spec, yOf) {
+    const c = EG_CHART;
+    const count = Math.round((scale.max - scale.min) / scale.step);
+    for (let i = 0; i <= count; i += 1) {
+      const value = scale.min + i * scale.step;
+      const y = yOf(value).toFixed(1);
+      svg.appendChild(svgEl("line", {
+        x1: c.left, x2: c.right, y1: y, y2: y,
+        stroke: i === 0 ? "rgba(255,255,255,0.18)" : "rgba(255,255,255,0.06)",
+        "stroke-width": 1,
+        "stroke-dasharray": i === 0 ? "" : "2 4"
+      }));
+      const label = svgEl("text", { x: c.left - 7, y: Number(y) + 3.5, "text-anchor": "end", fill: "rgba(232,238,247,0.42)", "font-size": 10 });
+      label.textContent = tickLabel(value, scale.step, spec.unit);
+      svg.appendChild(label);
     }
-    empty.hidden = true;
-    const values = own.map(read);
-    peerSeries.forEach(function (series) {
-      series.points.forEach(function (point) { values.push(read(point)); });
+    [0, 6, 12, 18, 24].forEach(function (hour, index, all) {
+      const x = c.left + (hour / 24) * (c.right - c.left);
+      const label = svgEl("text", {
+        x: x.toFixed(1), y: c.h - 6,
+        "text-anchor": index === 0 ? "start" : (index === all.length - 1 ? "end" : "middle"),
+        fill: "rgba(232,238,247,0.42)", "font-size": 10
+      });
+      label.textContent = (hour < 10 ? "0" : "") + hour + ":00";
+      svg.appendChild(label);
     });
-    const span = chartSpan(values, includeZero);
-    const min = span[0];
-    const max = span[1];
-    const xLeft = 36;
-    const xRight = 312;
-    const yTop = 10;
-    const yBottom = 102;
-    const plotW = xRight - xLeft;
-    const plotH = yBottom - yTop;
+    const nowX = c.left + (egHourOfDay(Date.now() / 1000) / 24) * (c.right - c.left);
+    svg.appendChild(svgEl("line", {
+      x1: nowX.toFixed(1), x2: nowX.toFixed(1), y1: c.top, y2: c.bottom,
+      stroke: "rgba(255,255,255,0.16)", "stroke-width": 1, "stroke-dasharray": "3 3"
+    }));
+  }
+
+  function splitSegments(points) {
+    const segments = [];
+    let current = [];
+    points.forEach(function (point) {
+      const prev = current[current.length - 1];
+      if (prev && Number(point.ts) - Number(prev.ts) > EG_GAP_SEC) {
+        segments.push(current);
+        current = [];
+      }
+      current.push(point);
+    });
+    if (current.length) segments.push(current);
+    return segments;
+  }
+
+  function drawSeries(card, key, history) {
+    const spec = EG_SERIES[key];
+    const svg = card.querySelector('[data-series="' + key + '"]');
+    if (!svg) return;
+    const wrap = svg.parentNode;
+    const empty = wrap.querySelector('[data-empty="' + key + '"]');
+    const now = wrap.querySelector('[data-now="' + key + '"]');
+    const points = todayPoints(history, spec.read);
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+    hideTip(svg, wrap.querySelector(".eg-tip"));
+    const last = points.length ? spec.read(points[points.length - 1]) : null;
+    if (now) now.textContent = last == null ? "–" : fmtValue(last, spec.unit);
+    if (empty) empty.hidden = points.length > 0;
+    const c = EG_CHART;
+    const scale = chartScale(points.map(spec.read), spec);
     function yOf(value) {
-      return yBottom - ((value - min) / (max - min)) * plotH;
+      return c.bottom - ((value - scale.min) / (scale.max - scale.min)) * (c.bottom - c.top);
     }
     function xOf(point) {
       const hour = Math.max(0, Math.min(24, egHourOfDay(point.ts)));
-      return xLeft + (hour / 24) * plotW;
+      return c.left + (hour / 24) * (c.right - c.left);
     }
-    drawChartFrame(svg, min, max, key, yOf, xLeft, xRight, yTop, yBottom);
-    if (includeZero && min < 0 && max > 0) {
-      const zero = document.createElementNS("http://www.w3.org/2000/svg", "line");
-      const y = yOf(0);
-      zero.setAttribute("x1", String(xLeft));
-      zero.setAttribute("x2", String(xRight));
-      zero.setAttribute("y1", y.toFixed(1));
-      zero.setAttribute("y2", y.toFixed(1));
-      zero.setAttribute("stroke", "rgba(255,255,255,0.35)");
-      zero.setAttribute("stroke-width", "1");
-      zero.setAttribute("stroke-dasharray", "3 3");
-      svg.appendChild(zero);
-    }
-    peerSeries.forEach(function (series) {
-      drawTrack(svg, series.points, read, xOf, yOf, series.color, 1.25);
+    drawFrame(svg, scale, spec, yOf);
+    svg._egChart = { points: points, spec: spec, xOf: xOf, yOf: yOf };
+    if (!points.length) return;
+    const gradId = "egg-" + card.dataset.slug + "-" + key;
+    const defs = svgEl("defs");
+    const grad = svgEl("linearGradient", { id: gradId, x1: 0, y1: 0, x2: 0, y2: 1 });
+    grad.append(
+      svgEl("stop", { offset: "0%", "stop-color": spec.color, "stop-opacity": 0.3 }),
+      svgEl("stop", { offset: "100%", "stop-color": spec.color, "stop-opacity": 0 })
+    );
+    defs.append(grad);
+    svg.appendChild(defs);
+    const base = yOf(scale.min).toFixed(1);
+    splitSegments(points).forEach(function (segment) {
+      if (segment.length === 1) {
+        svg.appendChild(svgEl("circle", { cx: xOf(segment[0]).toFixed(1), cy: yOf(spec.read(segment[0])).toFixed(1), r: 2, fill: spec.color }));
+        return;
+      }
+      const coords = segment.map(function (point) {
+        return xOf(point).toFixed(1) + "," + yOf(spec.read(point)).toFixed(1);
+      });
+      const firstX = xOf(segment[0]).toFixed(1);
+      const lastX = xOf(segment[segment.length - 1]).toFixed(1);
+      svg.appendChild(svgEl("path", { d: "M" + firstX + "," + base + " L" + coords.join(" L") + " L" + lastX + "," + base + " Z", fill: "url(#" + gradId + ")" }));
+      svg.appendChild(svgEl("path", {
+        d: "M" + coords.join(" L"), fill: "none", stroke: spec.color,
+        "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round"
+      }));
     });
-    drawTrack(svg, own, read, xOf, yOf, "#00e676", 2.4);
+    const end = points[points.length - 1];
+    const endX = xOf(end).toFixed(1);
+    const endY = yOf(spec.read(end)).toFixed(1);
+    svg.appendChild(svgEl("circle", { cx: endX, cy: endY, r: 6, fill: spec.color, "fill-opacity": 0.2 }));
+    svg.appendChild(svgEl("circle", { cx: endX, cy: endY, r: 3, fill: spec.color }));
+    if (svg._egPointer) showTip(wrap, svg, wrap.querySelector(".eg-tip"), svg._egPointer);
   }
 
-  function drawHistory(card, history, others) {
-    drawMemberChart(card, "energy_kw", history, others, energyOf, true);
-    drawMemberChart(card, "soc_percent", history, others, socOf, false);
+  function hideTip(svg, tip) {
+    if (tip) tip.hidden = true;
+    const cursor = svg && svg.querySelector("[data-cursor]");
+    if (cursor) cursor.remove();
+  }
+
+  function showTip(wrap, svg, tip, event) {
+    const chart = svg._egChart;
+    if (!chart || !chart.points.length) return;
+    const rect = svg.getBoundingClientRect();
+    if (!rect.width) return;
+    const scaleX = rect.width / EG_CHART.w;
+    const x = (event.clientX - rect.left) / scaleX;
+    let best = chart.points[0];
+    let bestGap = Infinity;
+    chart.points.forEach(function (point) {
+      const gap = Math.abs(chart.xOf(point) - x);
+      if (gap < bestGap) {
+        bestGap = gap;
+        best = point;
+      }
+    });
+    const px = chart.xOf(best);
+    const py = chart.yOf(chart.spec.read(best));
+    let cursor = svg.querySelector("[data-cursor]");
+    if (!cursor) {
+      cursor = svgEl("g", { "data-cursor": "1" });
+      cursor.append(
+        svgEl("line", { y1: EG_CHART.top, y2: EG_CHART.bottom, stroke: "rgba(255,255,255,0.35)", "stroke-width": 1 }),
+        svgEl("circle", { r: 4, fill: chart.spec.color, stroke: "#0b0f14", "stroke-width": 1.5 })
+      );
+      svg.appendChild(cursor);
+    }
+    const line = cursor.querySelector("line");
+    line.setAttribute("x1", px.toFixed(1));
+    line.setAttribute("x2", px.toFixed(1));
+    const dot = cursor.querySelector("circle");
+    dot.setAttribute("cx", px.toFixed(1));
+    dot.setAttribute("cy", py.toFixed(1));
+    const wrapRect = wrap.getBoundingClientRect();
+    tip.replaceChildren();
+    const time = document.createElement("span");
+    time.textContent = clockOf(best.ts);
+    tip.append(time, document.createTextNode(fmtValue(chart.spec.read(best), chart.spec.unit)));
+    tip.style.left = (rect.left - wrapRect.left + px * scaleX) + "px";
+    tip.style.top = (rect.top - wrapRect.top + py * (rect.height / EG_CHART.h)) + "px";
+    tip.hidden = false;
+  }
+
+  function latencyText(sec) {
+    if (sec == null) return "Noch keine Datenübertragung";
+    const total = Math.max(0, Math.round(sec));
+    let span;
+    if (total < 60) span = total === 1 ? "1 Sekunde" : total + " Sekunden";
+    else if (total < 3600) span = Math.floor(total / 60) === 1 ? "1 Minute" : Math.floor(total / 60) + " Minuten";
+    else if (total < 172800) span = Math.floor(total / 3600) === 1 ? "1 Stunde" : Math.floor(total / 3600) + " Stunden";
+    else span = Math.floor(total / 86400) + " Tagen";
+    return "Letzte Datenübertragung vor " + span;
+  }
+
+  function paintLatency(card) {
+    const pill = card.querySelector("[data-latency]");
+    if (!pill) return;
+    const at = Number(card.dataset.seenAt);
+    const sec = at > 0 ? (Date.now() - at) / 1000 : null;
+    pill.querySelector("[data-latency-text]").textContent = latencyText(sec);
+    pill.dataset.level = sec == null ? "none" : (sec < 20 ? "good" : (sec < 90 ? "slow" : "stale"));
+  }
+
+  function drawHistory(card, history) {
+    Object.keys(EG_SERIES).forEach(function (key) { drawSeries(card, key, history); });
+  }
+
+  function statTile(stat, label, keyClass) {
+    const box = document.createElement("div");
+    box.className = "eg-tile " + keyClass;
+    const kicker = document.createElement("p");
+    kicker.className = "eg-kicker";
+    const swatch = document.createElement("i");
+    swatch.className = "eg-key";
+    kicker.append(swatch, document.createTextNode(label));
+    const value = document.createElement("p");
+    value.className = "eg-kw";
+    value.dataset.stat = stat;
+    value.textContent = "–";
+    const sub = document.createElement("p");
+    sub.className = "eg-tile-sub";
+    sub.dataset.statSub = stat;
+    box.append(kicker, value, sub);
+    return box;
+  }
+
+  function setTile(card, stat, value, sub) {
+    card.querySelector('[data-stat="' + stat + '"]').textContent = value;
+    card.querySelector('[data-stat-sub="' + stat + '"]').textContent = sub;
   }
 
   function fieldInput(label, field, placeholder) {
@@ -998,33 +1189,56 @@
       if (!card) {
         card = document.createElement("article");
         card.className = "eg-card";
-        const title = document.createElement("h4");
-        const titleText = document.createElement("span");
-        titleText.dataset.title = "1";
+        card.dataset.slug = personSlug(member.name);
+        const head = document.createElement("header");
+        head.className = "eg-card-head";
         const dot = document.createElement("i");
         dot.className = "eg-dot";
-        title.append(titleText, dot);
+        const title = document.createElement("h4");
+        title.dataset.title = "1";
+        const device = document.createElement("span");
+        device.className = "eg-card-device";
+        device.dataset.device = "1";
+        head.append(dot, title, device);
         const stats = document.createElement("div");
-        stats.className = "eg-stats";
-        ["Einspeisung jetzt", "Heute eingespeist", "Speicher"].forEach(function (label, index) {
-          const box = document.createElement("div");
-          const kicker = document.createElement("p");
-          kicker.className = "eg-kicker";
-          kicker.textContent = label;
-          const value = document.createElement("p");
-          value.className = "eg-kw";
-          value.dataset.stat = ["kw", "kwh", "soc"][index];
-          box.append(kicker, value);
-          stats.append(box);
-        });
+        stats.className = "eg-tiles";
+        const socTile = statTile("soc", "Speicherstand", "eg-key-soc");
         const bar = document.createElement("div");
         bar.className = "eg-bar";
         const fill = document.createElement("span");
         fill.dataset.bar = "1";
         bar.append(fill);
+        socTile.querySelector(".eg-tile-sub").before(bar);
+        stats.append(
+          socTile,
+          statTile("pv", "Heute produziert", "eg-key-pv"),
+          statTile("import", "Netzbezug heute", "eg-key-import"),
+          statTile("feed", "Einspeisung heute", "eg-key-feed")
+        );
+        const status = document.createElement("div");
+        status.className = "eg-status";
         const age = document.createElement("p");
         age.className = "eg-hint";
         age.dataset.age = "1";
+        const latency = document.createElement("button");
+        latency.type = "button";
+        latency.className = "eg-latency";
+        latency.dataset.latency = "1";
+        latency.title = "Jetzt neu laden";
+        const latencyDot = document.createElement("i");
+        latencyDot.className = "eg-latency-dot";
+        const latencyText = document.createElement("span");
+        latencyText.dataset.latencyText = "1";
+        latency.append(latencyDot, latencyText);
+        latency.addEventListener("click", async function () {
+          latency.classList.add("is-loading");
+          try {
+            await refresh();
+          } finally {
+            latency.classList.remove("is-loading");
+          }
+        });
+        status.append(age, latency);
         const outlook = document.createElement("div");
         outlook.className = "eg-outlook";
         outlook.dataset.outlook = "1";
@@ -1038,11 +1252,7 @@
         readout.className = "eg-readout";
         const charts = document.createElement("div");
         charts.className = "eg-charts";
-        charts.append(
-          seriesChart("Energie über die Zeit", "energy_kw", "Negativ ist Netzbezug, positiv ist Einspeisung. Dünn: die anderen."),
-          seriesChart("Speicher über die Zeit", "soc_percent", "Linie ist der Speicherstand. Dünn: Speicher der anderen.")
-        );
-        side.append(title);
+        Object.keys(EG_SERIES).forEach(function (key) { charts.append(seriesChart(key)); });
         fieldInput("Name", "alias", "Haus Martin").forEach(function (node) { side.append(node); });
         fieldInput("Vereinbarter Preis", "ask_ct_kwh", "z. B. 12 Cent").forEach(function (node) { side.append(node); });
         fieldInput("Netzkosten", "grid_cost_ct_kwh", "z. B. 6 Cent").forEach(function (node) { side.append(node); });
@@ -1119,8 +1329,8 @@
         corner.className = "eg-settings-corner";
         corner.append(openSettings);
         side.append(actions, note);
-        readout.append(stats, bar, age, outlook, charts, abgleich);
-        card.append(side, readout, corner);
+        readout.append(stats, status, outlook, charts, abgleich);
+        card.append(head, side, readout, corner);
         card.querySelectorAll("[data-field]").forEach(function (input) {
           input.addEventListener("input", function () { updateAbgleich(card); });
         });
@@ -1129,13 +1339,28 @@
       }
       card.classList.toggle("fresh", !!member.fresh);
       card.querySelector("[data-title]").textContent = (member.alias || member.name) + (member.self ? " · hier" : "");
-      card.querySelector('[data-stat="kw"]').textContent = member.feed_in_kw == null ? "– kW" : member.feed_in_kw + " kW";
-      const connected = member.connected_kwh == null ? 0 : member.connected_kwh;
-      card.querySelector('[data-stat="kwh"]').textContent = connected + " kWh";
-      card.querySelector('[data-stat="soc"]').textContent = member.soc_percent == null ? "– %" : member.soc_percent + " %";
-      const pct = member.soc_percent == null ? 0 : Math.max(0, Math.min(100, Number(member.soc_percent)));
-      card.querySelector("[data-bar]").style.width = pct + "%";
+      card.querySelector("[data-device]").textContent = member.alias ? member.name : "";
+      const soc = numOf(member.soc_percent);
+      setTile(card, "soc", soc == null ? "– %" : fmtNum(soc, 0) + " %", "");
+      card.querySelector("[data-bar]").style.width = (soc == null ? 0 : Math.max(0, Math.min(100, soc))) + "%";
+      const pvKnown = member.pv_kwh_today != null || member.pv_kw != null;
+      setTile(card, "pv", fmtKwh(member.pv_kwh_today), pvKnown ? "jetzt " + fmtKw(member.pv_kw) : "Nachbar meldet noch keine Erzeugung");
+      setTile(
+        card,
+        "import",
+        (member.grid_import_estimated ? "≈ " : "") + fmtKwh(member.grid_import_kwh_today),
+        "jetzt " + fmtKw(member.grid_import_kw) + (member.grid_import_estimated ? " · geschätzt" : "")
+      );
+      setTile(
+        card,
+        "feed",
+        (member.feed_in_estimated ? "≈ " : "") + fmtKwh(member.feed_in_kwh_today),
+        "jetzt " + fmtKw(member.feed_in_kw) + (member.feed_in_estimated ? " · geschätzt" : "")
+      );
       card.querySelector("[data-age]").textContent = ageText(member.age_sec, member.code_mismatch, member.age_text);
+      const ageSec = numOf(member.age_sec);
+      card.dataset.seenAt = ageSec == null ? "" : String(Date.now() - ageSec * 1000);
+      paintLatency(card);
       paintOutlook(card, member);
       ["alias", "ask_ct_kwh", "grid_cost_ct_kwh"].forEach(function (field) {
         const input = card.querySelector('[data-field="' + field + '"]');
@@ -1146,8 +1371,7 @@
           input.dataset.applied = text;
         }
       });
-      const others = members.filter(function (other) { return other.name !== member.name; });
-      drawHistory(card, member.history || [], others);
+      drawHistory(card, member.history || []);
       updateAbgleich(card);
       grid.appendChild(card);
     });
@@ -1250,6 +1474,9 @@
   });
   refresh();
   setInterval(refresh, 5000);
+  setInterval(function () {
+    Object.keys(peerCards).forEach(function (name) { paintLatency(peerCards[name]); });
+  }, 1000);
 })();
 </script>
 {% endblock %}

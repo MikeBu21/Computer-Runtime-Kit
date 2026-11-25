@@ -36,6 +36,9 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+
+import fault_scan  # noqa: E402
 
 
 def load_config(path: Path) -> Dict[str, Any]:
@@ -51,6 +54,7 @@ def load_config(path: Path) -> Dict[str, Any]:
         "user_chat_id": "",
         "user_token_file": "/home/piminer/minersteuerung/miner-dashboard/backend/telegram_config.json",
         "window_days": 14,
+        "scan_interval_sec": 3600,
         "poll_sec": 20,
         "pause_min_sec": 60,
         "pause_max_sec": 1800,
@@ -288,6 +292,18 @@ def archive_wishes(outbox: Path, sent_dir: Path) -> None:
 def format_caption(meta: Dict[str, Any]) -> str:
     soft = meta.get("software") or {}
     top = meta.get("top_errors") or []
+    if int(meta.get("report_version") or 1) >= 2:
+        lines = [
+            f"piminer Fehlerbericht ({meta.get('period_days', 14)} Tage)",
+            f"Gerät: {meta.get('host') or soft.get('hostname') or '—'} · Git {soft.get('git_sha') or '—'}",
+            f"Zeitraum bis: {meta.get('period_label')}",
+            f"Ergebnis: {fault_scan.summary_line(meta.get('severity_counts') or {})}",
+        ]
+        for row in top[:3]:
+            label = fault_scan.SEVERITY_LABEL.get(row.get("severity"), "")
+            sample = str(row.get("sample") or "").replace("\n", " ")[:110]
+            lines.append(f"• {label} {row.get('count')}× {sample}")
+        return "\n".join(lines)
     lines = [
         f"piminer Fehlerbericht ({meta.get('period_days', 14)} Tage)",
         f"Host: {meta.get('host') or soft.get('hostname') or '—'}",
@@ -314,6 +330,16 @@ def _read_jsonl_gz(gz: Path) -> List[str]:
 
 def build_plaintext_report(gz: Path, meta: Dict[str, Any]) -> str:
     """Human-readable .txt — opens on any PC (unlike .jsonl.gz)."""
+    if int(meta.get("report_version") or 1) >= 2:
+        findings = []
+        for ln in _read_jsonl_gz(gz):
+            try:
+                row = json.loads(ln)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(row, dict):
+                findings.append(row)
+        return fault_scan.render_text(meta, findings)
     soft = meta.get("software") or {}
     lines: List[str] = [
         "piminer Fehlerbericht",
@@ -511,6 +537,22 @@ def _run_collect(cfg_path: Path) -> None:
         print(f"collect failed: {exc}", file=sys.stderr)
 
 
+def _run_scan(cfg_path: Path) -> None:
+    """Incremental capture so RAM logs in /dev/shm are read before a reboot can wipe them."""
+    try:
+        r = subprocess.run(
+            [sys.executable, str(HERE / "fault_scan.py"), "--scan", "--config", str(cfg_path)],
+            capture_output=True,
+            text=True,
+            timeout=600,
+            check=False,
+        )
+        if r.returncode != 0:
+            print((r.stderr or "").strip() or f"scan exit {r.returncode}", file=sys.stderr, flush=True)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"scan failed: {exc}", file=sys.stderr, flush=True)
+
+
 def _watch_signature(cfg_path: Path, cfg: Dict[str, Any]) -> Tuple[Any, ...]:
     """Changes here wake the daemon: config (Token/Chat-IDs) and outbox contents."""
     sig: List[Any] = []
@@ -544,6 +586,12 @@ def run_daemon(cfg_path: Path) -> int:
         last_sig = sig
 
         now = time.time()
+        scan_every = max(300, int(cfg.get("scan_interval_sec") or 3600))
+        if now - float(state.get("last_scan") or 0) >= scan_every:
+            _run_scan(cfg_path)
+            state["last_scan"] = now
+            save_state(cfg, state)
+
         window = max(1, int(cfg.get("window_days") or 14)) * 86400
         if now - float(state.get("last_collect") or 0) >= window:
             _run_collect(cfg_path)
